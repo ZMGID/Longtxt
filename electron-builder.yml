@@ -1,0 +1,17 @@
+appId: com.zmair.changbu
+productName: 长布
+directories:
+  output: release
+files:
+  - dist/**
+  - dist-electron/**
+  - package.json
+asarUnpack:
+  - node_modules/better-sqlite3/**
+  - node_modules/sqlite-vec-*/**
+mac:
+  category: public.app-category.productivity
+win:
+  target:
+    - nsis
+npmRebuild: false

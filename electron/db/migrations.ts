@@ -1,0 +1,89 @@
+export const baseMigrations = `
+CREATE TABLE IF NOT EXISTS blocks (
+  id TEXT PRIMARY KEY,
+  content TEXT NOT NULL,
+  summary TEXT,
+  status TEXT NOT NULL DEFAULT 'pending',
+  ai_mode TEXT NOT NULL DEFAULT 'mock',
+  error_message TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS tags (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL UNIQUE,
+  normalized_name TEXT,
+  is_default INTEGER NOT NULL DEFAULT 0,
+  kind TEXT NOT NULL DEFAULT 'detail',
+  created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS block_tags (
+  block_id TEXT NOT NULL REFERENCES blocks(id) ON DELETE CASCADE,
+  tag_id TEXT NOT NULL REFERENCES tags(id) ON DELETE CASCADE,
+  source TEXT NOT NULL DEFAULT 'auto',
+  PRIMARY KEY (block_id, tag_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_block_tags_block_id ON block_tags (block_id);
+CREATE INDEX IF NOT EXISTS idx_block_tags_tag_id ON block_tags (tag_id);
+CREATE INDEX IF NOT EXISTS idx_blocks_created_at ON blocks (created_at);
+
+CREATE TABLE IF NOT EXISTS settings (
+  key TEXT PRIMARY KEY,
+  value TEXT
+);
+
+CREATE TABLE IF NOT EXISTS attachments (
+  id TEXT PRIMARY KEY,
+  file_url TEXT NOT NULL UNIQUE,
+  file_path TEXT NOT NULL,
+  mime_type TEXT,
+  filename TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS block_attachments (
+  block_id TEXT NOT NULL REFERENCES blocks(id) ON DELETE CASCADE,
+  attachment_id TEXT NOT NULL REFERENCES attachments(id) ON DELETE CASCADE,
+  sort_order INTEGER NOT NULL DEFAULT 0,
+  alt_text TEXT,
+  PRIMARY KEY (block_id, attachment_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_attachments_file_url ON attachments (file_url);
+CREATE INDEX IF NOT EXISTS idx_block_attachments_block_id ON block_attachments (block_id);
+CREATE INDEX IF NOT EXISTS idx_block_attachments_attachment_id ON block_attachments (attachment_id);
+
+CREATE TABLE IF NOT EXISTS snapshots (
+  id TEXT PRIMARY KEY,
+  topic TEXT NOT NULL,
+  content TEXT NOT NULL,
+  block_ids TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_snapshots_created_at ON snapshots (created_at);
+
+CREATE VIRTUAL TABLE IF NOT EXISTS blocks_fts USING fts5(
+  content,
+  content='blocks',
+  content_rowid='rowid',
+  tokenize='trigram'
+);
+
+CREATE TRIGGER IF NOT EXISTS blocks_ai AFTER INSERT ON blocks BEGIN
+  INSERT INTO blocks_fts(rowid, content) VALUES (new.rowid, new.content);
+END;
+
+CREATE TRIGGER IF NOT EXISTS blocks_ad AFTER DELETE ON blocks BEGIN
+  INSERT INTO blocks_fts(blocks_fts, rowid, content) VALUES ('delete', old.rowid, old.content);
+END;
+
+CREATE TRIGGER IF NOT EXISTS blocks_au AFTER UPDATE OF content ON blocks BEGIN
+  INSERT INTO blocks_fts(blocks_fts, rowid, content) VALUES ('delete', old.rowid, old.content);
+  INSERT INTO blocks_fts(rowid, content) VALUES (new.rowid, new.content);
+END;
+`
