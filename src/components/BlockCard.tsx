@@ -1,3 +1,4 @@
+import type { ReactNode } from 'react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 
 import type { Block, TagSuggestion } from '../../shared/types'
@@ -10,6 +11,7 @@ interface BlockCardProps {
   block: Block
   editable?: boolean
   compact?: boolean
+  headerActions?: ReactNode
   tagSuggestions?: TagSuggestion[]
   onSave?: (id: string, content: string) => Promise<void>
   onDelete?: (id: string) => Promise<void>
@@ -42,6 +44,7 @@ export function BlockCard({
   block,
   editable = true,
   compact = false,
+  headerActions,
   tagSuggestions = [],
   onSave,
   onDelete,
@@ -106,12 +109,20 @@ export function BlockCard({
   return (
     <article className="rounded-lg border border-black/[0.06] bg-white/70 px-3 py-2 transition-all duration-200 hover:border-black/[0.12] hover:shadow-sm">
       {/* 元信息行 */}
-      <div className="flex flex-wrap items-center gap-2 text-xs text-stone-500">
-        <StatusPill status={block.status} />
-        <span>{formatTimeLabel(block.updatedAt)}</span>
-        <span className="rounded border border-stone-200 bg-stone-50 px-2 py-0.5 text-[11px] font-medium text-stone-500">
-          {block.aiMode === 'live' ? 'live AI' : 'mock AI'}
-        </span>
+      <div className="flex items-start justify-between gap-3">
+        <div className="flex flex-wrap items-center gap-2 text-xs text-stone-500">
+          <StatusPill status={block.status} />
+          <span>{formatTimeLabel(block.updatedAt)}</span>
+          <span className="rounded border border-stone-200 bg-stone-50 px-2 py-0.5 text-[11px] font-medium text-stone-500">
+            {block.aiMode === 'live' ? 'live AI' : 'mock AI'}
+          </span>
+        </div>
+
+        {headerActions ? (
+          <div className="shrink-0">
+            {headerActions}
+          </div>
+        ) : null}
       </div>
 
       {/* 正文 */}

@@ -6,6 +6,7 @@ import { SettingsPanel } from './SettingsPanel'
 describe('SettingsPanel', () => {
   it('renders and updates max reference block setting', () => {
     const onDocGenerationSettingsChange = vi.fn()
+    const onUISettingsChange = vi.fn()
 
     render(
       <SettingsPanel
@@ -24,12 +25,16 @@ describe('SettingsPanel', () => {
         docGenerationSettings={{
           maxReferenceBlocks: 10,
         }}
+        uiSettings={{
+          showMiniTimeline: true,
+        }}
         meta={null}
         saving={false}
         testing={false}
         testResult={null}
         onChange={vi.fn()}
         onDocGenerationSettingsChange={onDocGenerationSettingsChange}
+        onUISettingsChange={onUISettingsChange}
         onSave={vi.fn()}
         onTest={vi.fn()}
         onOpenDataDirectory={vi.fn()}
@@ -42,5 +47,12 @@ describe('SettingsPanel', () => {
     fireEvent.change(input, { target: { value: '12' } })
 
     expect(onDocGenerationSettingsChange).toHaveBeenCalledWith({ maxReferenceBlocks: 12 })
+
+    const checkbox = screen.getByRole('checkbox', { name: /显示左侧时间线/ })
+    expect(checkbox).toBeChecked()
+
+    fireEvent.click(checkbox)
+
+    expect(onUISettingsChange).toHaveBeenCalledWith({ showMiniTimeline: false })
   })
 })

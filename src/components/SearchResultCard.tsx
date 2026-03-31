@@ -1,3 +1,5 @@
+import type { ReactNode } from 'react'
+
 import type { SearchResult } from '../../shared/types'
 import { formatTimeLabel } from '../lib/format'
 import { highlightText } from '../lib/highlight'
@@ -9,9 +11,10 @@ interface SearchResultCardProps {
   onTagClick?: (tagName: string) => void
   showScore?: boolean
   metaLabel?: string | null
+  footer?: ReactNode
 }
 
-export function SearchResultCard({ result, query, onTagClick, showScore = true, metaLabel = null }: SearchResultCardProps) {
+export function SearchResultCard({ result, query, onTagClick, showScore = true, metaLabel = null, footer = null }: SearchResultCardProps) {
   const { block } = result
 
   return (
@@ -49,6 +52,8 @@ export function SearchResultCard({ result, query, onTagClick, showScore = true, 
           </button>
         ))}
       </div>
+
+      {footer ? <div className="mt-3">{footer}</div> : null}
     </article>
   )
 }

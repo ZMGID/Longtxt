@@ -27,6 +27,9 @@ export const changbu = {
   get snapshots() {
     return getApi().snapshots
   },
+  get notebooks() {
+    return getApi().notebooks
+  },
   get exports() {
     return getApi().exports
   },

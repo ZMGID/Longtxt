@@ -3,20 +3,37 @@ import { startTransition, useEffect, useRef, useState } from 'react'
 import {
   DEFAULT_AI_CONFIG,
   DEFAULT_DOC_GENERATION_SETTINGS,
+  DEFAULT_UI_SETTINGS,
   DOC_GENERATION_SETTINGS_KEY,
   normalizeDocGenerationSettings,
+  normalizeUISettings,
   parseDocGenerationSettings,
+  parseUISettings,
+  UI_SETTINGS_KEY,
 } from '../shared/config'
-import type { AIConfig, AIExecutionMode, ApiTestResult, AppMeta, Block, DocGenerationChunk, DocGenerationSettings, SearchResult } from '../shared/types'
+import type {
+  AIConfig,
+  AIExecutionMode,
+  ApiTestResult,
+  AppMeta,
+  Block,
+  DocGenerationChunk,
+  DocGenerationSettings,
+  SearchResult,
+  Snapshot,
+  UISettings,
+} from '../shared/types'
 import { AppSidebar, type AppView } from './components/AppSidebar'
 import { GraphView } from './components/GraphView'
 import { InputBar } from './components/InputBar'
+import { NotebookWorkspace } from './components/NotebookWorkspace'
 import { SearchPanel } from './components/SearchPanel'
 import { SettingsPanel } from './components/SettingsPanel'
 import { SnapshotsView } from './components/SnapshotsView'
 import { Timeline } from './components/Timeline'
 import { ToastProvider, useToast } from './components/Toast'
 import { useBlocks } from './hooks/useBlocks'
+import { useNotebooks } from './hooks/useNotebooks'
 import { useTags } from './hooks/useTags'
 import { changbu } from './lib/changbu'
 
@@ -40,6 +57,26 @@ const initialDocumentState: DocumentState = {
   error: null,
 }
 
+async function runSearchAction(
+  action: () => Promise<SearchResult[]>,
+  handlers: {
+    onStart: () => void
+    onSuccess: (results: SearchResult[]) => void
+    onError: (message: string) => void
+    onFinally?: () => void
+  },
+): Promise<void> {
+  handlers.onStart()
+
+  try {
+    handlers.onSuccess(await action())
+  } catch (reason) {
+    handlers.onError(reason instanceof Error ? reason.message : '搜索失败。')
+  } finally {
+    handlers.onFinally?.()
+  }
+}
+
 export default function App() {
   return (
     <ToastProvider>
@@ -52,17 +89,37 @@ function AppInner() {
   const { toast } = useToast()
   const { blocks, loading, loadingMore, hasMore, error, createBlock, updateBlock, removeBlock, addTag, removeTag, loadMore, ensureBlockLoaded } = useBlocks()
   const { tags, refresh: refreshTags } = useTags()
+  const {
+    notebooks,
+    selectedNotebookId,
+    selectedNotebook,
+    loading: notebooksLoading,
+    loadingNotebook,
+    error: notebooksError,
+    selectNotebook,
+    createNotebook,
+    updateNotebook,
+    removeNotebook,
+    addBlockToNotebook,
+    createNotebookWithBlock,
+    removeNotebookItem,
+    reorderItems,
+    createBlockInNotebook,
+  } = useNotebooks()
   const [activeView, setActiveView] = useState<AppView>('timeline')
   const [searchQuery, setSearchQuery] = useState('')
   const [browseTag, setBrowseTag] = useState<string | null>(null)
   const [searchError, setSearchError] = useState<string | null>(null)
   const [searching, setSearching] = useState(false)
+  const [notebookSearching, setNotebookSearching] = useState(false)
   const [generating, setGenerating] = useState(false)
   const [results, setResults] = useState<SearchResult[]>([])
+  const [notebookResults, setNotebookResults] = useState<SearchResult[]>([])
   const [hasSearched, setHasSearched] = useState(false)
   const [document, setDocument] = useState<DocumentState>(initialDocumentState)
   const [config, setConfig] = useState<AIConfig>(DEFAULT_AI_CONFIG)
   const [docGenerationSettings, setDocGenerationSettings] = useState<DocGenerationSettings>(DEFAULT_DOC_GENERATION_SETTINGS)
+  const [uiSettings, setUiSettings] = useState<UISettings>(DEFAULT_UI_SETTINGS)
   const [meta, setMeta] = useState<AppMeta | null>(null)
   const [settingsSaving, setSettingsSaving] = useState(false)
   const [settingsTesting, setSettingsTesting] = useState(false)
@@ -77,7 +134,7 @@ function AppInner() {
   const [selectedGraphBlockId, setSelectedGraphBlockId] = useState<string | null>(null)
   const [selectedGraphBlockFallback, setSelectedGraphBlockFallback] = useState<Block | null>(null)
   const [focusedBlockId, setFocusedBlockId] = useState<string | null>(null)
-  const [snapshots, setSnapshots] = useState<import('../shared/types').Snapshot[]>([])
+  const [snapshots, setSnapshots] = useState<Snapshot[]>([])
   const [snapshotQuery, setSnapshotQuery] = useState('')
   const [selectedSnapshotId, setSelectedSnapshotId] = useState<string | null>(null)
   const [importPreview, setImportPreview] = useState<import('../shared/types').ImportPreview | null>(null)
@@ -116,6 +173,14 @@ function AppInner() {
       setDocGenerationSettings(parseDocGenerationSettings(saved))
     })
 
+    void changbu.settings.get(UI_SETTINGS_KEY).then((saved) => {
+      if (!active) {
+        return
+      }
+
+      setUiSettings(parseUISettings(saved))
+    })
+
     void refreshMeta().then((appMeta) => {
       if (active) {
         setMeta(appMeta)
@@ -127,18 +192,24 @@ function AppInner() {
         return
       }
 
+      let touchedSearch = false
+
       startTransition(() => {
         setDocument((current) => {
-          if (current.requestId && current.requestId !== chunk.requestId) {
+          if (current.requestId !== chunk.requestId) {
             return current
           }
 
+          touchedSearch = true
           return applyDocChunk(current, chunk)
         })
       })
 
-      if (chunk.done) {
+      if (chunk.done && touchedSearch) {
         setGenerating(false)
+      }
+
+      if (chunk.done && touchedSearch) {
         void refreshMeta().then((appMeta) => {
           if (active) {
             setMeta(appMeta)
@@ -234,7 +305,6 @@ function AppInner() {
     }
   }, [activeView, graphData.nodes, selectedGraphBlockId])
 
-
   async function refreshMeta(): Promise<AppMeta> {
     const nextMeta = await changbu.settings.getMeta()
     setMeta(nextMeta)
@@ -253,40 +323,104 @@ function AppInner() {
       return
     }
 
-    setHasSearched(true)
-    setSearching(true)
-    setSearchError(null)
-    setBrowseTag(null)
-
-    try {
-      const nextResults = await changbu.search.blocks(query, 20)
-      startTransition(() => {
-        setResults(nextResults)
-      })
-    } catch (reason) {
-      setSearchError(reason instanceof Error ? reason.message : '搜索失败。')
-    } finally {
-      setSearching(false)
-      void refreshMeta()
-    }
+    await runSearchAction(
+      () => changbu.search.blocks(query, 20),
+      {
+        onStart: () => {
+          setHasSearched(true)
+          setSearching(true)
+          setSearchError(null)
+          setBrowseTag(null)
+        },
+        onSuccess: (nextResults) => {
+          startTransition(() => {
+            setResults(nextResults)
+          })
+        },
+        onError: (message) => {
+          setSearchError(message)
+        },
+        onFinally: () => {
+          setSearching(false)
+          void refreshMeta()
+        },
+      },
+    )
   }
 
   async function handleBrowseTag(tagName: string): Promise<void> {
-    setActiveView('search')
-    setHasSearched(true)
-    setBrowseTag(tagName)
-    setSearchQuery(tagName)
-    setSearchError(null)
-    setSearching(true)
+    await runSearchAction(
+      () => changbu.search.byTag(tagName, 50),
+      {
+        onStart: () => {
+          setActiveView('search')
+          setHasSearched(true)
+          setBrowseTag(tagName)
+          setSearchQuery(tagName)
+          setSearchError(null)
+          setSearching(true)
+        },
+        onSuccess: (nextResults) => {
+          setResults(nextResults)
+        },
+        onError: (message) => {
+          setSearchError(message === '搜索失败。' ? '按标签浏览失败。' : message)
+        },
+        onFinally: () => {
+          setSearching(false)
+        },
+      },
+    )
+  }
 
-    try {
-      const nextResults = await changbu.search.byTag(tagName, 50)
-      setResults(nextResults)
-    } catch (reason) {
-      setSearchError(reason instanceof Error ? reason.message : '按标签浏览失败。')
-    } finally {
-      setSearching(false)
+  async function handleNotebookSearch(query = searchQuery): Promise<void> {
+    const nextQuery = query.trim()
+
+    if (!nextQuery) {
+      setNotebookResults([])
+      return
     }
+
+    await runSearchAction(
+      () => changbu.search.blocks(nextQuery, 20),
+      {
+        onStart: () => {
+          setNotebookSearching(true)
+          setSearchError(null)
+        },
+        onSuccess: (nextResults) => {
+          setNotebookResults(nextResults)
+        },
+        onError: (message) => {
+          setSearchError(message)
+        },
+        onFinally: () => {
+          setNotebookSearching(false)
+        },
+      },
+    )
+  }
+
+  async function handleNotebookBrowseTag(tagName: string): Promise<void> {
+    await runSearchAction(
+      () => changbu.search.byTag(tagName, 50),
+      {
+        onStart: () => {
+          setSearchQuery(tagName)
+          setNotebookSearching(true)
+          setSearchError(null)
+        },
+        onSuccess: (nextResults) => {
+          setNotebookResults(nextResults)
+        },
+        onError: (message) => {
+          setSearchError(message === '搜索失败。' ? '按标签浏览失败。' : message)
+        },
+        onFinally: () => {
+          setNotebookSearching(false)
+        },
+      },
+    )
   }
 
   async function handleGenerate(): Promise<void> {
@@ -348,11 +482,14 @@ function AppInner() {
   async function handleSaveSettings(): Promise<void> {
     setSettingsSaving(true)
     const normalizedDocGenerationSettings = normalizeDocGenerationSettings(docGenerationSettings)
+    const normalizedUISettings = normalizeUISettings(uiSettings)
 
     try {
       await changbu.settings.set('ai_config', JSON.stringify(config))
       await changbu.settings.set(DOC_GENERATION_SETTINGS_KEY, JSON.stringify(normalizedDocGenerationSettings))
+      await changbu.settings.set(UI_SETTINGS_KEY, JSON.stringify(normalizedUISettings))
       setDocGenerationSettings(normalizedDocGenerationSettings)
+      setUiSettings(normalizedUISettings)
       const nextMeta = await refreshMeta()
       toast(
         nextMeta.activeAiMode === 'live' ? 'success' : 'info',
@@ -389,6 +526,24 @@ function AppInner() {
     toast('success', '文档快照已保存。')
   }
 
+  async function handleAddBlockToNotebook(notebookId: string, blockId: string): Promise<void> {
+    const result = await addBlockToNotebook(notebookId, blockId)
+    toast(result.added ? 'success' : 'info', result.added ? `已收录到「${result.notebook.title}」` : `「${result.notebook.title}」里已经有这个块`)
+  }
+
+  async function handleCreateNotebookWithBlock(blockId: string): Promise<void> {
+    const notebookTitle = `新笔记本 ${notebooks.length + 1}`
+    const result = await createNotebookWithBlock(blockId, notebookTitle)
+    toast('success', `已新建「${result.notebook.title}」并收录当前块`)
+    setActiveView('notebooks')
+  }
+
+  async function handleCreateNotebook(): Promise<void> {
+    const notebook = await createNotebook(`新笔记本 ${notebooks.length + 1}`)
+    toast('success', `已创建「${notebook.title}」`)
+    setActiveView('notebooks')
+  }
+
   const selectedGraphBlock = selectedGraphBlockId ? blocks.find((block) => block.id === selectedGraphBlockId) ?? selectedGraphBlockFallback : null
   const recentResults: SearchResult[] = blocks.slice(0, 5).map((block) => ({
     block,
@@ -423,6 +578,7 @@ function AppInner() {
   const activeViewTitle = {
     timeline: '时间轴',
     search: '搜索生成',
+    notebooks: '笔记本',
     graph: '连接图',
     snapshots: '文档快照',
     settings: '设置',
@@ -441,7 +597,9 @@ function AppInner() {
               loading={loading}
               loadingMore={loadingMore}
               hasMore={hasMore}
+              showMiniTimeline={uiSettings.showMiniTimeline}
               composer={<InputBar onSubmit={createBlock} embedded />}
+              notebooks={notebooks}
               tagSuggestions={tags}
               onSave={updateBlock}
               onDelete={removeBlock}
@@ -457,9 +615,72 @@ function AppInner() {
                 void handleBrowseTag(tagName)
               }}
               onLoadMore={loadMore}
+              onAddToNotebook={handleAddBlockToNotebook}
+              onCreateNotebookWithBlock={handleCreateNotebookWithBlock}
               focusedBlockId={focusedBlockId}
               onFocusedBlockHandled={() => {
                 setFocusedBlockId(null)
+              }}
+            />
+          </div>
+        )
+      case 'notebooks':
+        return (
+          <div className="flex min-h-0 flex-1 overflow-y-auto xl:overflow-hidden">
+            <NotebookWorkspace
+              notebooks={notebooks}
+              selectedNotebookId={selectedNotebookId}
+              selectedNotebook={selectedNotebook}
+              loading={notebooksLoading}
+              loadingNotebook={loadingNotebook}
+              searching={notebookSearching}
+              searchQuery={searchQuery}
+              searchResults={notebookResults}
+              searchError={searchError}
+              error={notebooksError}
+              tagSuggestions={tags}
+              onSelectNotebook={selectNotebook}
+              onCreateNotebook={handleCreateNotebook}
+              onUpdateNotebookTitle={async (notebookId, title) => {
+                await updateNotebook(notebookId, title)
+              }}
+              onDeleteNotebook={async (notebookId) => {
+                await removeNotebook(notebookId)
+                toast('success', '笔记本已删除。')
+              }}
+              onCreateBlockInNotebook={async (notebookId, content) => {
+                await createBlockInNotebook(notebookId, content)
+                toast('success', '新块已加入当前笔记本。')
+              }}
+              onUpdateBlock={updateBlock}
+              onAddTag={async (blockId, tagName) => {
+                await addTag(blockId, tagName)
+                await refreshTags()
+              }}
+              onRemoveTag={async (blockId, tagId) => {
+                await removeTag(blockId, tagId)
+                await refreshTags()
+              }}
+              onTagClick={(tagName) => {
+                void handleNotebookBrowseTag(tagName)
+              }}
+              onRemoveNotebookItem={async (notebookId, itemId) => {
+                await removeNotebookItem(notebookId, itemId)
+                toast('success', '该块已从笔记本移出。')
+              }}
+              onReorderNotebookItems={async (notebookId, itemIds) => {
+                await reorderItems(notebookId, itemIds)
+              }}
+              onSearchQueryChange={setSearchQuery}
+              onSearch={async () => {
+                await handleNotebookSearch()
+              }}
+              onAddSearchResultToNotebook={async (blockId) => {
+                if (!selectedNotebook) {
+                  return
+                }
+
+                await handleAddBlockToNotebook(selectedNotebook.id, blockId)
               }}
             />
           </div>
@@ -654,12 +875,14 @@ function AppInner() {
             <SettingsPanel
             config={config}
             docGenerationSettings={docGenerationSettings}
+            uiSettings={uiSettings}
             meta={meta}
             saving={settingsSaving}
             testing={settingsTesting}
             testResult={testResult}
             onChange={handleConfigChange}
             onDocGenerationSettingsChange={setDocGenerationSettings}
+            onUISettingsChange={setUiSettings}
             onSave={handleSaveSettings}
             onTest={handleTestSettings}
             onOpenDataDirectory={async () => {
@@ -678,13 +901,12 @@ function AppInner() {
         blockCount={blocks.length}
         aiStatusLabel={aiStatusLabel}
         meta={meta}
-        searchQuery={searchQuery}
         onSelectView={setActiveView}
       />
 
       <main className="flex min-w-0 flex-1 flex-col overflow-hidden bg-white/[0.92]">
         {/* macOS 交通灯按钮区域 — 与侧边栏对齐 */}
-        <div className="h-12 shrink-0 flex items-end px-5 pb-1">
+        <div className="window-drag-region h-12 shrink-0 flex items-end px-5 pb-1">
           <h2 className="text-[13px] font-semibold text-stone-900">{activeViewTitle}</h2>
         </div>
 

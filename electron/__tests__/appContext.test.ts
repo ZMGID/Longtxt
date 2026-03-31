@@ -7,6 +7,7 @@ import { tmpdir } from 'node:os'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { DOC_GENERATION_SETTINGS_KEY } from '../../shared/config'
+import type { DocGenerationChunk } from '../../shared/types'
 import { createAppContext, type AppContext, type AppContextOptions } from '../appContext'
 
 const createdContexts: AppContext[] = []
@@ -87,6 +88,77 @@ describe('app context', () => {
     await context.removeBlock(created.id)
     const afterDelete = await context.listBlocks()
     expect(afterDelete).toHaveLength(0)
+  })
+
+  it('supports notebook creation, collection, ordering, and notebook-local block creation', async () => {
+    const context = makeContext()
+    const first = await context.createBlock('第一段内容，适合做提纲。')
+    const second = await context.createBlock('第二段内容，适合做案例。')
+    await context.whenIdle()
+
+    const notebook = await context.createNotebook('发布准备')
+    expect((await context.listNotebooks())).toHaveLength(1)
+
+    const addedFirst = await context.addBlockToNotebook(notebook.id, first.id)
+    expect(addedFirst.added).toBe(true)
+    expect(addedFirst.notebook.items.filter((item) => item.type === 'block')).toHaveLength(1)
+
+    const addedSecond = await context.addBlockToNotebook(notebook.id, second.id)
+    expect(addedSecond.notebook.items.filter((item) => item.type === 'block').map((item) => item.blockId)).toEqual([first.id, second.id])
+
+    const summaryBeforeEdit = (await context.listNotebooks())[0]
+    await new Promise((resolve) => setTimeout(resolve, 5))
+    await context.updateBlock(first.id, '第一段内容，已经补充成正式提纲。')
+    await context.whenIdle()
+
+    const summaryAfterEdit = (await context.listNotebooks())[0]
+    expect(new Date(summaryAfterEdit.updatedAt).getTime()).toBeGreaterThan(new Date(summaryBeforeEdit.updatedAt).getTime())
+
+    const initialBlockItems = addedSecond.notebook.items.filter((item) => item.type === 'block')
+    const reordered = await context.reorderNotebookItems(notebook.id, [initialBlockItems[1].id, initialBlockItems[0].id])
+    expect(reordered.items.filter((item) => item.type === 'block').map((item) => item.blockId)).toEqual([second.id, first.id])
+
+    await context.removeBlock(second.id)
+    const summaryAfterBlockDelete = (await context.listNotebooks())[0]
+    expect(summaryAfterBlockDelete.blockCount).toBe(1)
+
+    const withNewBlock = await context.createNotebookBlock(notebook.id, '第三段内容，直接在笔记本里新建。')
+    expect(withNewBlock.items.filter((item) => item.type === 'block')).toHaveLength(2)
+
+    const withHeading = await context.createNotebookStructureItem(notebook.id, { type: 'heading', content: '发布说明' })
+    const headingItem = withHeading.items.find((item) => item.type === 'heading')
+    expect(headingItem?.type).toBe('heading')
+
+    if (!headingItem || headingItem.type !== 'heading') {
+      throw new Error('Heading item was not created')
+    }
+
+    const updatedStructure = await context.updateNotebookStructureItem(notebook.id, headingItem.id, { content: '正式发布说明' })
+    expect(updatedStructure.items.find((item) => item.id === headingItem.id && item.type === 'heading')).toMatchObject({
+      content: '正式发布说明',
+    })
+
+    const renamed = await context.updateNotebook(notebook.id, '发布串讲')
+    expect(renamed.title).toBe('发布串讲')
+
+    const firstNotebookItem = renamed.items.find((item) => item.type === 'block' && item.blockId === first.id)
+
+    if (!firstNotebookItem) {
+      throw new Error('First notebook block item was not found')
+    }
+
+    const afterRemoval = await context.removeNotebookItem(notebook.id, firstNotebookItem.id)
+    expect(afterRemoval.items.filter((item) => item.type === 'block').map((item) => item.blockId)).not.toContain(first.id)
+
+    await context.removeNotebook(notebook.id)
+    expect(await context.listNotebooks()).toEqual([])
+  })
+
+  it('does not leave an orphan block behind when notebook-local creation fails', async () => {
+    const context = makeContext()
+
+    await expect(context.createNotebookBlock('missing-notebook', '不应该被创建的块')).rejects.toThrow()
+    expect(await context.listBlocks()).toEqual([])
   })
 
   it('persists settings and reports runtime meta', async () => {
@@ -252,5 +324,54 @@ describe('app context', () => {
 
     expect(snapshot.blockIds).toEqual([])
     expect((await context.getSnapshot(snapshot.id)).blockIds).toEqual([])
+  })
+
+  it('supports notebook reference review, notebook generation, and notebook-bound snapshots', async () => {
+    const chunks: DocGenerationChunk[] = []
+    const context = makeContext({
+      onDocGenerationChunk: (chunk) => {
+        chunks.push(chunk)
+      },
+    })
+
+    await context.setSetting(
+      DOC_GENERATION_SETTINGS_KEY,
+      JSON.stringify({
+        maxReferenceBlocks: 2,
+      }),
+    )
+
+    const first = await context.createBlock('发布说明里需要明确上线范围和回滚方案。')
+    const second = await context.createBlock('发布总结要补充监控指标和验收结果。')
+    const third = await context.createBlock('补一段偏离主题的杂项记录。')
+    await context.whenIdle()
+
+    const notebook = await context.createNotebook('发布工作台')
+    await context.addBlockToNotebook(notebook.id, first.id)
+    await context.addBlockToNotebook(notebook.id, second.id)
+    await context.addBlockToNotebook(notebook.id, third.id)
+    await context.createNotebookStructureItem(notebook.id, { type: 'heading', content: '发布总结' })
+    await context.createNotebookStructureItem(notebook.id, { type: 'todo', content: '补充验收项' })
+
+    const initialPreview = await context.getNotebookReferencePreview(notebook.id, '发布总结')
+    expect(initialPreview.candidates).toHaveLength(3)
+
+    const pinnedPreview = await context.updateNotebookReferenceReview(notebook.id, third.id, { pinned: true }, '发布总结')
+    expect(pinnedPreview.candidates.find((candidate) => candidate.block.id === third.id)?.selectionReason).toBe('pinned')
+
+    const excludedPreview = await context.updateNotebookReferenceReview(notebook.id, second.id, { excluded: true }, '发布总结')
+    expect(excludedPreview.candidates.find((candidate) => candidate.block.id === second.id)?.selected).toBe(false)
+
+    const started = await context.generateNotebookDocument(notebook.id, '发布总结')
+    expect(started.notebookId).toBe(notebook.id)
+    expect(started.blockIds.length).toBeLessThanOrEqual(2)
+
+    await context.whenIdle()
+    expect(chunks.at(-1)?.done).toBe(true)
+
+    const snapshot = await context.saveSnapshot('发布总结', '# 发布总结', started.blockIds, notebook.id)
+    expect(snapshot.notebookId).toBe(notebook.id)
+    expect((await context.listSnapshots('', notebook.id))).toHaveLength(1)
+    expect((await context.getSnapshot(snapshot.id)).notebookTitle).toBe('发布工作台')
   })
 })

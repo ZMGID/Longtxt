@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useMemo } from 'react'
 import CodeMirror from '@uiw/react-codemirror'
 import { markdown, markdownLanguage } from '@codemirror/lang-markdown'
 import { languages } from '@codemirror/language-data'
@@ -74,13 +74,13 @@ const cursorLineField = StateField.define<number>({
 
 const livePreviewTheme = CMEditorView.theme({
   '&': {
-    fontSize: '14px',
-    backgroundColor: '#faf8f5',
+    fontSize: '13px',
+    backgroundColor: 'transparent',
   },
   '.cm-content': {
     padding: '0',
     caretColor: '#292524',
-    lineHeight: '1.75',
+    lineHeight: '1.55',
     color: '#1c1917',
   },
   '.cm-cursor': {
@@ -99,7 +99,7 @@ const livePreviewTheme = CMEditorView.theme({
   '.cm-scroller': {
     overflow: 'auto',
     fontFamily: 'inherit',
-    backgroundColor: '#faf8f5',
+    backgroundColor: 'transparent',
   },
   '.cm-line': {
     padding: '0',
@@ -108,7 +108,7 @@ const livePreviewTheme = CMEditorView.theme({
   '.cm-placeholder': {
     color: '#a8a29e',
     fontStyle: 'italic',
-    lineHeight: '1.75',
+    lineHeight: '1.55',
   },
   /* 行内样式 */
   '.cm-strong': {
@@ -118,9 +118,9 @@ const livePreviewTheme = CMEditorView.theme({
     fontStyle: 'italic',
   },
   '.cm-inline-code': {
-    backgroundColor: '#faf8f5',
+    backgroundColor: 'rgba(0, 0, 0, 0.04)',
     borderRadius: '3px',
-    fontSize: '0.875em',
+    fontSize: '0.82em',
     padding: '1px 4px',
     fontFamily: "ui-monospace, 'SF Mono', 'Cascadia Code', monospace",
   },
@@ -131,21 +131,21 @@ const livePreviewTheme = CMEditorView.theme({
   /* 标题：字号递减，仅标题用衬线字体 */
   '.cm-heading-1': {
     fontFamily: "'Newsreader', 'Noto Serif SC', Georgia, serif",
-    fontSize: '1.75em',
+    fontSize: '1.5em',
     fontWeight: '700',
     lineHeight: '1.3',
     letterSpacing: '-0.01em',
   },
   '.cm-heading-2': {
     fontFamily: "'Newsreader', 'Noto Serif SC', Georgia, serif",
-    fontSize: '1.45em',
+    fontSize: '1.3em',
     fontWeight: '700',
     lineHeight: '1.35',
     letterSpacing: '-0.01em',
   },
   '.cm-heading-3': {
     fontFamily: "'Newsreader', 'Noto Serif SC', Georgia, serif",
-    fontSize: '1.2em',
+    fontSize: '1.1em',
     fontWeight: '600',
     lineHeight: '1.4',
   },
@@ -170,14 +170,14 @@ const livePreviewTheme = CMEditorView.theme({
     backgroundColor: '#f5f5f4',
     borderRadius: '6px',
     fontFamily: "ui-monospace, 'SF Mono', 'Cascadia Code', monospace",
-    fontSize: '0.875em',
+    fontSize: '0.82em',
     padding: '0 12px',
     lineHeight: '1.6',
   },
   /* 引用 */
   '.cm-blockquote': {
     borderLeft: '3px solid #d6d3d1',
-    backgroundColor: '#faf8f5',
+    backgroundColor: 'rgba(0, 0, 0, 0.04)',
     paddingLeft: '12px',
     fontStyle: 'italic',
     color: '#57534e',
@@ -482,7 +482,6 @@ export function MarkdownLivePreview({
   placeholder,
   className,
 }: MarkdownLivePreviewProps) {
-  const [isSavingImage, setIsSavingImage] = useState(false)
   const viewRef = { current: null as EditorView | null }
 
   const extensions = useMemo(() => {
@@ -495,16 +494,11 @@ export function MarkdownLivePreview({
       imagePasteExtension((md) => {
         const view = viewRef.current
         if (!view) return
-        setIsSavingImage(true)
-        try {
-          const cursor = view.state.selection.main.head
-          view.dispatch({
-            changes: { from: cursor, insert: md },
-            selection: { anchor: cursor + md.length },
-          })
-        } finally {
-          setIsSavingImage(false)
-        }
+        const cursor = view.state.selection.main.head
+        view.dispatch({
+          changes: { from: cursor, insert: md },
+          selection: { anchor: cursor + md.length },
+        })
       }),
     ]
 
@@ -530,9 +524,6 @@ export function MarkdownLivePreview({
           onKeyDown?.(event.nativeEvent)
         }}
       />
-      {isSavingImage ? (
-        <p className="mt-1 text-xs text-stone-500">图片保存中，马上会插入 Markdown 链接…</p>
-      ) : null}
     </div>
   )
 }

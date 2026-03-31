@@ -88,3 +88,8 @@ export function searchVectorMatches(
     )
     .all(toVectorLiteral(vector), limit) as Array<{ id: string; distance: number }>
 }
+
+export function countBlockVectors(db: Database.Database): number {
+  const row = db.prepare(`SELECT COUNT(*) AS total FROM blocks_vec`).get() as { total: number }
+  return row.total
+}

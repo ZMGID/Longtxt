@@ -2,12 +2,14 @@
 
 :root {
   color: #1c1c1c;
-  background: #f9f9f8;
+  background: #f0ebe3;
   font-family:
     -apple-system,
     BlinkMacSystemFont,
     'Segoe UI',
     sans-serif;
+  font-size: 14px;
+  line-height: 1.5;
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
@@ -40,15 +42,114 @@ textarea {
 }
 
 ::-webkit-scrollbar {
-  width: 6px;
-  height: 6px;
+  width: 8px;
+  height: 8px;
 }
 
 ::-webkit-scrollbar-thumb {
-  border-radius: 999px;
-  background: rgba(115, 115, 115, 0.3);
+  border-radius: 4px;
+  background: rgba(0, 0, 0, 0.15);
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(0, 0, 0, 0.25);
 }
 
 ::-webkit-scrollbar-track {
   background: transparent;
+}
+
+/* 文本输入区域恢复选中和光标 */
+input,
+textarea,
+[contenteditable="true"],
+.cm-content,
+.markdown-content {
+  -webkit-user-select: text;
+  cursor: text;
+}
+
+.window-drag-region {
+  -webkit-app-region: drag;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+.window-no-drag {
+  -webkit-app-region: no-drag;
+}
+
+/* ------------------------------------------------------------------ */
+/*  Toast 滑入滑出                                                      */
+/* ------------------------------------------------------------------ */
+
+@keyframes slideInRight {
+  from {
+    opacity: 0;
+    transform: translateX(40px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+@keyframes slideOutRight {
+  from {
+    opacity: 1;
+    transform: translateX(0);
+  }
+  to {
+    opacity: 0;
+    transform: translateX(40px);
+  }
+}
+
+/* ------------------------------------------------------------------ */
+/*  视图切换淡入                                                        */
+/* ------------------------------------------------------------------ */
+
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* ------------------------------------------------------------------ */
+/*  Loading spinner                                                     */
+/* ------------------------------------------------------------------ */
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.spinner {
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  border: 2px solid rgba(255, 255, 255, 0.3);
+  border-top-color: #fff;
+  border-radius: 50%;
+  animation: spin 0.6s linear infinite;
+  vertical-align: middle;
+  margin-right: 4px;
+}
+
+.spinner-dark {
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  border: 2px solid rgba(0, 0, 0, 0.1);
+  border-top-color: #44403c;
+  border-radius: 50%;
+  animation: spin 0.6s linear infinite;
+  vertical-align: middle;
+  margin-right: 4px;
 }

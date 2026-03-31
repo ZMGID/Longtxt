@@ -1,15 +1,17 @@
 import { DEFAULT_DOC_GENERATION_SETTINGS, MAX_DOC_GENERATION_REFERENCE_BLOCKS, MIN_DOC_GENERATION_REFERENCE_BLOCKS } from '../../shared/config'
-import type { AIConfig, ApiTestResult, AppMeta, DocGenerationSettings } from '../../shared/types'
+import type { AIConfig, ApiTestResult, AppMeta, DocGenerationSettings, UISettings } from '../../shared/types'
 
 interface SettingsPanelProps {
   config: AIConfig
   docGenerationSettings: DocGenerationSettings
+  uiSettings: UISettings
   meta: AppMeta | null
   saving: boolean
   testing: boolean
   testResult: ApiTestResult | null
   onChange: (nextConfig: AIConfig) => void
   onDocGenerationSettingsChange: (nextSettings: DocGenerationSettings) => void
+  onUISettingsChange: (nextSettings: UISettings) => void
   onSave: () => Promise<void>
   onTest: () => Promise<void>
   onOpenDataDirectory: () => Promise<void>
@@ -62,15 +64,44 @@ function ConfigSection({
   )
 }
 
+function SettingCheckbox({
+  label,
+  description,
+  checked,
+  onChange,
+}: {
+  label: string
+  description: string
+  checked: boolean
+  onChange: (checked: boolean) => void
+}) {
+  return (
+    <label className="flex items-start gap-3 rounded-lg border border-stone-200 bg-stone-50/80 px-3 py-3">
+      <input
+        type="checkbox"
+        checked={checked}
+        onChange={(event) => onChange(event.target.checked)}
+        className="mt-0.5 h-4 w-4 rounded border-stone-300 text-stone-900 focus:ring-2 focus:ring-stone-200"
+      />
+      <span className="min-w-0">
+        <span className="block text-sm font-medium text-stone-900">{label}</span>
+        <span className="mt-0.5 block text-xs leading-5 text-stone-500">{description}</span>
+      </span>
+    </label>
+  )
+}
+
 export function SettingsPanel({
   config,
   docGenerationSettings,
+  uiSettings,
   meta,
   saving,
   testing,
   testResult,
   onChange,
   onDocGenerationSettingsChange,
+  onUISettingsChange,
   onSave,
   onTest,
   onOpenDataDirectory,
@@ -145,6 +176,20 @@ export function SettingsPanel({
               默认 10，保存时会自动限制在 {MIN_DOC_GENERATION_REFERENCE_BLOCKS} 到 {MAX_DOC_GENERATION_REFERENCE_BLOCKS} 之间。
             </p>
           </label>
+        </ConfigSection>
+
+        <ConfigSection title="界面" description="控制时间轴页的辅助信息显示方式。">
+          <SettingCheckbox
+            label="显示左侧时间线"
+            description="在时间轴页左侧显示一条极简日期时间线，并随滚动高亮当前所在日期。"
+            checked={uiSettings.showMiniTimeline}
+            onChange={(checked) => {
+              onUISettingsChange({
+                ...uiSettings,
+                showMiniTimeline: checked,
+              })
+            }}
+          />
         </ConfigSection>
 
         <div className="flex flex-wrap gap-2">

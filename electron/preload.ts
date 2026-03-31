@@ -43,10 +43,28 @@ const api: ChangbuApi = {
     list: (query) => ipcRenderer.invoke(IPC_CHANNELS.tags.list, query),
   },
   snapshots: {
-    save: (topic, content, blockIds) => ipcRenderer.invoke(IPC_CHANNELS.snapshots.save, topic, content, blockIds),
-    list: (query) => ipcRenderer.invoke(IPC_CHANNELS.snapshots.list, query),
+    save: (topic, content, blockIds, notebookId) => ipcRenderer.invoke(IPC_CHANNELS.snapshots.save, topic, content, blockIds, notebookId),
+    list: (query, notebookId) => ipcRenderer.invoke(IPC_CHANNELS.snapshots.list, query, notebookId),
     get: (id) => ipcRenderer.invoke(IPC_CHANNELS.snapshots.get, id),
     remove: (id) => ipcRenderer.invoke(IPC_CHANNELS.snapshots.remove, id),
+  },
+  notebooks: {
+    list: () => ipcRenderer.invoke(IPC_CHANNELS.notebooks.list),
+    get: (id) => ipcRenderer.invoke(IPC_CHANNELS.notebooks.get, id),
+    create: (title) => ipcRenderer.invoke(IPC_CHANNELS.notebooks.create, title),
+    update: (id, title) => ipcRenderer.invoke(IPC_CHANNELS.notebooks.update, id, title),
+    remove: (id) => ipcRenderer.invoke(IPC_CHANNELS.notebooks.remove, id),
+    addBlock: (notebookId, blockId) => ipcRenderer.invoke(IPC_CHANNELS.notebooks.addBlock, notebookId, blockId),
+    removeItem: (notebookId, itemId) => ipcRenderer.invoke(IPC_CHANNELS.notebooks.removeItem, notebookId, itemId),
+    reorderItems: (notebookId, itemIds) => ipcRenderer.invoke(IPC_CHANNELS.notebooks.reorderItems, notebookId, itemIds),
+    createBlock: (notebookId, content) => ipcRenderer.invoke(IPC_CHANNELS.notebooks.createBlock, notebookId, content),
+    createStructureItem: (notebookId, input) => ipcRenderer.invoke(IPC_CHANNELS.notebooks.createStructureItem, notebookId, input),
+    updateStructureItem: (notebookId, itemId, patch) =>
+      ipcRenderer.invoke(IPC_CHANNELS.notebooks.updateStructureItem, notebookId, itemId, patch),
+    getReferencePreview: (notebookId, topic) => ipcRenderer.invoke(IPC_CHANNELS.notebooks.getReferencePreview, notebookId, topic),
+    updateReferenceReview: (notebookId, blockId, patch, topic) =>
+      ipcRenderer.invoke(IPC_CHANNELS.notebooks.updateReferenceReview, notebookId, blockId, patch, topic),
+    generateDocument: (notebookId, topic) => ipcRenderer.invoke(IPC_CHANNELS.notebooks.generateDocument, notebookId, topic),
   },
   exports: {
     markdown: (options) => ipcRenderer.invoke(IPC_CHANNELS.exports.markdown, options),

@@ -2,7 +2,7 @@ import Database from 'better-sqlite3'
 
 import type { SearchResult } from '../../shared/types'
 import { getBlocksByIds } from './blocks'
-import { searchVectorMatches } from './vectors'
+import { countBlockVectors, searchVectorMatches } from './vectors'
 
 const TAG_KIND_WEIGHT: Record<string, number> = {
   category: 0.35,
@@ -14,13 +14,32 @@ interface SearchBlocksOptions {
   limit?: number
   queryEmbedding?: number[] | null
   vectorEnabled?: boolean
+  allowedBlockIds?: string[]
 }
 
 function reciprocalRank(rank: number): number {
   return 1 / (60 + rank)
 }
 
-function searchByTag(db: Database.Database, query: string, limit: number): Array<{ id: string; kind: string }> {
+function buildAllowedIdsClause(ids: string[] | undefined, columnName: string): { sql: string; params: string[] } {
+  if (!ids || ids.length === 0) {
+    return { sql: '', params: [] }
+  }
+
+  return {
+    sql: ` AND ${columnName} IN (${ids.map(() => '?').join(', ')})`,
+    params: ids,
+  }
+}
+
+function searchByTag(
+  db: Database.Database,
+  query: string,
+  limit: number,
+  allowedBlockIds?: string[],
+): Array<{ id: string; kind: string }> {
+  const allowed = buildAllowedIdsClause(allowedBlockIds, 'b.id')
+
   return db
     .prepare(
       `
@@ -29,6 +48,7 @@ function searchByTag(db: Database.Database, query: string, limit: number): Array
         INNER JOIN block_tags bt ON bt.block_id = b.id
         INNER JOIN tags t ON t.id = bt.tag_id
         WHERE t.name LIKE ?
+        ${allowed.sql}
         ORDER BY
           CASE t.kind
             WHEN 'detail' THEN 0
@@ -39,7 +59,7 @@ function searchByTag(db: Database.Database, query: string, limit: number): Array
         LIMIT ?
       `,
     )
-    .all(`%${query}%`, limit) as Array<{ id: string; kind: string }>
+    .all(`%${query}%`, ...allowed.params, limit) as Array<{ id: string; kind: string }>
 }
 
 function browseByExactTag(db: Database.Database, tagName: string, limit: number): string[] {
@@ -60,7 +80,9 @@ function browseByExactTag(db: Database.Database, tagName: string, limit: number)
   return rows.map((row) => row.id)
 }
 
-function searchByFts(db: Database.Database, query: string, limit: number): string[] {
+function searchByFts(db: Database.Database, query: string, limit: number, allowedBlockIds?: string[]): string[] {
+  const allowed = buildAllowedIdsClause(allowedBlockIds, 'b.id')
+
   try {
     const rows = db
       .prepare(
@@ -69,25 +91,28 @@ function searchByFts(db: Database.Database, query: string, limit: number): strin
           FROM blocks_fts fts
           INNER JOIN blocks b ON b.rowid = fts.rowid
           WHERE blocks_fts MATCH ?
+          ${allowed.sql}
           ORDER BY rank
           LIMIT ?
         `,
       )
-      .all(query, limit) as Array<{ id: string }>
+      .all(query, ...allowed.params, limit) as Array<{ id: string }>
 
     return rows.map((row) => row.id)
   } catch {
+    const fallbackAllowed = buildAllowedIdsClause(allowedBlockIds, 'id')
     const fallbackRows = db
       .prepare(
         `
           SELECT id
           FROM blocks
           WHERE content LIKE ?
+          ${fallbackAllowed.sql}
           ORDER BY updated_at DESC
           LIMIT ?
         `,
       )
-      .all(`%${query}%`, limit) as Array<{ id: string }>
+      .all(`%${query}%`, ...fallbackAllowed.params, limit) as Array<{ id: string }>
 
     return fallbackRows.map((row) => row.id)
   }
@@ -96,15 +121,36 @@ function searchByFts(db: Database.Database, query: string, limit: number): strin
 export function searchBlocks(db: Database.Database, query: string, options: SearchBlocksOptions = {}): SearchResult[] {
   const normalizedQuery = query.trim()
   const limit = options.limit ?? 20
+  const allowedBlockIds = options.allowedBlockIds?.filter(Boolean)
 
   if (!normalizedQuery) {
     return []
   }
 
-  const tagMatches = searchByTag(db, normalizedQuery, limit)
-  const ftsMatches = searchByFts(db, normalizedQuery, limit)
-  const vectorMatches =
-    options.vectorEnabled && options.queryEmbedding ? searchVectorMatches(db, options.queryEmbedding, limit) : []
+  if (allowedBlockIds && allowedBlockIds.length === 0) {
+    return []
+  }
+
+  const tagMatches = searchByTag(db, normalizedQuery, limit, allowedBlockIds)
+  const ftsMatches = searchByFts(db, normalizedQuery, limit, allowedBlockIds)
+  const vectorMatches = (() => {
+    if (!options.vectorEnabled || !options.queryEmbedding) {
+      return []
+    }
+
+    const rawMatches = searchVectorMatches(
+      db,
+      options.queryEmbedding,
+      allowedBlockIds ? Math.max(countBlockVectors(db), limit) : limit,
+    )
+
+    if (!allowedBlockIds) {
+      return rawMatches
+    }
+
+    const allowedSet = new Set(allowedBlockIds)
+    return rawMatches.filter((match) => allowedSet.has(match.id)).slice(0, limit)
+  })()
 
   const ranking = new Map<string, { score: number; matchSource: Set<'tag' | 'fts' | 'vector'> }>()
 

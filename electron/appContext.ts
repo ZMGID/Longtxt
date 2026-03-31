@@ -20,6 +20,14 @@ import type {
   GraphNode,
   ImportConflictStrategy,
   ImportPreview,
+  Notebook,
+  NotebookItem,
+  NotebookMutationResult,
+  NotebookReferencePreview,
+  NotebookReferenceReviewState,
+  NotebookStructureItemInput,
+  NotebookStructureItemPatch,
+  NotebookSummary,
   PaginationInput,
   SearchResult,
   Snapshot,
@@ -42,6 +50,24 @@ import {
 } from './db/blocks'
 import { initializeDatabase } from './db'
 import { getGraphData as loadGraphData } from './db/graph'
+import {
+  addBlockToNotebook,
+  appendBlockToNotebook,
+  createNotebookRecord,
+  createNotebookStructureItem,
+  deleteNotebookRecord,
+  ensureNotebookExists,
+  getNotebookById,
+  listNotebookBlockEntries,
+  listNotebooks,
+  listNotebookReferenceReviews,
+  removeItemFromNotebook,
+  reorderNotebookItems,
+  touchNotebooksForBlock,
+  updateNotebookReferenceReview,
+  updateNotebookStructureItem,
+  updateNotebookTitle,
+} from './db/notebooks'
 import { searchBlocks as searchBlocksInDatabase, searchBlocksByTag } from './db/search'
 import { getAIConfig, getSetting, setSetting } from './db/settings'
 import { createSnapshot, getSnapshot, listSnapshots, removeSnapshot } from './db/snapshots'
@@ -60,7 +86,11 @@ import {
   type LLMProvider,
   type TokenUsageSink,
 } from './services/ai'
-import { selectDocumentReferenceBlocks, streamDocumentGeneration } from './services/docgen'
+import {
+  selectDocumentReferenceBlocks,
+  selectDocumentReferenceResults,
+  streamDocumentGeneration,
+} from './services/docgen'
 import { createTaggerEngine } from './services/tagger'
 import { cleanupOrphanAttachments, rebuildAttachmentIndex, saveImageDataUrl, syncBlockAttachmentRecords } from './services/attachments'
 import { confirmImportJob, exportJsonBundle, exportMarkdownBundle, previewJsonImport, previewMarkdownImport } from './services/importExport'
@@ -99,10 +129,29 @@ export interface AppContext {
   searchBlocks(query: string, limit?: number): Promise<SearchResult[]>
   searchByTag(tagName: string, limit?: number): Promise<SearchResult[]>
   generateDocument(topic: string): Promise<DocGenerationStart>
-  saveSnapshot(topic: string, content: string, blockIds: string[]): Promise<Snapshot>
-  listSnapshots(query?: string): Promise<Snapshot[]>
+  saveSnapshot(topic: string, content: string, blockIds: string[], notebookId?: string | null): Promise<Snapshot>
+  listSnapshots(query?: string, notebookId?: string | null): Promise<Snapshot[]>
   getSnapshot(id: string): Promise<Snapshot>
   removeSnapshot(id: string): Promise<void>
+  listNotebooks(): Promise<NotebookSummary[]>
+  getNotebook(id: string): Promise<Notebook>
+  createNotebook(title?: string): Promise<Notebook>
+  updateNotebook(id: string, title: string): Promise<Notebook>
+  removeNotebook(id: string): Promise<void>
+  addBlockToNotebook(notebookId: string, blockId: string): Promise<NotebookMutationResult>
+  removeNotebookItem(notebookId: string, itemId: string): Promise<Notebook>
+  reorderNotebookItems(notebookId: string, itemIds: string[]): Promise<Notebook>
+  createNotebookBlock(notebookId: string, content: string): Promise<Notebook>
+  createNotebookStructureItem(notebookId: string, input: NotebookStructureItemInput): Promise<Notebook>
+  updateNotebookStructureItem(notebookId: string, itemId: string, patch: NotebookStructureItemPatch): Promise<Notebook>
+  getNotebookReferencePreview(notebookId: string, topic?: string): Promise<NotebookReferencePreview>
+  updateNotebookReferenceReview(
+    notebookId: string,
+    blockId: string,
+    patch: Partial<Pick<NotebookReferenceReviewState, 'excluded' | 'locked' | 'pinned'>>,
+    topic?: string,
+  ): Promise<NotebookReferencePreview>
+  generateNotebookDocument(notebookId: string, topic?: string): Promise<DocGenerationStart>
   exportMarkdown(options: ExportOptions): Promise<{ path: string; count: number } | null>
   exportJson(options: ExportOptions): Promise<{ path: string; count: number } | null>
   previewImportMarkdown(filePaths?: string[]): Promise<ImportPreview | null>
@@ -125,6 +174,37 @@ function validateContent(content: string): string {
   }
 
   return trimmed
+}
+
+function normalizeNotebookTitle(title: string | undefined): string {
+  const trimmed = title?.trim()
+  return trimmed && trimmed.length > 0 ? trimmed : '未命名笔记本'
+}
+
+function normalizeNotebookTopic(notebook: Notebook, topic?: string): string {
+  const trimmed = topic?.trim()
+  return trimmed && trimmed.length > 0 ? trimmed : notebook.title
+}
+
+function buildNotebookWritingGuide(items: NotebookItem[]): string | null {
+  const guideLines = items.flatMap((item) => {
+    switch (item.type) {
+      case 'heading':
+        return item.content.trim() ? [`- 章节标题：${item.content.trim()}`] : []
+      case 'divider':
+        return ['- 分隔线：这里需要一个简洁的段落切换或章节过渡。']
+      case 'note':
+        return item.content.trim() ? [`- 注释：${item.content.trim()}`] : []
+      case 'todo':
+        return item.content.trim()
+          ? [`- 待办${item.checked ? '（已完成，可酌情吸收）' : '（优先处理）'}：${item.content.trim()}`]
+          : []
+      default:
+        return []
+    }
+  })
+
+  return guideLines.length > 0 ? guideLines.join('\n') : null
 }
 
 function isAIConfigured(config: AIConfig): boolean {
@@ -274,6 +354,101 @@ export function createAppContext(options: AppContextOptions): AppContext {
 
   function rememberRuntimeAiError(error: unknown): void {
     lastAiError = error instanceof Error ? error.message : 'AI 运行失败。'
+  }
+
+  async function getQueryEmbedding(query: string, mode: AIExecutionMode, embeddingProvider: EmbeddingProvider): Promise<number[] | null> {
+    if (!vectorReady || !vectorSchemaReady) {
+      return null
+    }
+
+    try {
+      return (await embeddingProvider.embed([query]))[0] ?? null
+    } catch (error) {
+      if (mode === 'live') {
+        rememberRuntimeAiError(error)
+        throw error
+      }
+
+      return null
+    }
+  }
+
+  async function buildNotebookReferencePreview(
+    notebook: Notebook,
+    topic: string,
+    providerState?: {
+      mode: AIExecutionMode
+      embeddingProvider: EmbeddingProvider
+    },
+  ): Promise<NotebookReferencePreview> {
+    const { maxReferenceBlocks } = getDocGenerationSettings()
+    const blockEntries = listNotebookBlockEntries(db, notebook.id)
+
+    if (blockEntries.length === 0) {
+      return {
+        notebookId: notebook.id,
+        topic,
+        maxReferenceBlocks,
+        candidateCount: 0,
+        selectedCount: 0,
+        candidates: [],
+      }
+    }
+
+    const providers = providerState ?? getProviders()
+    const queryEmbedding = await getQueryEmbedding(topic, providers.mode, providers.embeddingProvider)
+    const results = searchBlocksInDatabase(db, topic, {
+      limit: Math.max(blockEntries.length, maxReferenceBlocks * 2, 20),
+      queryEmbedding,
+      vectorEnabled: vectorReady && vectorSchemaReady && Boolean(queryEmbedding),
+      allowedBlockIds: blockEntries.map((entry) => entry.blockId),
+    })
+    const resultMap = new Map(results.map((result) => [result.block.id, result]))
+    const reviewMap = new Map(listNotebookReferenceReviews(db, notebook.id).map((item) => [item.blockId, item]))
+
+    const orderedInputs = blockEntries.map((entry) => {
+      const result = resultMap.get(entry.blockId) ?? {
+        block: entry.block,
+        score: 0,
+        matchSource: [],
+      }
+
+      return {
+        notebookItemId: entry.itemId,
+        result,
+        review: reviewMap.get(entry.blockId) ?? {
+          blockId: entry.blockId,
+          excluded: false,
+          locked: false,
+          pinned: false,
+          updatedAt: null,
+        },
+      }
+    })
+
+    const selectedResults = selectDocumentReferenceResults(
+      orderedInputs.map((entry) => ({
+        result: entry.result,
+        flags: entry.review,
+      })),
+      maxReferenceBlocks,
+    )
+    const selectedMap = new Map(selectedResults.map((item) => [item.result.block.id, item.reason]))
+
+    return {
+      notebookId: notebook.id,
+      topic,
+      maxReferenceBlocks,
+      candidateCount: orderedInputs.length,
+      selectedCount: selectedResults.length,
+      candidates: orderedInputs.map((entry) => ({
+        ...entry.result,
+        notebookItemId: entry.notebookItemId,
+        selected: selectedMap.has(entry.result.block.id),
+        selectionReason: selectedMap.get(entry.result.block.id) ?? 'not-selected',
+        review: entry.review,
+      })),
+    }
   }
 
   async function reindexVectors(embeddingProvider: EmbeddingProvider, mode: AIExecutionMode): Promise<void> {
@@ -443,32 +618,36 @@ export function createAppContext(options: AppContextOptions): AppContext {
     }
   }
 
+  async function createStandaloneBlock(content: string): Promise<Block> {
+    const safeContent = validateContent(content)
+    const now = new Date().toISOString()
+    const aiMode = getExecutionMode()
+    const block = createBlockRecord(db, {
+      id: uuid(),
+      content: safeContent,
+      status: 'pending',
+      aiMode,
+      createdAt: now,
+      updatedAt: now,
+    })
+
+    syncBlockAttachmentRecords(db, options.dataDirectory, block.id, safeContent)
+
+    emitBlockChanged({
+      block,
+      reason: 'created',
+    })
+
+    void trackTask(enrichBlock(block.id, safeContent))
+
+    return block
+  }
+
   ensureVectorSchemaForCurrentState()
 
   return {
     async createBlock(content) {
-      const safeContent = validateContent(content)
-      const now = new Date().toISOString()
-      const aiMode = getExecutionMode()
-      const block = createBlockRecord(db, {
-        id: uuid(),
-        content: safeContent,
-        status: 'pending',
-        aiMode,
-        createdAt: now,
-        updatedAt: now,
-      })
-
-      syncBlockAttachmentRecords(db, options.dataDirectory, block.id, safeContent)
-
-      emitBlockChanged({
-        block,
-        reason: 'created',
-      })
-
-      void trackTask(enrichBlock(block.id, safeContent))
-
-      return block
+      return createStandaloneBlock(content)
     },
 
     async getBlock(id) {
@@ -485,15 +664,17 @@ export function createAppContext(options: AppContextOptions): AppContext {
     async updateBlock(id, content) {
       const safeContent = validateContent(content)
       const aiMode = getExecutionMode()
+      const updatedAt = new Date().toISOString()
       const block = updateBlockContent(db, {
         id,
         content: safeContent,
         status: 'pending',
         aiMode,
-        updatedAt: new Date().toISOString(),
+        updatedAt,
       })
 
       syncBlockAttachmentRecords(db, options.dataDirectory, id, safeContent)
+      touchNotebooksForBlock(db, id, updatedAt)
 
       clearAutoBlockTags(db, id)
 
@@ -513,6 +694,7 @@ export function createAppContext(options: AppContextOptions): AppContext {
     },
 
     async removeBlock(id) {
+      touchNotebooksForBlock(db, id, new Date().toISOString())
       const deletedBlock = deleteBlockRecord(db, id)
 
       if (vectorReady) {
@@ -530,6 +712,7 @@ export function createAppContext(options: AppContextOptions): AppContext {
     async addTag(blockId, tagName) {
       const tag = getOrCreateTag(db, tagName, 'user')
       const block = addManualTagToBlock(db, blockId, tag)
+      touchNotebooksForBlock(db, blockId, new Date().toISOString())
 
       emitBlockChanged({
         block,
@@ -541,6 +724,7 @@ export function createAppContext(options: AppContextOptions): AppContext {
 
     async removeTag(blockId, tagId) {
       const block = removeTagFromBlock(db, blockId, tagId)
+      touchNotebooksForBlock(db, blockId, new Date().toISOString())
 
       emitBlockChanged({
         block,
@@ -565,20 +749,7 @@ export function createAppContext(options: AppContextOptions): AppContext {
     async searchBlocks(query, limit = 20) {
       const normalizedQuery = validateContent(query)
       const { mode, embeddingProvider } = getProviders()
-      let queryEmbedding: number[] | null = null
-
-      if (vectorReady && vectorSchemaReady) {
-        try {
-          queryEmbedding = (await embeddingProvider.embed([normalizedQuery]))[0] ?? null
-        } catch (error) {
-          if (mode === 'live') {
-            rememberRuntimeAiError(error)
-            throw error
-          }
-
-          queryEmbedding = null
-        }
-      }
+      const queryEmbedding = await getQueryEmbedding(normalizedQuery, mode, embeddingProvider)
 
       return searchBlocksInDatabase(db, normalizedQuery, {
         limit,
@@ -596,18 +767,7 @@ export function createAppContext(options: AppContextOptions): AppContext {
       const requestId = uuid()
       const { mode, embeddingProvider, llmProvider } = getProviders()
       const { maxReferenceBlocks } = getDocGenerationSettings()
-      let queryEmbedding: number[] | null = null
-
-      if (vectorReady && vectorSchemaReady) {
-        try {
-          queryEmbedding = (await embeddingProvider.embed([safeTopic]))[0] ?? null
-        } catch (error) {
-          if (mode === 'live') {
-            rememberRuntimeAiError(error)
-            throw error
-          }
-        }
-      }
+      const queryEmbedding = await getQueryEmbedding(safeTopic, mode, embeddingProvider)
 
       const results = searchBlocksInDatabase(db, safeTopic, {
         limit: 30,
@@ -651,12 +811,12 @@ export function createAppContext(options: AppContextOptions): AppContext {
       }
     },
 
-    async saveSnapshot(topic, content, blockIds) {
-      return createSnapshot(db, validateContent(topic), content, blockIds)
+    async saveSnapshot(topic, content, blockIds, notebookId) {
+      return createSnapshot(db, validateContent(topic), content, blockIds, notebookId)
     },
 
-    async listSnapshots(query = '') {
-      return listSnapshots(db, query)
+    async listSnapshots(query = '', notebookId) {
+      return listSnapshots(db, query, notebookId)
     },
 
     async getSnapshot(id) {
@@ -665,6 +825,155 @@ export function createAppContext(options: AppContextOptions): AppContext {
 
     async removeSnapshot(id) {
       removeSnapshot(db, id)
+    },
+
+    async listNotebooks() {
+      return listNotebooks(db)
+    },
+
+    async getNotebook(id) {
+      return getNotebookById(db, id)
+    },
+
+    async createNotebook(title) {
+      const now = new Date().toISOString()
+      return createNotebookRecord(db, {
+        id: uuid(),
+        title: normalizeNotebookTitle(title),
+        createdAt: now,
+        updatedAt: now,
+      })
+    },
+
+    async updateNotebook(id, title) {
+      return updateNotebookTitle(db, id, normalizeNotebookTitle(title), new Date().toISOString())
+    },
+
+    async removeNotebook(id) {
+      deleteNotebookRecord(db, id)
+    },
+
+    async addBlockToNotebook(notebookId, blockId) {
+      return addBlockToNotebook(db, notebookId, blockId, new Date().toISOString())
+    },
+
+    async removeNotebookItem(notebookId, itemId) {
+      return removeItemFromNotebook(db, notebookId, itemId, new Date().toISOString())
+    },
+
+    async reorderNotebookItems(notebookId, itemIds) {
+      return reorderNotebookItems(db, notebookId, itemIds, new Date().toISOString())
+    },
+
+    async createNotebookBlock(notebookId, content) {
+      const safeContent = validateContent(content)
+      const now = new Date().toISOString()
+      const aiMode = getExecutionMode()
+      const transaction = db.transaction(() => {
+        ensureNotebookExists(db, notebookId)
+
+        const block = createBlockRecord(db, {
+          id: uuid(),
+          content: safeContent,
+          status: 'pending',
+          aiMode,
+          createdAt: now,
+          updatedAt: now,
+        })
+
+        appendBlockToNotebook(db, notebookId, block.id, now)
+        return block
+      })
+
+      const block = transaction()
+      syncBlockAttachmentRecords(db, options.dataDirectory, block.id, safeContent)
+
+      emitBlockChanged({
+        block,
+        reason: 'created',
+      })
+
+      void trackTask(enrichBlock(block.id, safeContent))
+
+      return getNotebookById(db, notebookId)
+    },
+
+    async createNotebookStructureItem(notebookId, input) {
+      return createNotebookStructureItem(db, notebookId, input, new Date().toISOString())
+    },
+
+    async updateNotebookStructureItem(notebookId, itemId, patch) {
+      return updateNotebookStructureItem(db, notebookId, itemId, patch, new Date().toISOString())
+    },
+
+    async getNotebookReferencePreview(notebookId, topic) {
+      const notebook = getNotebookById(db, notebookId)
+      const safeTopic = validateContent(normalizeNotebookTopic(notebook, topic))
+      return buildNotebookReferencePreview(notebook, safeTopic)
+    },
+
+    async updateNotebookReferenceReview(notebookId, blockId, patch, topic) {
+      updateNotebookReferenceReview(db, notebookId, blockId, patch, new Date().toISOString())
+      const notebook = getNotebookById(db, notebookId)
+      const safeTopic = validateContent(normalizeNotebookTopic(notebook, topic))
+      return buildNotebookReferencePreview(notebook, safeTopic)
+    },
+
+    async generateNotebookDocument(notebookId, topic) {
+      const notebook = getNotebookById(db, notebookId)
+      const safeTopic = validateContent(normalizeNotebookTopic(notebook, topic))
+      const requestId = uuid()
+      const { mode, embeddingProvider, llmProvider } = getProviders()
+      const preview = await buildNotebookReferencePreview(notebook, safeTopic, {
+        mode,
+        embeddingProvider,
+      })
+      const selectedBlocks = preview.candidates
+        .filter((candidate) => candidate.selected)
+        .map((candidate) => candidate.block)
+      const writingGuide = buildNotebookWritingGuide(notebook.items)
+
+      void trackTask(
+        (async () => {
+          try {
+            for await (const chunk of streamDocumentGeneration(
+              requestId,
+              safeTopic,
+              selectedBlocks,
+              llmProvider,
+              mode,
+              { writingGuide },
+            )) {
+              if (mode === 'live' && chunk.delta) {
+                clearRuntimeAiError()
+              }
+
+              emitDocGenerationChunk(chunk)
+            }
+          } catch (error) {
+            if (mode === 'live') {
+              rememberRuntimeAiError(error)
+            }
+
+            emitDocGenerationChunk({
+              requestId,
+              topic: safeTopic,
+              delta: '',
+              done: true,
+              mode,
+              error: error instanceof Error ? error.message : '文档生成失败。',
+            })
+          }
+        })(),
+      )
+
+      return {
+        requestId,
+        topic: safeTopic,
+        mode,
+        blockIds: selectedBlocks.map((block) => block.id),
+        notebookId,
+      }
     },
 
     async exportMarkdown(exportOptions) {

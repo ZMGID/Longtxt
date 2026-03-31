@@ -116,7 +116,7 @@ export function GraphView({
 
   return (
     <section className="grid gap-4 xl:grid-cols-[260px_minmax(0,1fr)_320px]">
-      <aside className="rounded-lg border border-stone-200 bg-[#faf8f5] p-4">
+      <aside className="rounded-lg border border-stone-200 bg-white/70 p-3">
         <p className="text-xs font-medium uppercase tracking-wider text-stone-400">标签筛选</p>
         <p className="mt-1 text-xs leading-5 text-stone-500">节点代表块，边代表共享标签关系。点击节点看详情，双击跳回时间轴。</p>
 
@@ -139,7 +139,7 @@ export function GraphView({
         </div>
       </aside>
 
-      <section className="rounded-lg border border-stone-200 bg-[#faf8f5] p-4">
+      <section className="rounded-lg border border-stone-200 bg-white/70 p-3">
         <div className="mb-3 flex items-center justify-between">
           <p className="text-xs font-medium uppercase tracking-wider text-stone-400">连接图</p>
           <div className="flex gap-2">
@@ -209,7 +209,7 @@ export function GraphView({
         </div>
       </section>
 
-      <aside className="rounded-lg border border-stone-200 bg-[#faf8f5] p-4">
+      <aside className="rounded-lg border border-stone-200 bg-white/70 p-3">
         <p className="text-xs font-medium uppercase tracking-wider text-stone-400">块详情</p>
 
         <div className="mt-3">

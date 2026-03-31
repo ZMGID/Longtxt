@@ -222,6 +222,7 @@ export function SnapshotsView({
                 }`}
               >
                 {new Date(snapshot.createdAt).toLocaleString('zh-CN')} · 引用 {snapshot.blockIds.length} 个块
+                {snapshot.notebookTitle ? ` · ${snapshot.notebookTitle}` : ''}
               </p>
             </button>
           ))}
@@ -237,6 +238,7 @@ export function SnapshotsView({
                 <h3 className="mt-0.5 text-lg font-semibold text-stone-900">{selectedSnapshot.topic}</h3>
                 <p className="mt-1 text-xs text-stone-400">
                   {new Date(selectedSnapshot.createdAt).toLocaleString('zh-CN')} · 引用 {selectedSnapshot.blockIds.length} 个块
+                  {selectedSnapshot.notebookTitle ? ` · 来自 ${selectedSnapshot.notebookTitle}` : ''}
                 </p>
               </div>
               <div className="flex flex-wrap gap-2">

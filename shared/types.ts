@@ -62,7 +62,115 @@ export interface Snapshot {
   topic: string
   content: string
   blockIds: string[]
+  notebookId?: string | null
+  notebookTitle?: string | null
   createdAt: string
+}
+
+export interface NotebookSummary {
+  id: string
+  title: string
+  createdAt: string
+  updatedAt: string
+  itemCount: number
+  blockCount: number
+  structureCount: number
+}
+
+export type NotebookItemType = 'block' | 'heading' | 'divider' | 'note' | 'todo'
+export type NotebookStructureItemType = Exclude<NotebookItemType, 'block'>
+export type NotebookReferenceSelectionReason = 'pinned' | 'locked' | 'strong' | 'weak' | 'not-selected'
+
+export interface NotebookItemBase {
+  id: string
+  type: NotebookItemType
+  sortOrder: number
+  createdAt: string
+  updatedAt: string
+}
+
+export interface NotebookBlockItem extends NotebookItemBase {
+  type: 'block'
+  blockId: string
+  block: Block
+}
+
+export interface NotebookHeadingItem extends NotebookItemBase {
+  type: 'heading'
+  content: string
+}
+
+export interface NotebookDividerItem extends NotebookItemBase {
+  type: 'divider'
+}
+
+export interface NotebookNoteItem extends NotebookItemBase {
+  type: 'note'
+  content: string
+}
+
+export interface NotebookTodoItem extends NotebookItemBase {
+  type: 'todo'
+  content: string
+  checked: boolean
+}
+
+export type NotebookItem =
+  | NotebookBlockItem
+  | NotebookHeadingItem
+  | NotebookDividerItem
+  | NotebookNoteItem
+  | NotebookTodoItem
+
+export interface Notebook {
+  id: string
+  title: string
+  createdAt: string
+  updatedAt: string
+  itemCount: number
+  blockCount: number
+  structureCount: number
+  items: NotebookItem[]
+}
+
+export interface NotebookMutationResult {
+  notebook: Notebook
+  added: boolean
+}
+
+export interface NotebookStructureItemInput {
+  type: NotebookStructureItemType
+  content?: string
+  checked?: boolean
+}
+
+export interface NotebookStructureItemPatch {
+  content?: string
+  checked?: boolean
+}
+
+export interface NotebookReferenceReviewState {
+  blockId: string
+  excluded: boolean
+  locked: boolean
+  pinned: boolean
+  updatedAt: string | null
+}
+
+export interface NotebookReferenceCandidate extends SearchResult {
+  notebookItemId: string
+  selected: boolean
+  selectionReason: NotebookReferenceSelectionReason
+  review: NotebookReferenceReviewState
+}
+
+export interface NotebookReferencePreview {
+  notebookId: string
+  topic: string
+  maxReferenceBlocks: number
+  candidateCount: number
+  selectedCount: number
+  candidates: NotebookReferenceCandidate[]
 }
 
 export interface ExportOptions {
@@ -102,6 +210,10 @@ export interface AIConfig {
 
 export interface DocGenerationSettings {
   maxReferenceBlocks: number
+}
+
+export interface UISettings {
+  showMiniTimeline: boolean
 }
 
 export interface PaginationInput {
@@ -154,6 +266,7 @@ export interface DocGenerationStart {
   topic: string
   mode: AIExecutionMode
   blockIds: string[]
+  notebookId?: string | null
 }
 
 export interface DocGenerationChunk {
@@ -186,10 +299,31 @@ export interface ChangbuApi {
     generate(topic: string): Promise<DocGenerationStart>
   }
   snapshots: {
-    save(topic: string, content: string, blockIds: string[]): Promise<Snapshot>
-    list(query?: string): Promise<Snapshot[]>
+    save(topic: string, content: string, blockIds: string[], notebookId?: string | null): Promise<Snapshot>
+    list(query?: string, notebookId?: string | null): Promise<Snapshot[]>
     get(id: string): Promise<Snapshot>
     remove(id: string): Promise<void>
+  }
+  notebooks: {
+    list(): Promise<NotebookSummary[]>
+    get(id: string): Promise<Notebook>
+    create(title?: string): Promise<Notebook>
+    update(id: string, title: string): Promise<Notebook>
+    remove(id: string): Promise<void>
+    addBlock(notebookId: string, blockId: string): Promise<NotebookMutationResult>
+    removeItem(notebookId: string, itemId: string): Promise<Notebook>
+    reorderItems(notebookId: string, itemIds: string[]): Promise<Notebook>
+    createBlock(notebookId: string, content: string): Promise<Notebook>
+    createStructureItem(notebookId: string, input: NotebookStructureItemInput): Promise<Notebook>
+    updateStructureItem(notebookId: string, itemId: string, patch: NotebookStructureItemPatch): Promise<Notebook>
+    getReferencePreview(notebookId: string, topic?: string): Promise<NotebookReferencePreview>
+    updateReferenceReview(
+      notebookId: string,
+      blockId: string,
+      patch: Partial<Pick<NotebookReferenceReviewState, 'excluded' | 'locked' | 'pinned'>>,
+      topic?: string,
+    ): Promise<NotebookReferencePreview>
+    generateDocument(notebookId: string, topic?: string): Promise<DocGenerationStart>
   }
   exports: {
     markdown(options: ExportOptions): Promise<{ path: string; count: number } | null>

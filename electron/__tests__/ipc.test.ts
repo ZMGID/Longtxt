@@ -69,6 +69,11 @@ describe('ipc handlers', () => {
     const byTag = await handlers[IPC_CHANNELS.search.byTag]({}, '重要', 20)
     expect(byTag).toHaveLength(1)
 
+    const notebook = await handlers[IPC_CHANNELS.notebooks.create]({}, '路线图')
+    const notebookAdded = await handlers[IPC_CHANNELS.notebooks.addBlock]({}, notebook.id, created.id)
+    expect(notebookAdded.added).toBe(true)
+    expect(notebookAdded.notebook.items.filter((item) => item.type === 'block')).toHaveLength(1)
+
     const started = await handlers[IPC_CHANNELS.search.generate]({}, 'PRD')
     expect(started.requestId).toBeTruthy()
 

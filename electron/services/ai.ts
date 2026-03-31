@@ -15,6 +15,10 @@ interface OpenAICompatibleModelListResponse {
 
 interface OpenAICompatibleEmbeddingResponse {
   data?: Array<{ embedding?: number[] }>
+  usage?: {
+    prompt_tokens?: number
+    total_tokens?: number
+  }
   error?: {
     message?: string
     code?: string
@@ -29,6 +33,11 @@ interface OpenAICompatibleChatCompletionChunk {
       reasoning_content?: string | null
     }
   }>
+  usage?: {
+    prompt_tokens?: number
+    completion_tokens?: number
+    total_tokens?: number
+  }
   error?: {
     message?: string
   }
@@ -40,6 +49,11 @@ interface OpenAICompatibleChatCompletionResponse {
       content?: string | Array<{ type?: string; text?: string }>
     }
   }>
+  usage?: {
+    prompt_tokens?: number
+    completion_tokens?: number
+    total_tokens?: number
+  }
   error?: {
     message?: string
     code?: string
@@ -65,6 +79,10 @@ interface LLMCompletionOptions {
   maxTokens?: number
 }
 
+export interface TokenUsageSink {
+  add(promptTokens: number, completionTokens: number): void
+}
+
 interface ResolvedAIConfig {
   llm: AIEndpointConfig & { resolvedBaseUrl: string }
   embedding: AIEndpointConfig & { resolvedBaseUrl: string }
@@ -75,7 +93,7 @@ export interface EmbeddingProvider {
 }
 
 export interface LLMProvider {
-  streamDocument(topic: string, blocks: Block[]): AsyncGenerator<string>
+  streamDocument(topic: string, blocks: Block[], context?: { writingGuide?: string | null }): AsyncGenerator<string>
   suggestTags(input: TagSuggestionInput): Promise<{ categories: string[]; detailTags: string[]; summary: string | null }>
 }
 
@@ -262,7 +280,7 @@ async function requestModels(config: AIEndpointConfig & { resolvedBaseUrl: strin
   return (json.data ?? []).map((item) => item.id ?? '').filter(Boolean)
 }
 
-async function requestEmbeddings(config: AIEndpointConfig & { resolvedBaseUrl: string }, texts: string[]): Promise<number[][]> {
+async function requestEmbeddings(config: AIEndpointConfig & { resolvedBaseUrl: string }, texts: string[], sink?: TokenUsageSink): Promise<number[][]> {
   const response = await fetchWithTimeout(
     buildEndpoint(config.resolvedBaseUrl, 'embeddings'),
     {
@@ -285,6 +303,10 @@ async function requestEmbeddings(config: AIEndpointConfig & { resolvedBaseUrl: s
 
   if (vectors.length !== texts.length) {
     throw formatProviderError('Embedding 响应格式无效')
+  }
+
+  if (json.usage?.prompt_tokens != null && sink) {
+    sink.add(json.usage.prompt_tokens, 0)
   }
 
   return vectors
@@ -316,6 +338,7 @@ async function completeText(
   config: AIEndpointConfig & { resolvedBaseUrl: string },
   messages: ChatMessage[],
   options: LLMCompletionOptions = {},
+  sink?: TokenUsageSink,
 ): Promise<string> {
   const response = await requestChatCompletion(config, messages, {
     ...options,
@@ -333,6 +356,10 @@ async function completeText(
     throw formatProviderError('LLM 响应格式无效')
   }
 
+  if (json.usage && sink) {
+    sink.add(json.usage.prompt_tokens ?? 0, json.usage.completion_tokens ?? 0)
+  }
+
   return text
 }
 
@@ -340,6 +367,7 @@ async function* streamChatCompletion(
   config: AIEndpointConfig & { resolvedBaseUrl: string },
   messages: ChatMessage[],
   options: LLMCompletionOptions = {},
+  sink?: TokenUsageSink,
 ): AsyncGenerator<string> {
   const response = await requestChatCompletion(config, messages, {
     ...options,
@@ -357,6 +385,10 @@ async function* streamChatCompletion(
   const reader = response.body.getReader()
   const decoder = new TextDecoder()
   let buffer = ''
+
+  /* 流式响应中 usage 可能在多个 chunk 出现，只有最后一个才是全量。
+     用"先累加再覆盖"策略：收到新的 usage 时覆盖之前记录的值。 */
+  let lastStreamUsage: { prompt: number; completion: number } | null = null
 
   while (true) {
     const { done, value } = await reader.read()
@@ -388,6 +420,13 @@ async function* streamChatCompletion(
         if (delta) {
           yield delta
         }
+
+        if (parsed.usage) {
+          lastStreamUsage = {
+            prompt: parsed.usage.prompt_tokens ?? 0,
+            completion: parsed.usage.completion_tokens ?? 0,
+          }
+        }
       }
     }
 
@@ -395,15 +434,27 @@ async function* streamChatCompletion(
       break
     }
   }
+
+  /* 流结束后，将最终 usage 写入 sink */
+  if (lastStreamUsage && sink) {
+    sink.add(lastStreamUsage.prompt, lastStreamUsage.completion)
+  }
 }
 
-function buildMockDocument(topic: string, blocks: Block[]): string {
+function buildMockDocument(topic: string, blocks: Block[], writingGuide?: string | null): string {
   if (blocks.length === 0) {
     return [
       `# 关于「${topic}」的整理`,
       '',
       '## 当前状态',
       '还没有找到可用的记录片段，所以这是一份空白骨架。',
+      ...(writingGuide
+        ? [
+            '',
+            '## 编排提示',
+            writingGuide,
+          ]
+        : []),
       '',
       '## 下一步建议',
       '- 先在时间轴里录入几条与主题相关的块。',
@@ -434,6 +485,13 @@ function buildMockDocument(topic: string, blocks: Block[]): string {
     '',
     '## 摘要',
     `这是一份由长布骨架版生成的模拟文档，共整理 ${blocks.length} 条相关记录。当前输出用于验证检索、聚合和流式展示链路。`,
+    ...(writingGuide
+      ? [
+          '',
+          '## 编排提示',
+          writingGuide,
+        ]
+      : []),
     '',
     ...sections,
     '',
@@ -443,7 +501,7 @@ function buildMockDocument(topic: string, blocks: Block[]): string {
   ].join('\n')
 }
 
-function buildDocumentMessages(topic: string, blocks: Block[]): ChatMessage[] {
+function buildDocumentMessages(topic: string, blocks: Block[], writingGuide?: string | null): ChatMessage[] {
   const grouped = new Map<string, string[]>()
 
   for (const block of blocks) {
@@ -481,6 +539,13 @@ function buildDocumentMessages(topic: string, blocks: Block[]): ChatMessage[] {
       content: [
         `主题：${topic}`,
         '',
+        ...(writingGuide
+          ? [
+              '以下是当前笔记本整理出的写作指令与编排提示。它们用于约束结构和表达，不属于事实引用，请先遵守这些提示：',
+              writingGuide,
+              '',
+            ]
+          : []),
         '以下是已召回并按标签聚类后的原始块，请基于它们整理文档。请优先复述和组织块中的事实，不要自己补背景：',
         sections || '没有召回到块，请输出一份说明信息不足的短文档。',
       ].join('\n'),
@@ -598,21 +663,21 @@ export function createMockEmbeddingProvider(dimension = DEFAULT_MOCK_EMBEDDING_D
   }
 }
 
-export function createLiveEmbeddingProvider(config: AIConfig): EmbeddingProvider {
+export function createLiveEmbeddingProvider(config: AIConfig, sink?: TokenUsageSink): EmbeddingProvider {
   const resolved = buildResolvedConfig(config)
 
   return {
     async embed(texts) {
-      return requestEmbeddings(resolved.embedding, texts)
+      return requestEmbeddings(resolved.embedding, texts, sink)
     },
   }
 }
 
 export function createMockLLMProvider(mode: AIExecutionMode): LLMProvider {
   return {
-    async *streamDocument(topic, blocks) {
+    async *streamDocument(topic, blocks, context) {
       const prelude = mode === 'live' ? '当前 live provider 不可用，以下内容由模拟编排器生成。\n\n' : '当前未启用真实 AI，以下内容由模拟编排器生成。\n\n'
-      const document = `${prelude}${buildMockDocument(topic, blocks)}`
+      const document = `${prelude}${buildMockDocument(topic, blocks, context?.writingGuide)}`
 
       for (const chunk of chunkText(document, 72)) {
         await new Promise((resolve) => setTimeout(resolve, 20))
@@ -630,17 +695,17 @@ export function createMockLLMProvider(mode: AIExecutionMode): LLMProvider {
   }
 }
 
-export function createLiveLLMProvider(config: AIConfig): LLMProvider {
+export function createLiveLLMProvider(config: AIConfig, sink?: TokenUsageSink): LLMProvider {
   const resolved = buildResolvedConfig(config)
 
   return {
-    async *streamDocument(topic, blocks) {
-      const messages = buildDocumentMessages(topic, blocks)
+    async *streamDocument(topic, blocks, context) {
+      const messages = buildDocumentMessages(topic, blocks, context?.writingGuide)
 
       for await (const chunk of streamChatCompletion(resolved.llm, messages, {
         temperature: 0.1,
         maxTokens: 1_200,
-      })) {
+      }, sink)) {
         yield chunk
       }
     },
@@ -650,7 +715,7 @@ export function createLiveLLMProvider(config: AIConfig): LLMProvider {
       const text = await completeText(resolved.llm, messages, {
         temperature: 0,
         maxTokens: 260,
-      })
+      }, sink)
       const parsed = extractJsonObject(text)
       return sanitizeStructuredTags(parsed, input.categoryCandidates, input.detailCandidates, input.userTags)
     },

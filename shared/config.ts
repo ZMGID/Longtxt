@@ -1,9 +1,10 @@
-import type { AIConfig, DocGenerationSettings } from './types'
+import type { AIConfig, DocGenerationSettings, UISettings } from './types'
 
 export const APP_NAME = '长布'
 
 export const DEFAULT_PAGE_SIZE = 200
 export const DOC_GENERATION_SETTINGS_KEY = 'doc_generation_settings'
+export const UI_SETTINGS_KEY = 'ui_settings'
 export const MIN_DOC_GENERATION_REFERENCE_BLOCKS = 1
 export const MAX_DOC_GENERATION_REFERENCE_BLOCKS = 30
 
@@ -22,6 +23,10 @@ export const DEFAULT_AI_CONFIG: AIConfig = {
 
 export const DEFAULT_DOC_GENERATION_SETTINGS: DocGenerationSettings = {
   maxReferenceBlocks: 10,
+}
+
+export const DEFAULT_UI_SETTINGS: UISettings = {
+  showMiniTimeline: true,
 }
 
 function clampDocGenerationReferenceBlocks(value: number): number {
@@ -56,5 +61,27 @@ export function parseDocGenerationSettings(raw: string | null): DocGenerationSet
     return normalizeDocGenerationSettings(JSON.parse(raw) as Partial<DocGenerationSettings>)
   } catch {
     return DEFAULT_DOC_GENERATION_SETTINGS
+  }
+}
+
+export function normalizeUISettings(
+  value: Partial<UISettings> | null | undefined,
+): UISettings {
+  return {
+    showMiniTimeline: typeof value?.showMiniTimeline === 'boolean'
+      ? value.showMiniTimeline
+      : DEFAULT_UI_SETTINGS.showMiniTimeline,
+  }
+}
+
+export function parseUISettings(raw: string | null): UISettings {
+  if (!raw) {
+    return DEFAULT_UI_SETTINGS
+  }
+
+  try {
+    return normalizeUISettings(JSON.parse(raw) as Partial<UISettings>)
+  } catch {
+    return DEFAULT_UI_SETTINGS
   }
 }

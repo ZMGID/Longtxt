@@ -23,12 +23,17 @@ function sendEvent(channel: string, payload: BlockChangedEvent | DocGenerationCh
 
 function createMainWindow(): BrowserWindow {
   const window = new BrowserWindow({
-    width: 1480,
-    height: 960,
-    minWidth: 1180,
-    minHeight: 780,
-    backgroundColor: '#f3ead9',
+    width: 1280,
+    height: 820,
+    minWidth: 960,
+    minHeight: 640,
+    backgroundColor: '#f5f5f5',
     title: '长布',
+    titleBarStyle: 'hiddenInset',
+    titleBarOverlay: {
+      height: 36,
+    },
+    ...(process.platform === 'darwin' ? { vibrancy: 'sidebar' } : {}),
     webPreferences: {
       preload: preloadPath,
       contextIsolation: true,
@@ -41,6 +46,10 @@ function createMainWindow(): BrowserWindow {
   } else {
     void window.loadFile(join(__dirname, '..', 'dist', 'index.html'))
   }
+
+  window.webContents.on('did-finish-load', () => {
+    window.webContents.setZoomFactor(1.1)
+  })
 
   window.webContents.setWindowOpenHandler(({ url }) => {
     void shell.openExternal(url)
