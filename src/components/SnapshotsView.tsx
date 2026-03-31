@@ -2,6 +2,7 @@ import { useMemo, useState } from 'react'
 
 import type { ExportOptions, ImportConflictStrategy, ImportPreview, Snapshot, TagSuggestion } from '../../shared/types'
 import { MarkdownContent } from './MarkdownContent'
+import { useToast } from './Toast'
 
 interface SnapshotsViewProps {
   snapshots: Snapshot[]
@@ -9,7 +10,6 @@ interface SnapshotsViewProps {
   snapshotQuery: string
   importPreview: ImportPreview | null
   availableTags: TagSuggestion[]
-  statusMessage: string | null
   onSnapshotQueryChange: (value: string) => void
   onSelectSnapshot: (snapshotId: string) => void
   onRemoveSnapshot: (snapshotId: string) => Promise<void>
@@ -27,7 +27,6 @@ export function SnapshotsView({
   snapshotQuery,
   importPreview,
   availableTags,
-  statusMessage,
   onSnapshotQueryChange,
   onSelectSnapshot,
   onRemoveSnapshot,
@@ -38,6 +37,7 @@ export function SnapshotsView({
   onConfirmImport,
   onDismissImportPreview,
 }: SnapshotsViewProps) {
+  const { toast } = useToast()
   const [selectedTags, setSelectedTags] = useState<string[]>([])
   const [dateRange, setDateRange] = useState<{ start: string; end: string }>({ start: '', end: '' })
   const selectedSnapshot = useMemo(
@@ -63,10 +63,10 @@ export function SnapshotsView({
           value={snapshotQuery}
           onChange={(event) => onSnapshotQueryChange(event.target.value)}
           placeholder="搜索快照主题…"
-          className="w-full rounded border border-stone-200 bg-[#faf8f5] px-3 py-2 text-sm text-stone-900 outline-none transition focus:border-stone-400"
+          className="w-full rounded border border-stone-200 bg-white/70 px-3 py-2 text-sm text-stone-900 outline-none transition focus:border-stone-400 focus:ring-1 focus:ring-stone-200"
         />
 
-        <div className="space-y-3 rounded-lg border border-stone-200 bg-[#faf8f5] p-3">
+        <div className="space-y-3 rounded-lg border border-stone-200 bg-white/70 p-3">
           <p className="text-xs font-medium text-stone-500">导出筛选</p>
           <div className="flex flex-wrap gap-1.5">
             {availableTags.slice(0, 18).map((tag) => {
@@ -94,13 +94,13 @@ export function SnapshotsView({
               type="date"
               value={dateRange.start}
               onChange={(event) => setDateRange((current) => ({ ...current, start: event.target.value }))}
-              className="rounded border border-stone-200 bg-[#faf8f5] px-3 py-2 text-sm text-stone-900 outline-none transition focus:border-stone-400"
+              className="rounded border border-stone-200 bg-white/70 px-3 py-2 text-sm text-stone-900 outline-none transition focus:border-stone-400"
             />
             <input
               type="date"
               value={dateRange.end}
               onChange={(event) => setDateRange((current) => ({ ...current, end: event.target.value }))}
-              className="rounded border border-stone-200 bg-[#faf8f5] px-3 py-2 text-sm text-stone-900 outline-none transition focus:border-stone-400"
+              className="rounded border border-stone-200 bg-white/70 px-3 py-2 text-sm text-stone-900 outline-none transition focus:border-stone-400"
             />
           </div>
           <div className="grid grid-cols-2 gap-2">
@@ -118,7 +118,7 @@ export function SnapshotsView({
               onClick={() => {
                 void onExportJson(exportOptions)
               }}
-              className="rounded border border-stone-200 bg-[#faf8f5] px-3 py-2 text-xs font-medium text-stone-700 transition hover:bg-stone-50"
+              className="rounded border border-stone-200 bg-white/70 px-3 py-2 text-xs font-medium text-stone-700 transition hover:bg-stone-50"
             >
               导出 JSON
             </button>
@@ -129,7 +129,7 @@ export function SnapshotsView({
               onClick={() => {
                 void onPreviewMarkdownImport()
               }}
-              className="rounded border border-stone-200 bg-[#faf8f5] px-3 py-2 text-xs font-medium text-stone-700 transition hover:bg-stone-50"
+              className="rounded border border-stone-200 bg-white/70 px-3 py-2 text-xs font-medium text-stone-700 transition hover:bg-stone-50"
             >
               导入 Markdown
             </button>
@@ -138,7 +138,7 @@ export function SnapshotsView({
               onClick={() => {
                 void onPreviewJsonImport()
               }}
-              className="rounded border border-stone-200 bg-[#faf8f5] px-3 py-2 text-xs font-medium text-stone-700 transition hover:bg-stone-50"
+              className="rounded border border-stone-200 bg-white/70 px-3 py-2 text-xs font-medium text-stone-700 transition hover:bg-stone-50"
             >
               导入 JSON
             </button>
@@ -167,7 +167,7 @@ export function SnapshotsView({
                     onClick={() => {
                       void onConfirmImport('skip_all')
                     }}
-                    className="rounded bg-stone-900 px-3 py-1.5 text-xs font-medium text-white"
+                    className="rounded bg-stone-900 px-3 py-1.5 text-xs font-medium text-white transition duration-150 active:scale-[0.97]"
                   >
                     全部跳过冲突
                   </button>
@@ -176,7 +176,7 @@ export function SnapshotsView({
                     onClick={() => {
                       void onConfirmImport('overwrite_all')
                     }}
-                    className="rounded border border-stone-200 bg-[#faf8f5] px-3 py-1.5 text-xs font-medium text-stone-700"
+                    className="rounded border border-stone-200 bg-white/70 px-3 py-1.5 text-xs font-medium text-stone-700 transition duration-150 active:scale-[0.97]"
                   >
                     全部覆盖冲突
                   </button>
@@ -187,7 +187,7 @@ export function SnapshotsView({
                   onClick={() => {
                     void onConfirmImport('overwrite_all')
                   }}
-                  className="rounded bg-stone-900 px-3 py-1.5 text-xs font-medium text-white"
+                  className="rounded bg-stone-900 px-3 py-1.5 text-xs font-medium text-white transition duration-150 active:scale-[0.97]"
                 >
                   确认导入
                 </button>
@@ -195,16 +195,12 @@ export function SnapshotsView({
               <button
                 type="button"
                 onClick={onDismissImportPreview}
-                className="rounded border border-stone-200 bg-[#faf8f5] px-3 py-1.5 text-xs font-medium text-stone-700"
+                className="rounded border border-stone-200 bg-white/70 px-3 py-1.5 text-xs font-medium text-stone-700 transition duration-150 active:scale-[0.97]"
               >
                 取消
               </button>
             </div>
           </div>
-        ) : null}
-
-        {statusMessage ? (
-          <p className="rounded border border-stone-200 bg-[#faf8f5] px-3 py-2 text-xs text-stone-600">{statusMessage}</p>
         ) : null}
 
         <div className="space-y-2">
@@ -216,7 +212,7 @@ export function SnapshotsView({
               className={`w-full rounded-lg border px-3 py-3 text-left transition ${
                 snapshot.id === selectedSnapshot?.id
                   ? 'border-stone-900 bg-stone-900 text-white'
-                  : 'border-stone-200 bg-[#faf8f5] hover:bg-stone-50'
+                  : 'border-stone-200 bg-white/70 hover:bg-stone-50'
               }`}
             >
               <p className="text-sm font-medium">{snapshot.topic}</p>
@@ -232,10 +228,10 @@ export function SnapshotsView({
         </div>
       </aside>
 
-      <section className="rounded-lg border border-stone-200 bg-[#faf8f5] p-5">
+      <section className="rounded-lg border border-stone-200 bg-white/70 p-3">
         {selectedSnapshot ? (
           <>
-            <div className="flex flex-wrap items-center justify-between gap-3 border-b border-stone-200 pb-4">
+            <div className="flex flex-wrap items-center justify-between gap-2 border-b border-stone-200 pb-3">
               <div>
                 <p className="text-xs font-medium uppercase tracking-wider text-stone-400">快照内容</p>
                 <h3 className="mt-0.5 text-lg font-semibold text-stone-900">{selectedSnapshot.topic}</h3>
@@ -247,9 +243,11 @@ export function SnapshotsView({
                 <button
                   type="button"
                   onClick={() => {
-                    void navigator.clipboard.writeText(selectedSnapshot.content)
+                    void navigator.clipboard.writeText(selectedSnapshot.content).then(() => {
+                      toast('success', '已复制到剪贴板。')
+                    })
                   }}
-                  className="rounded border border-stone-200 px-3 py-1.5 text-sm font-medium text-stone-700 transition hover:bg-stone-50"
+                  className="rounded border border-stone-200 px-3 py-1.5 text-sm font-medium text-stone-700 transition duration-150 hover:bg-stone-50 active:scale-[0.97]"
                 >
                   复制全文
                 </button>
@@ -258,18 +256,18 @@ export function SnapshotsView({
                   onClick={() => {
                     void onRemoveSnapshot(selectedSnapshot.id)
                   }}
-                  className="rounded border border-rose-200 px-3 py-1.5 text-sm font-medium text-rose-600 transition hover:bg-rose-50"
+                  className="rounded border border-rose-200 px-3 py-1.5 text-sm font-medium text-rose-600 transition duration-150 hover:bg-rose-50 active:scale-[0.97]"
                 >
                   删除
                 </button>
               </div>
             </div>
-            <div className="mt-4 h-[640px] overflow-y-auto">
+            <div className="mt-4">
               <MarkdownContent content={selectedSnapshot.content} />
             </div>
           </>
         ) : (
-          <div className="flex h-[640px] items-center justify-center rounded-lg border border-dashed border-stone-200 text-sm text-stone-400">
+          <div className="flex min-h-[360px] items-center justify-center rounded-lg border border-dashed border-stone-200 text-sm text-stone-400">
             还没有文档快照。先在搜索生成页产出一篇文档，再点击"保存快照".
           </div>
         )}

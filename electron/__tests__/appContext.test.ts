@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os'
 
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
+import { DOC_GENERATION_SETTINGS_KEY } from '../../shared/config'
 import { createAppContext, type AppContext, type AppContextOptions } from '../appContext'
 
 const createdContexts: AppContext[] = []
@@ -221,5 +222,35 @@ describe('app context', () => {
     expect(await context.exportJson({ includeAttachments: true })).toBeNull()
     expect(await context.previewImportMarkdown()).toBeNull()
     expect(await context.previewImportJson()).toBeNull()
+  })
+
+  it('limits generated document references based on doc generation settings', async () => {
+    const context = makeContext()
+
+    await context.createBlock('PRD 需要覆盖登录流程和权限边界')
+    await context.createBlock('PRD 还要补充发布节奏与回滚方案')
+    await context.createBlock('PRD 最后需要明确埋点和验收标准')
+    await context.whenIdle()
+
+    await context.setSetting(
+      DOC_GENERATION_SETTINGS_KEY,
+      JSON.stringify({
+        maxReferenceBlocks: 2,
+      }),
+    )
+
+    const started = await context.generateDocument('PRD')
+
+    expect(started.blockIds).toHaveLength(2)
+    await context.whenIdle()
+  })
+
+  it('supports saving snapshots with zero referenced blocks', async () => {
+    const context = makeContext()
+
+    const snapshot = await context.saveSnapshot('信息不足主题', '# 信息不足\n\n当前没有足够相关块。', [])
+
+    expect(snapshot.blockIds).toEqual([])
+    expect((await context.getSnapshot(snapshot.id)).blockIds).toEqual([])
   })
 })

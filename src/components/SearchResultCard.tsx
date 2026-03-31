@@ -7,29 +7,37 @@ interface SearchResultCardProps {
   result: SearchResult
   query: string
   onTagClick?: (tagName: string) => void
+  showScore?: boolean
+  metaLabel?: string | null
 }
 
-export function SearchResultCard({ result, query, onTagClick }: SearchResultCardProps) {
+export function SearchResultCard({ result, query, onTagClick, showScore = true, metaLabel = null }: SearchResultCardProps) {
   const { block } = result
 
   return (
-    <article className="rounded-lg border border-stone-200 bg-[#faf8f5] p-4 transition hover:border-stone-300">
+    <article className="rounded-lg border border-black/[0.06] bg-white/70 p-3 transition-all duration-200 hover:border-black/[0.12] hover:shadow-sm">
       <div className="flex flex-wrap items-center gap-2 text-xs text-stone-500">
         <StatusPill status={block.status} />
         <span>{formatTimeLabel(block.updatedAt)}</span>
         <span className="rounded border border-stone-200 bg-stone-50 px-2 py-0.5 text-[11px] font-medium text-stone-500">
           {block.aiMode === 'live' ? 'live AI' : 'mock AI'}
         </span>
-        <span className="rounded border border-stone-200 bg-stone-50 px-2 py-0.5 text-[11px] font-medium text-stone-500">
-          得分 {result.score}
-        </span>
+        {showScore ? (
+          <span className="rounded border border-stone-200 bg-stone-50 px-2 py-0.5 text-[11px] font-medium text-stone-500">
+            得分 {result.score}
+          </span>
+        ) : metaLabel ? (
+          <span className="rounded border border-stone-200 bg-stone-50 px-2 py-0.5 text-[11px] font-medium text-stone-500">
+            {metaLabel}
+          </span>
+        ) : null}
       </div>
 
-      <div className="mt-3 whitespace-pre-wrap break-words text-sm leading-7 text-stone-800">
+      <div className="mt-2 whitespace-pre-wrap break-words text-sm leading-6 text-stone-800">
         {highlightText(block.content, query)}
       </div>
 
-      <div className="mt-3 flex flex-wrap items-center gap-1.5">
+      <div className="mt-2 flex flex-wrap items-center gap-1">
         {block.tags.map((tag) => (
           <button
             key={tag.id}

@@ -1,7 +1,13 @@
 import { startTransition, useEffect, useRef, useState } from 'react'
 
-import { DEFAULT_AI_CONFIG } from '../shared/config'
-import type { AIConfig, AIExecutionMode, ApiTestResult, AppMeta, Block, DocGenerationChunk, SearchResult } from '../shared/types'
+import {
+  DEFAULT_AI_CONFIG,
+  DEFAULT_DOC_GENERATION_SETTINGS,
+  DOC_GENERATION_SETTINGS_KEY,
+  normalizeDocGenerationSettings,
+  parseDocGenerationSettings,
+} from '../shared/config'
+import type { AIConfig, AIExecutionMode, ApiTestResult, AppMeta, Block, DocGenerationChunk, DocGenerationSettings, SearchResult } from '../shared/types'
 import { AppSidebar, type AppView } from './components/AppSidebar'
 import { GraphView } from './components/GraphView'
 import { InputBar } from './components/InputBar'
@@ -9,6 +15,7 @@ import { SearchPanel } from './components/SearchPanel'
 import { SettingsPanel } from './components/SettingsPanel'
 import { SnapshotsView } from './components/SnapshotsView'
 import { Timeline } from './components/Timeline'
+import { ToastProvider, useToast } from './components/Toast'
 import { useBlocks } from './hooks/useBlocks'
 import { useTags } from './hooks/useTags'
 import { changbu } from './lib/changbu'
@@ -34,6 +41,15 @@ const initialDocumentState: DocumentState = {
 }
 
 export default function App() {
+  return (
+    <ToastProvider>
+      <AppInner />
+    </ToastProvider>
+  )
+}
+
+function AppInner() {
+  const { toast } = useToast()
   const { blocks, loading, loadingMore, hasMore, error, createBlock, updateBlock, removeBlock, addTag, removeTag, loadMore, ensureBlockLoaded } = useBlocks()
   const { tags, refresh: refreshTags } = useTags()
   const [activeView, setActiveView] = useState<AppView>('timeline')
@@ -43,10 +59,11 @@ export default function App() {
   const [searching, setSearching] = useState(false)
   const [generating, setGenerating] = useState(false)
   const [results, setResults] = useState<SearchResult[]>([])
+  const [hasSearched, setHasSearched] = useState(false)
   const [document, setDocument] = useState<DocumentState>(initialDocumentState)
   const [config, setConfig] = useState<AIConfig>(DEFAULT_AI_CONFIG)
+  const [docGenerationSettings, setDocGenerationSettings] = useState<DocGenerationSettings>(DEFAULT_DOC_GENERATION_SETTINGS)
   const [meta, setMeta] = useState<AppMeta | null>(null)
-  const [settingsFeedback, setSettingsFeedback] = useState<string | null>(null)
   const [settingsSaving, setSettingsSaving] = useState(false)
   const [settingsTesting, setSettingsTesting] = useState(false)
   const [testResult, setTestResult] = useState<ApiTestResult | null>(null)
@@ -63,7 +80,6 @@ export default function App() {
   const [snapshots, setSnapshots] = useState<import('../shared/types').Snapshot[]>([])
   const [snapshotQuery, setSnapshotQuery] = useState('')
   const [selectedSnapshotId, setSelectedSnapshotId] = useState<string | null>(null)
-  const [snapshotStatusMessage, setSnapshotStatusMessage] = useState<string | null>(null)
   const [importPreview, setImportPreview] = useState<import('../shared/types').ImportPreview | null>(null)
   const graphSelectionRequestRef = useRef<string | null>(null)
 
@@ -90,6 +106,14 @@ export default function App() {
       } catch {
         setConfig(DEFAULT_AI_CONFIG)
       }
+    })
+
+    void changbu.settings.get(DOC_GENERATION_SETTINGS_KEY).then((saved) => {
+      if (!active) {
+        return
+      }
+
+      setDocGenerationSettings(parseDocGenerationSettings(saved))
     })
 
     void refreshMeta().then((appMeta) => {
@@ -220,7 +244,6 @@ export default function App() {
   function handleConfigChange(nextConfig: AIConfig): void {
     setConfig(nextConfig)
     setTestResult(null)
-    setSettingsFeedback(null)
   }
 
   async function handleSearch(): Promise<void> {
@@ -230,6 +253,7 @@ export default function App() {
       return
     }
 
+    setHasSearched(true)
     setSearching(true)
     setSearchError(null)
     setBrowseTag(null)
@@ -249,6 +273,7 @@ export default function App() {
 
   async function handleBrowseTag(tagName: string): Promise<void> {
     setActiveView('search')
+    setHasSearched(true)
     setBrowseTag(tagName)
     setSearchQuery(tagName)
     setSearchError(null)
@@ -322,15 +347,18 @@ export default function App() {
 
   async function handleSaveSettings(): Promise<void> {
     setSettingsSaving(true)
-    setSettingsFeedback(null)
+    const normalizedDocGenerationSettings = normalizeDocGenerationSettings(docGenerationSettings)
 
     try {
       await changbu.settings.set('ai_config', JSON.stringify(config))
+      await changbu.settings.set(DOC_GENERATION_SETTINGS_KEY, JSON.stringify(normalizedDocGenerationSettings))
+      setDocGenerationSettings(normalizedDocGenerationSettings)
       const nextMeta = await refreshMeta()
-      setSettingsFeedback(
+      toast(
+        nextMeta.activeAiMode === 'live' ? 'success' : 'info',
         nextMeta.activeAiMode === 'live'
-          ? '配置和测试结果已保存，当前会使用 live AI。'
-          : '配置已保存，但由于尚未通过测试，当前仍使用 mock。',
+          ? `设置已保存，当前使用 live AI。文档生成最多引用 ${normalizedDocGenerationSettings.maxReferenceBlocks} 个块。`
+          : `设置已保存，但尚未通过测试，当前仍使用 mock。文档生成最多引用 ${normalizedDocGenerationSettings.maxReferenceBlocks} 个块。`,
       )
     } finally {
       setSettingsSaving(false)
@@ -350,7 +378,7 @@ export default function App() {
   }
 
   async function handleSaveSnapshot(): Promise<void> {
-    if (!document.content.trim() || document.blockIds.length === 0) {
+    if (!document.content.trim()) {
       return
     }
 
@@ -358,10 +386,31 @@ export default function App() {
     await refreshSnapshots()
     setSelectedSnapshotId(snapshot.id)
     setActiveView('snapshots')
-    setSnapshotStatusMessage('文档快照已保存。')
+    toast('success', '文档快照已保存。')
   }
 
   const selectedGraphBlock = selectedGraphBlockId ? blocks.find((block) => block.id === selectedGraphBlockId) ?? selectedGraphBlockFallback : null
+  const recentResults: SearchResult[] = blocks.slice(0, 5).map((block) => ({
+    block,
+    score: 0,
+    matchSource: [],
+  }))
+  const showRecentResults = !hasSearched && !browseTag
+  const displayedSearchResults = showRecentResults ? recentResults : results
+  const searchResultsTitle = showRecentResults
+    ? recentResults.length > 0
+      ? `最近更新 · ${recentResults.length} 个块`
+      : '最近更新'
+    : browseTag
+      ? `标签“${browseTag}” · ${results.length} 条结果`
+      : `${results.length} 条检索结果`
+  const searchResultsEmptyHint = showRecentResults
+    ? loading
+      ? '正在加载最近的块…'
+      : '还没有块，先在时间轴记录一些内容。'
+    : browseTag
+      ? '这个标签下还没有相关块。'
+      : '没有找到相关块，换个关键词试试。'
 
   const aiStatusLabel = !meta?.aiConfigured
     ? '未配置 API，当前使用 mock'
@@ -371,19 +420,19 @@ export default function App() {
         : '已启用 live AI'
       : '已配置 API，但尚未通过测试'
 
-  const activeViewCopy = {
-    timeline: { eyebrow: 'Timeline', title: '时间轴' },
-    search: { eyebrow: 'Search', title: '搜索生成' },
-    graph: { eyebrow: 'Graph', title: '连接图' },
-    snapshots: { eyebrow: 'Snapshots', title: '文档快照' },
-    settings: { eyebrow: 'Settings', title: '设置' },
+  const activeViewTitle = {
+    timeline: '时间轴',
+    search: '搜索生成',
+    graph: '连接图',
+    snapshots: '文档快照',
+    settings: '设置',
   }[activeView]
 
   function renderActiveView(): React.ReactNode {
     switch (activeView) {
       case 'timeline':
         return (
-          <div className="space-y-5">
+          <div className="flex min-h-0 flex-1 flex-col gap-5">
             {error ? (
               <div className="rounded border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">{error}</div>
             ) : null}
@@ -417,9 +466,14 @@ export default function App() {
         )
       case 'search':
         return (
-          <SearchPanel
+          <div className="min-h-0 flex-1 overflow-y-auto lg:overflow-hidden">
+            <SearchPanel
             query={searchQuery}
-            results={results}
+            results={displayedSearchResults}
+            resultsTitle={searchResultsTitle}
+            resultsEmptyHint={searchResultsEmptyHint}
+            showResultScore={!showRecentResults}
+            resultMetaLabel={showRecentResults ? '最近更新' : null}
             browseTag={browseTag}
             searchError={searchError}
             searching={searching}
@@ -429,6 +483,7 @@ export default function App() {
               setSearchQuery(value)
               if (!value.trim()) {
                 setBrowseTag(null)
+                setHasSearched(false)
               }
             }}
             onSearch={() => {
@@ -444,16 +499,19 @@ export default function App() {
               setBrowseTag(null)
               setResults([])
               setSearchError(null)
+              setHasSearched(false)
             }}
             onTagClick={(tagName) => {
               void handleBrowseTag(tagName)
             }}
             inputRef={searchInputRef}
           />
+          </div>
         )
       case 'graph':
         return (
-          <GraphView
+          <div className="min-h-0 flex-1 overflow-y-auto">
+            <GraphView
             nodes={graphData.nodes}
             edges={graphData.edges}
             loading={graphLoading}
@@ -492,17 +550,18 @@ export default function App() {
               setFocusedBlockId(blockId)
               setSelectedGraphBlockId(blockId)
             }}
-          />
+            />
+          </div>
         )
       case 'snapshots':
         return (
-          <SnapshotsView
+          <div className="min-h-0 flex-1 overflow-y-auto">
+            <SnapshotsView
             snapshots={snapshots}
             selectedSnapshotId={selectedSnapshotId}
             snapshotQuery={snapshotQuery}
             importPreview={importPreview}
             availableTags={tags}
-            statusMessage={snapshotStatusMessage}
             onSnapshotQueryChange={(value) => {
               setSnapshotQuery(value)
             }}
@@ -510,20 +569,20 @@ export default function App() {
             onRemoveSnapshot={async (snapshotId) => {
               await changbu.snapshots.remove(snapshotId)
               await refreshSnapshots()
-              setSnapshotStatusMessage('文档快照已删除。')
+              toast('success', '文档快照已删除。')
             }}
             onExportMarkdown={async (options) => {
               try {
                 const result = await changbu.exports.markdown(options)
 
                 if (!result) {
-                  setSnapshotStatusMessage('已取消 Markdown 导出。')
+                  toast('info', '已取消 Markdown 导出。')
                   return
                 }
 
-                setSnapshotStatusMessage(`Markdown 已导出到 ${result.path}，共 ${result.count} 个块。`)
+                toast('success', `Markdown 已导出到 ${result.path}，共 ${result.count} 个块。`)
               } catch (reason) {
-                setSnapshotStatusMessage(reason instanceof Error ? reason.message : 'Markdown 导出失败。')
+                toast('error', reason instanceof Error ? reason.message : 'Markdown 导出失败。')
               }
             }}
             onExportJson={async (options) => {
@@ -531,13 +590,13 @@ export default function App() {
                 const result = await changbu.exports.json(options)
 
                 if (!result) {
-                  setSnapshotStatusMessage('已取消 JSON 导出。')
+                  toast('info', '已取消 JSON 导出。')
                   return
                 }
 
-                setSnapshotStatusMessage(`JSON 备份已导出到 ${result.path}，共 ${result.count} 个块。`)
+                toast('success', `JSON 备份已导出到 ${result.path}，共 ${result.count} 个块。`)
               } catch (reason) {
-                setSnapshotStatusMessage(reason instanceof Error ? reason.message : 'JSON 导出失败。')
+                toast('error', reason instanceof Error ? reason.message : 'JSON 导出失败。')
               }
             }}
             onPreviewMarkdownImport={async () => {
@@ -546,14 +605,13 @@ export default function App() {
 
                 if (!preview) {
                   setImportPreview(null)
-                  setSnapshotStatusMessage('已取消 Markdown 导入。')
+                  toast('info', '已取消 Markdown 导入。')
                   return
                 }
 
                 setImportPreview(preview)
-                setSnapshotStatusMessage(null)
               } catch (reason) {
-                setSnapshotStatusMessage(reason instanceof Error ? reason.message : 'Markdown 导入预览失败。')
+                toast('error', reason instanceof Error ? reason.message : 'Markdown 导入预览失败。')
               }
             }}
             onPreviewJsonImport={async () => {
@@ -562,14 +620,13 @@ export default function App() {
 
                 if (!preview) {
                   setImportPreview(null)
-                  setSnapshotStatusMessage('已取消 JSON 导入。')
+                  toast('info', '已取消 JSON 导入。')
                   return
                 }
 
                 setImportPreview(preview)
-                setSnapshotStatusMessage(null)
               } catch (reason) {
-                setSnapshotStatusMessage(reason instanceof Error ? reason.message : 'JSON 导入预览失败。')
+                toast('error', reason instanceof Error ? reason.message : 'JSON 导入预览失败。')
               }
             }}
             onConfirmImport={async (strategy) => {
@@ -580,32 +637,36 @@ export default function App() {
               try {
                 const result = await changbu.imports.confirm(importPreview.importId, strategy)
                 setImportPreview(null)
-                setSnapshotStatusMessage(`导入完成，共导入 ${result.imported} 个块。`)
+                toast('success', `导入完成，共导入 ${result.imported} 个块。`)
               } catch (reason) {
-                setSnapshotStatusMessage(reason instanceof Error ? reason.message : '导入失败。')
+                toast('error', reason instanceof Error ? reason.message : '导入失败。')
               }
             }}
             onDismissImportPreview={() => {
               setImportPreview(null)
             }}
           />
+          </div>
         )
       case 'settings':
         return (
-          <SettingsPanel
+          <div className="min-h-0 flex-1 overflow-y-auto">
+            <SettingsPanel
             config={config}
+            docGenerationSettings={docGenerationSettings}
             meta={meta}
             saving={settingsSaving}
             testing={settingsTesting}
-            feedback={settingsFeedback}
             testResult={testResult}
             onChange={handleConfigChange}
+            onDocGenerationSettingsChange={setDocGenerationSettings}
             onSave={handleSaveSettings}
             onTest={handleTestSettings}
             onOpenDataDirectory={async () => {
               await changbu.settings.openDataDirectory()
             }}
           />
+          </div>
         )
     }
   }
@@ -621,14 +682,16 @@ export default function App() {
         onSelectView={setActiveView}
       />
 
-      <main className="flex min-w-0 flex-1 flex-col overflow-y-auto bg-[#faf8f5]">
-        <div className="border-b border-stone-200 px-6 py-4">
-          <p className="text-xs font-medium uppercase tracking-wider text-stone-400">{activeViewCopy.eyebrow}</p>
-          <h2 className="mt-0.5 text-xl font-semibold text-stone-900">{activeViewCopy.title}</h2>
+      <main className="flex min-w-0 flex-1 flex-col overflow-hidden bg-white/[0.92]">
+        {/* macOS 交通灯按钮区域 — 与侧边栏对齐 */}
+        <div className="h-12 shrink-0 flex items-end px-5 pb-1">
+          <h2 className="text-[13px] font-semibold text-stone-900">{activeViewTitle}</h2>
         </div>
 
-        <div className="flex-1 px-6 py-5">
-          {renderActiveView()}
+        <div className="flex flex-1 flex-col overflow-hidden px-5 py-3">
+          <div key={activeView} className="flex flex-1 flex-col overflow-hidden animate-[fadeIn_200ms_ease-out]">
+            {renderActiveView()}
+          </div>
         </div>
       </main>
     </div>

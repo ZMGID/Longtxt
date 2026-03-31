@@ -4,7 +4,7 @@ import { join } from 'node:path'
 import Database from 'better-sqlite3'
 import { v4 as uuid } from 'uuid'
 
-import { DEFAULT_PAGE_SIZE } from '../shared/config'
+import { DEFAULT_PAGE_SIZE, DOC_GENERATION_SETTINGS_KEY, parseDocGenerationSettings } from '../shared/config'
 import type {
   AIConfig,
   AIExecutionMode,
@@ -13,6 +13,7 @@ import type {
   Block,
   BlockChangedEvent,
   DocGenerationChunk,
+  DocGenerationSettings,
   DocGenerationStart,
   ExportOptions,
   GraphEdge,
@@ -57,8 +58,9 @@ import {
   resolveBaseUrl,
   type EmbeddingProvider,
   type LLMProvider,
+  type TokenUsageSink,
 } from './services/ai'
-import { streamDocumentGeneration } from './services/docgen'
+import { selectDocumentReferenceBlocks, streamDocumentGeneration } from './services/docgen'
 import { createTaggerEngine } from './services/tagger'
 import { cleanupOrphanAttachments, rebuildAttachmentIndex, saveImageDataUrl, syncBlockAttachmentRecords } from './services/attachments'
 import { confirmImportJob, exportJsonBundle, exportMarkdownBundle, previewJsonImport, previewMarkdownImport } from './services/importExport'
@@ -181,6 +183,19 @@ export function createAppContext(options: AppContextOptions): AppContext {
   let vectorSchemaReady = vectorReady ? currentVectorDimension !== null : false
   const importJobs = new Map<string, Awaited<ReturnType<typeof previewMarkdownImport>>['job']>()
 
+  // 累计 token 用量（自程序启动后）
+  let tokenUsageAccum = { promptTokens: 0, completionTokens: 0, totalTokens: 0, requestCount: 0 }
+  const tokenSink: TokenUsageSink = {
+    add(promptTokens, completionTokens) {
+      tokenUsageAccum = {
+        promptTokens: tokenUsageAccum.promptTokens + promptTokens,
+        completionTokens: tokenUsageAccum.completionTokens + completionTokens,
+        totalTokens: tokenUsageAccum.totalTokens + promptTokens + completionTokens,
+        requestCount: tokenUsageAccum.requestCount + 1,
+      }
+    },
+  }
+
   void trackTask(rebuildAttachmentIndex(db, options.dataDirectory))
 
   function emitBlockChanged(event: BlockChangedEvent): void {
@@ -205,6 +220,10 @@ export function createAppContext(options: AppContextOptions): AppContext {
 
   function getSavedConfig(): AIConfig {
     return getAIConfig(db)
+  }
+
+  function getDocGenerationSettings(): DocGenerationSettings {
+    return parseDocGenerationSettings(getSetting(db, DOC_GENERATION_SETTINGS_KEY))
   }
 
   function getSavedConfigFingerprint(): string | null {
@@ -237,8 +256,8 @@ export function createAppContext(options: AppContextOptions): AppContext {
     if (mode === 'live') {
       return {
         mode,
-        embeddingProvider: createLiveEmbeddingProvider(config),
-        llmProvider: createLiveLLMProvider(config),
+        embeddingProvider: createLiveEmbeddingProvider(config, tokenSink),
+        llmProvider: createLiveLLMProvider(config, tokenSink),
       }
     }
 
@@ -576,6 +595,7 @@ export function createAppContext(options: AppContextOptions): AppContext {
       const safeTopic = validateContent(topic)
       const requestId = uuid()
       const { mode, embeddingProvider, llmProvider } = getProviders()
+      const { maxReferenceBlocks } = getDocGenerationSettings()
       let queryEmbedding: number[] | null = null
 
       if (vectorReady && vectorSchemaReady) {
@@ -594,7 +614,7 @@ export function createAppContext(options: AppContextOptions): AppContext {
         queryEmbedding,
         vectorEnabled: vectorReady && vectorSchemaReady && Boolean(queryEmbedding),
       })
-      const blocks = results.length > 0 ? results.map((result) => result.block) : listBlocks(db, { limit: 5 })
+      const blocks = selectDocumentReferenceBlocks(results, maxReferenceBlocks)
 
       void trackTask(
         (async () => {
@@ -777,7 +797,7 @@ export function createAppContext(options: AppContextOptions): AppContext {
 
       if (vectorReady && result.success && result.embeddingDimension) {
         ensureSchemaForDimension(result.embeddingDimension)
-        const embeddingProvider = createLiveEmbeddingProvider(config)
+        const embeddingProvider = createLiveEmbeddingProvider(config, tokenSink)
         scheduleReindex(embeddingProvider, 'live')
       }
 
@@ -803,6 +823,7 @@ export function createAppContext(options: AppContextOptions): AppContext {
         activeAiMode,
         lastAiError,
         lastAiTestResult,
+        tokenUsage: tokenUsageAccum.requestCount > 0 ? { ...tokenUsageAccum } : null,
       }
     },
 

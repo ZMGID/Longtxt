@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 
 import type { Block, TagSuggestion } from '../../shared/types'
 import { formatTimeLabel } from '../lib/format'
@@ -17,6 +17,9 @@ interface BlockCardProps {
   onRemoveTag?: (blockId: string, tagId: string) => Promise<void>
   onTagClick?: (tagName: string) => void
 }
+
+const COLLAPSIBLE_CONTENT_LENGTH = 420
+const COLLAPSED_CONTENT_CLASS = 'max-h-[280px] overflow-hidden'
 
 function sourceLabel(source: Block['tags'][number]['source']): string {
   return source === 'manual' ? '手动' : '自动'
@@ -48,10 +51,13 @@ export function BlockCard({
 }: BlockCardProps) {
   const [isEditing, setIsEditing] = useState(false)
   const [draft, setDraft] = useState(block.content)
+  const [isExpanded, setIsExpanded] = useState(false)
   const [saving, setSaving] = useState(false)
   const [isAddingTag, setIsAddingTag] = useState(false)
   const [tagDraft, setTagDraft] = useState('')
   const [tagSubmitting, setTagSubmitting] = useState(false)
+  const [deleteConfirm, setDeleteConfirm] = useState(false)
+  const deleteTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   const filteredSuggestions = useMemo(() => {
     const existingNames = new Set(block.tags.map((tag) => tag.name.toLowerCase()))
@@ -62,6 +68,16 @@ export function BlockCard({
       .filter((tag) => !normalizedDraft || tag.name.toLowerCase().includes(normalizedDraft))
       .slice(0, 6)
   }, [tagSuggestions, block.tags, tagDraft])
+
+  useEffect(() => {
+    if (!isEditing) {
+      setDraft(block.content)
+    }
+    setIsExpanded(false)
+  }, [block.id, block.content, isEditing])
+
+  const canToggleCollapse = !compact && block.content.trim().length > COLLAPSIBLE_CONTENT_LENGTH
+  const isCollapsed = canToggleCollapse && !isExpanded && !isEditing
 
   async function handleSave(): Promise<void> {
     if (!onSave) return
@@ -88,7 +104,7 @@ export function BlockCard({
   }
 
   return (
-    <article className="rounded-lg border border-stone-200 bg-[#faf8f5] px-4 py-3 transition hover:border-stone-300">
+    <article className="rounded-lg border border-black/[0.06] bg-white/70 px-3 py-2 transition-all duration-200 hover:border-black/[0.12] hover:shadow-sm">
       {/* 元信息行 */}
       <div className="flex flex-wrap items-center gap-2 text-xs text-stone-500">
         <StatusPill status={block.status} />
@@ -113,16 +129,36 @@ export function BlockCard({
             placeholder=""
           />
         ) : (
-          <div className={`text-sm leading-7 text-stone-800 ${compact ? 'line-clamp-4' : ''}`}>
-            <MarkdownContent content={block.content} />
+          <div className="relative">
+            <div
+              data-testid="block-card-content"
+              className={`text-sm leading-6 text-stone-800 ${compact ? 'line-clamp-4' : ''} ${isCollapsed ? COLLAPSED_CONTENT_CLASS : ''}`}
+            >
+              <MarkdownContent content={block.content} />
+            </div>
+            {isCollapsed ? (
+              <div className="pointer-events-none absolute inset-x-0 bottom-0 h-20 rounded-b-lg bg-gradient-to-t from-white via-white/90 to-transparent" />
+            ) : null}
           </div>
         )}
       </div>
 
+      {canToggleCollapse && !isEditing ? (
+        <div className="mt-2">
+          <button
+            type="button"
+            onClick={() => setIsExpanded((current) => !current)}
+            className="rounded border border-stone-200 bg-stone-50 px-3 py-1.5 text-xs font-medium text-stone-600 transition duration-150 hover:bg-white active:scale-[0.97]"
+          >
+            {isExpanded ? '收起' : '显示全文'}
+          </button>
+        </div>
+      ) : null}
+
       {/* 标签 + 操作栏 */}
       {!compact && (
-        <div className="mt-2 flex flex-wrap items-center justify-between gap-1.5">
-          <div className="flex flex-wrap items-center gap-1.5">
+        <div className="mt-1.5 flex flex-wrap items-center justify-between gap-1">
+          <div className="flex flex-wrap items-center gap-1">
             {block.tags.map((tag) => (
               <span
                 key={tag.id}
@@ -164,10 +200,10 @@ export function BlockCard({
                     placeholder="标签名"
                     autoFocus
                     disabled={tagSubmitting}
-                    className="rounded border border-stone-300 bg-[#faf8f5] px-2 py-1 text-xs text-stone-900 outline-none focus:border-stone-500"
+                    className="rounded border border-stone-300 bg-white/70 px-2 py-1 text-xs text-stone-900 outline-none transition focus:border-stone-500 focus:ring-1 focus:ring-stone-200"
                   />
                   {filteredSuggestions.length > 0 && (
-                    <ul className="absolute top-full z-10 mt-1 w-40 rounded border border-stone-200 bg-[#faf8f5] py-1 shadow-sm">
+                    <ul className="absolute top-full z-10 mt-1 w-40 rounded border border-stone-200 bg-white/70 py-1 shadow-sm">
                       {filteredSuggestions.map((s) => (
                         <li key={s.name}>
                           <button
@@ -210,9 +246,9 @@ export function BlockCard({
                     type="button"
                     onClick={() => void handleSave()}
                     disabled={saving}
-                    className="rounded bg-stone-900 px-3 py-1.5 text-xs font-medium text-white transition hover:bg-stone-700 disabled:opacity-50"
+                    className="rounded bg-stone-900 px-3 py-1.5 text-xs font-medium text-white transition duration-150 hover:bg-stone-700 active:scale-[0.97] disabled:opacity-50"
                   >
-                    {saving ? '保存中…' : '保存'}
+                    {saving ? <><span className="spinner" />保存中…</> : '保存'}
                   </button>
                 </>
               ) : (
@@ -227,10 +263,19 @@ export function BlockCard({
                   {onDelete && (
                     <button
                       type="button"
-                      onClick={() => void onDelete(block.id)}
-                      className="text-xs text-stone-400 transition hover:text-rose-600"
+                      onClick={() => {
+                        if (deleteConfirm) {
+                          if (deleteTimerRef.current) clearTimeout(deleteTimerRef.current)
+                          setDeleteConfirm(false)
+                          void onDelete(block.id)
+                        } else {
+                          setDeleteConfirm(true)
+                          deleteTimerRef.current = setTimeout(() => setDeleteConfirm(false), 3000)
+                        }
+                      }}
+                      className={`text-xs transition duration-150 active:scale-[0.97] ${deleteConfirm ? 'font-medium text-rose-600' : 'text-stone-400 hover:text-rose-600'}`}
                     >
-                      删除
+                      {deleteConfirm ? '确认删除?' : '删除'}
                     </button>
                   )}
                 </>

@@ -1,13 +1,15 @@
-import type { AIConfig, ApiTestResult, AppMeta } from '../../shared/types'
+import { DEFAULT_DOC_GENERATION_SETTINGS, MAX_DOC_GENERATION_REFERENCE_BLOCKS, MIN_DOC_GENERATION_REFERENCE_BLOCKS } from '../../shared/config'
+import type { AIConfig, ApiTestResult, AppMeta, DocGenerationSettings } from '../../shared/types'
 
 interface SettingsPanelProps {
   config: AIConfig
+  docGenerationSettings: DocGenerationSettings
   meta: AppMeta | null
   saving: boolean
   testing: boolean
-  feedback: string | null
   testResult: ApiTestResult | null
   onChange: (nextConfig: AIConfig) => void
+  onDocGenerationSettingsChange: (nextSettings: DocGenerationSettings) => void
   onSave: () => Promise<void>
   onTest: () => Promise<void>
   onOpenDataDirectory: () => Promise<void>
@@ -34,7 +36,7 @@ function SettingField({
         value={value}
         onChange={(event) => onChange(event.target.value)}
         placeholder={placeholder}
-        className="w-full rounded border border-stone-200 bg-[#faf8f5] px-3 py-2 text-sm text-stone-900 outline-none transition focus:border-stone-400"
+        className="w-full rounded border border-stone-200 bg-white/70 px-3 py-2 text-sm text-stone-900 outline-none transition focus:border-stone-400 focus:ring-1 focus:ring-stone-200"
       />
     </label>
   )
@@ -50,7 +52,7 @@ function ConfigSection({
   children: React.ReactNode
 }) {
   return (
-    <section className="space-y-3 rounded-lg border border-stone-200 bg-[#faf8f5] p-4">
+    <section className="space-y-3 rounded-lg border border-stone-200 bg-white/70 p-4">
       <div>
         <h3 className="text-sm font-semibold text-stone-900">{title}</h3>
         <p className="mt-0.5 text-xs leading-5 text-stone-500">{description}</p>
@@ -62,12 +64,13 @@ function ConfigSection({
 
 export function SettingsPanel({
   config,
+  docGenerationSettings,
   meta,
   saving,
   testing,
-  feedback,
   testResult,
   onChange,
+  onDocGenerationSettingsChange,
   onSave,
   onTest,
   onOpenDataDirectory,
@@ -119,33 +122,57 @@ export function SettingsPanel({
           />
         </ConfigSection>
 
+        <ConfigSection title="文档生成" description="文档生成会先筛选相关块，再在达标结果中按上限引用。建议范围 6 到 12。">
+          <label className="block space-y-1">
+            <span className="text-xs font-medium uppercase tracking-wider text-stone-400">最大引用块数</span>
+            <input
+              type="number"
+              min={MIN_DOC_GENERATION_REFERENCE_BLOCKS}
+              max={MAX_DOC_GENERATION_REFERENCE_BLOCKS}
+              step={1}
+              value={docGenerationSettings.maxReferenceBlocks}
+              onChange={(event) => {
+                const nextValue = Number(event.target.value)
+                onDocGenerationSettingsChange({
+                  maxReferenceBlocks: Number.isFinite(nextValue)
+                    ? nextValue
+                    : DEFAULT_DOC_GENERATION_SETTINGS.maxReferenceBlocks,
+                })
+              }}
+              className="w-full rounded border border-stone-200 bg-white/70 px-3 py-2 text-sm text-stone-900 outline-none transition focus:border-stone-400 focus:ring-1 focus:ring-stone-200"
+            />
+            <p className="text-xs leading-5 text-stone-500">
+              默认 10，保存时会自动限制在 {MIN_DOC_GENERATION_REFERENCE_BLOCKS} 到 {MAX_DOC_GENERATION_REFERENCE_BLOCKS} 之间。
+            </p>
+          </label>
+        </ConfigSection>
+
         <div className="flex flex-wrap gap-2">
           <button
             type="button"
             onClick={() => { void onSave() }}
             disabled={saving}
-            className="rounded bg-stone-900 px-4 py-2 text-sm font-medium text-white transition hover:bg-stone-700 disabled:opacity-50"
+            className="rounded bg-stone-900 px-4 py-2 text-sm font-medium text-white transition duration-150 hover:bg-stone-700 active:scale-[0.97] disabled:opacity-50"
           >
-            {saving ? '保存中…' : '保存配置'}
+            {saving ? <><span className="spinner" />保存中…</> : '保存设置'}
           </button>
           <button
             type="button"
             onClick={() => { void onTest() }}
             disabled={testing}
-            className="rounded border border-stone-200 bg-[#faf8f5] px-4 py-2 text-sm font-medium text-stone-700 transition hover:bg-stone-50 disabled:opacity-50"
+            className="rounded border border-stone-200 bg-white/70 px-4 py-2 text-sm font-medium text-stone-700 transition duration-150 hover:bg-stone-50 active:scale-[0.97] disabled:opacity-50"
           >
-            {testing ? '检测中…' : '测试连接'}
+            {testing ? <><span className="spinner-dark" />检测中…</> : '测试连接'}
           </button>
           <button
             type="button"
             onClick={() => { void onOpenDataDirectory() }}
-            className="rounded border border-stone-200 bg-[#faf8f5] px-4 py-2 text-sm font-medium text-stone-700 transition hover:bg-stone-50"
+            className="rounded border border-stone-200 bg-white/70 px-4 py-2 text-sm font-medium text-stone-700 transition duration-150 hover:bg-stone-50 active:scale-[0.97]"
           >
             打开数据目录
           </button>
         </div>
 
-        {feedback ? <p className="text-sm text-stone-600">{feedback}</p> : null}
         {testResult ? (
           <p className={`text-sm ${testResult.success ? 'text-emerald-600' : 'text-amber-600'}`}>
             {testResult.success
@@ -175,14 +202,14 @@ export function SettingsPanel({
           },
           { label: 'Base URL', value: meta?.resolvedBaseUrl ?? '尚未解析' },
         ] as const).map((item) => (
-          <div key={item.label} className="rounded-lg border border-stone-200 bg-[#faf8f5] px-4 py-3">
+          <div key={item.label} className="rounded-lg border border-stone-200 bg-white/70 px-4 py-3">
             <div className="text-xs text-stone-400">{item.label}</div>
             <div className="mt-0.5 break-all text-sm font-medium text-stone-900">{item.value}</div>
           </div>
         ))}
 
         {meta?.lastAiTestResult ? (
-          <div className="rounded-lg border border-stone-200 bg-[#faf8f5] px-4 py-3">
+          <div className="rounded-lg border border-stone-200 bg-white/70 px-4 py-3">
             <div className="text-xs text-stone-400">最近测试</div>
             <div className="mt-0.5 text-sm font-medium text-stone-900">
               {meta.lastAiTestResult.success ? '测试通过' : '测试失败'} · {new Date(meta.lastAiTestResult.checkedAt).toLocaleString('zh-CN')}
@@ -191,6 +218,22 @@ export function SettingsPanel({
               Embedding: {meta.lastAiTestResult.embeddingModel} / {meta.lastAiTestResult.embeddingDimension ?? '未知'} 维
             </div>
             <div className="text-xs text-stone-500">LLM: {meta.lastAiTestResult.chatModel}</div>
+          </div>
+        ) : null}
+
+        {meta?.tokenUsage ? (
+          <div className="rounded-lg border border-stone-200 bg-white/70 px-4 py-3">
+            <div className="text-xs text-stone-400">Token 用量（本次启动）</div>
+            <div className="mt-1 grid grid-cols-2 gap-x-4 gap-y-1 text-sm">
+              <span className="text-stone-500">请求</span>
+              <span className="font-medium text-stone-900">{meta.tokenUsage.requestCount}</span>
+              <span className="text-stone-500">Prompt</span>
+              <span className="font-medium text-stone-900">{meta.tokenUsage.promptTokens.toLocaleString()}</span>
+              <span className="text-stone-500">Completion</span>
+              <span className="font-medium text-stone-900">{meta.tokenUsage.completionTokens.toLocaleString()}</span>
+              <span className="text-stone-500">合计</span>
+              <span className="font-semibold text-stone-900">{meta.tokenUsage.totalTokens.toLocaleString()}</span>
+            </div>
           </div>
         ) : null}
 

@@ -100,6 +100,10 @@ export interface AIConfig {
   embedding: AIEndpointConfig
 }
 
+export interface DocGenerationSettings {
+  maxReferenceBlocks: number
+}
+
 export interface PaginationInput {
   offset?: number
   limit?: number
@@ -120,6 +124,13 @@ export interface ApiTestResult {
   configFingerprint?: string
 }
 
+export interface TokenUsage {
+  promptTokens: number
+  completionTokens: number
+  totalTokens: number
+  requestCount: number
+}
+
 export interface AppMeta {
   dataDirectory: string
   vectorReady: boolean
@@ -130,6 +141,7 @@ export interface AppMeta {
   activeAiMode: AIExecutionMode
   lastAiError: string | null
   lastAiTestResult: ApiTestResult | null
+  tokenUsage: TokenUsage | null
 }
 
 export interface BlockChangedEvent {
