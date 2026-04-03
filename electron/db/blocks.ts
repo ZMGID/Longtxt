@@ -253,7 +253,16 @@ export function getBlocksByIds(db: Database.Database, ids: string[]): Block[] {
   return hydrateBlocks(db, ids)
 }
 
-export function listBlockContents(db: Database.Database): string[] {
-  const rows = db.prepare(`SELECT content FROM blocks ORDER BY created_at ASC`).all() as Array<{ content: string }>
+export function listRecentBlockContents(db: Database.Database, limit: number, excludeBlockId?: string): string[] {
+  if (limit <= 0) {
+    return []
+  }
+
+  const rows = excludeBlockId
+    ? (db.prepare(`SELECT content FROM blocks WHERE id != ? ORDER BY updated_at DESC LIMIT ?`).all(excludeBlockId, limit) as Array<{
+        content: string
+      }>)
+    : (db.prepare(`SELECT content FROM blocks ORDER BY updated_at DESC LIMIT ?`).all(limit) as Array<{ content: string }>)
+
   return rows.map((row) => row.content)
 }

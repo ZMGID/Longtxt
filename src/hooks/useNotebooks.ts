@@ -111,8 +111,9 @@ export function useNotebooks() {
   const [selectedNotebookId, setSelectedNotebookId] = useState<string | null>(null)
   const [selectedNotebook, setSelectedNotebook] = useState<Notebook | null>(null)
   const [loading, setLoading] = useState(true)
-  const [loadingNotebook, setLoadingNotebook] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const visibleSelectedNotebook = selectedNotebookId ? selectedNotebook : null
+  const loadingNotebook = selectedNotebookId !== null && visibleSelectedNotebook?.id !== selectedNotebookId
 
   useEffect(() => {
     let active = true
@@ -147,13 +148,10 @@ export function useNotebooks() {
 
   useEffect(() => {
     if (!selectedNotebookId) {
-      setSelectedNotebook(null)
       return
     }
 
     let active = true
-    setLoadingNotebook(true)
-    setError(null)
 
     void changbu.notebooks.get(selectedNotebookId)
       .then((notebook) => {
@@ -174,11 +172,6 @@ export function useNotebooks() {
         }
 
         setError(reason instanceof Error ? reason.message : '加载笔记本内容失败。')
-      })
-      .finally(() => {
-        if (active) {
-          setLoadingNotebook(false)
-        }
       })
 
     return () => {
@@ -287,7 +280,7 @@ export function useNotebooks() {
   return {
     notebooks,
     selectedNotebookId,
-    selectedNotebook,
+    selectedNotebook: visibleSelectedNotebook,
     loading,
     loadingNotebook,
     error,

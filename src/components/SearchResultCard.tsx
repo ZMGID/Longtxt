@@ -1,9 +1,15 @@
 import type { ReactNode } from 'react'
 
-import type { SearchResult } from '../../shared/types'
+import type { MatchSource, SearchResult } from '../../shared/types'
 import { formatTimeLabel } from '../lib/format'
 import { highlightText } from '../lib/highlight'
 import { StatusPill } from './StatusPill'
+
+const MATCH_SOURCE_LABELS: Record<MatchSource, string> = {
+  tag: '标签命中',
+  fts: '全文命中',
+  vector: '向量命中',
+}
 
 interface SearchResultCardProps {
   result: SearchResult
@@ -34,6 +40,11 @@ export function SearchResultCard({ result, query, onTagClick, showScore = true, 
             {metaLabel}
           </span>
         ) : null}
+        {result.matchSource.map((source) => (
+          <span key={source} className="rounded border border-sky-200 bg-sky-50 px-2 py-0.5 text-[11px] font-medium text-sky-700">
+            {MATCH_SOURCE_LABELS[source]}
+          </span>
+        ))}
       </div>
 
       <div className="mt-2 whitespace-pre-wrap break-words text-sm leading-6 text-stone-800">

@@ -110,10 +110,10 @@ export function useBlocks() {
       const items = await changbu.blocks.list({ offset: nextOffset, limit: PAGE_SIZE })
       startTransition(() => {
         setBlocks((currentBlocks) => {
-          const merged = [...items, ...currentBlocks]
-          return sortBlocks(
-            merged.filter((block, index, allBlocks) => allBlocks.findIndex((item) => item.id === block.id) === index),
-          )
+          /* 新数据优先，但本地已有（可能已被 enrichment 更新）的保留本地版本 */
+          const existingIds = new Set(currentBlocks.map((b) => b.id))
+          const newBlocks = items.filter((b) => !existingIds.has(b.id))
+          return sortBlocks([...currentBlocks, ...newBlocks])
         })
         setNextOffset((currentOffset) => currentOffset + items.length)
         setHasMore(items.length === PAGE_SIZE)

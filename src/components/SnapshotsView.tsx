@@ -2,7 +2,7 @@ import { useMemo, useState } from 'react'
 
 import type { ExportOptions, ImportConflictStrategy, ImportPreview, Snapshot, TagSuggestion } from '../../shared/types'
 import { MarkdownContent } from './MarkdownContent'
-import { useToast } from './Toast'
+import { useToast } from './toast-context'
 
 interface SnapshotsViewProps {
   snapshots: Snapshot[]

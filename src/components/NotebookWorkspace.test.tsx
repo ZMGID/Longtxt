@@ -145,6 +145,13 @@ describe('NotebookWorkspace', () => {
     expect(screen.getByText('检索补料')).toBeInTheDocument()
   })
 
+  it('shows retrieval sources in notebook sidebar search results', () => {
+    renderWorkspace()
+
+    expect(screen.getByText('全文命中')).toBeInTheDocument()
+    expect(screen.getByText('向量命中')).toBeInTheDocument()
+  })
+
   it('marks existing notebook blocks and adds new search results to the current notebook', async () => {
     const props = renderWorkspace()
 

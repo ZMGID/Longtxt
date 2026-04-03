@@ -1,7 +1,7 @@
 import type { AIExecutionMode, SearchResult } from '../../shared/types'
 import { MarkdownContent } from './MarkdownContent'
 import { SearchResultCard } from './SearchResultCard'
-import { useToast } from './Toast'
+import { useToast } from './toast-context'
 
 interface DocumentState {
   status: 'idle' | 'streaming' | 'done' | 'error'

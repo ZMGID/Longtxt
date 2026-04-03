@@ -4,6 +4,11 @@ import type { SearchResult } from '../../shared/types'
 import { getBlocksByIds } from './blocks'
 import { countBlockVectors, searchVectorMatches } from './vectors'
 
+/** 转义 LIKE 模式中的特殊字符，防止用户输入的 % 和 _ 被当作通配符 */
+function escapeLike(value: string): string {
+  return value.replace(/[%_]/g, '|$&')
+}
+
 const TAG_KIND_WEIGHT: Record<string, number> = {
   category: 0.35,
   detail: 1,
@@ -47,7 +52,7 @@ function searchByTag(
         FROM blocks b
         INNER JOIN block_tags bt ON bt.block_id = b.id
         INNER JOIN tags t ON t.id = bt.tag_id
-        WHERE t.name LIKE ?
+        WHERE t.name LIKE ? ESCAPE '|'
         ${allowed.sql}
         ORDER BY
           CASE t.kind
@@ -59,7 +64,7 @@ function searchByTag(
         LIMIT ?
       `,
     )
-    .all(`%${query}%`, ...allowed.params, limit) as Array<{ id: string; kind: string }>
+    .all(`%${escapeLike(query)}%`, ...allowed.params, limit) as Array<{ id: string; kind: string }>
 }
 
 function browseByExactTag(db: Database.Database, tagName: string, limit: number): string[] {
@@ -106,13 +111,13 @@ function searchByFts(db: Database.Database, query: string, limit: number, allowe
         `
           SELECT id
           FROM blocks
-          WHERE content LIKE ?
+          WHERE content LIKE ? ESCAPE '|'
           ${fallbackAllowed.sql}
           ORDER BY updated_at DESC
           LIMIT ?
         `,
       )
-      .all(`%${query}%`, ...fallbackAllowed.params, limit) as Array<{ id: string }>
+      .all(`%${escapeLike(query)}%`, ...fallbackAllowed.params, limit) as Array<{ id: string }>
 
     return fallbackRows.map((row) => row.id)
   }

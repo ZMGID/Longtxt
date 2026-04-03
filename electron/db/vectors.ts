@@ -6,6 +6,12 @@ export interface VectorSchemaStatus {
   changed: boolean
 }
 
+export interface PendingBlockVectorJob {
+  blockId: string
+  contentUpdatedAt: string
+  queuedAt: string
+}
+
 function toVectorLiteral(vector: number[]): string {
   return JSON.stringify(vector.map((value) => Number(value.toFixed(6))))
 }
@@ -70,6 +76,78 @@ export function upsertBlockVector(db: Database.Database, blockId: string, vector
 
 export function deleteBlockVector(db: Database.Database, blockId: string): void {
   db.prepare(`DELETE FROM blocks_vec WHERE block_id = ?`).run(blockId)
+}
+
+export function enqueueBlockVector(db: Database.Database, blockId: string, contentUpdatedAt: string, queuedAt: string): void {
+  db.prepare(
+    `
+      INSERT INTO pending_block_vectors (block_id, content_updated_at, queued_at)
+      VALUES (?, ?, ?)
+      ON CONFLICT(block_id) DO UPDATE SET
+        content_updated_at = excluded.content_updated_at,
+        queued_at = excluded.queued_at
+    `,
+  ).run(blockId, contentUpdatedAt, queuedAt)
+}
+
+export function listPendingBlockVectors(db: Database.Database, limit: number): PendingBlockVectorJob[] {
+  if (limit <= 0) {
+    return []
+  }
+
+  return db
+    .prepare(
+      `
+        SELECT block_id AS blockId, content_updated_at AS contentUpdatedAt, queued_at AS queuedAt
+        FROM pending_block_vectors
+        ORDER BY queued_at ASC, block_id ASC
+        LIMIT ?
+      `,
+    )
+    .all(limit) as PendingBlockVectorJob[]
+}
+
+export function getPendingBlockVectorsByIds(db: Database.Database, blockIds: string[]): PendingBlockVectorJob[] {
+  if (blockIds.length === 0) {
+    return []
+  }
+
+  return db
+    .prepare(
+      `
+        SELECT block_id AS blockId, content_updated_at AS contentUpdatedAt, queued_at AS queuedAt
+        FROM pending_block_vectors
+        WHERE block_id IN (${blockIds.map(() => '?').join(', ')})
+      `,
+    )
+    .all(...blockIds) as PendingBlockVectorJob[]
+}
+
+export function removePendingBlockVectors(db: Database.Database, blockIds: string[]): void {
+  if (blockIds.length === 0) {
+    return
+  }
+
+  db.prepare(`DELETE FROM pending_block_vectors WHERE block_id IN (${blockIds.map(() => '?').join(', ')})`).run(...blockIds)
+}
+
+export function removePendingBlockVector(db: Database.Database, blockId: string): void {
+  db.prepare(`DELETE FROM pending_block_vectors WHERE block_id = ?`).run(blockId)
+}
+
+export function countPendingBlockVectors(db: Database.Database): number {
+  const row = db.prepare(`SELECT COUNT(*) AS total FROM pending_block_vectors`).get() as { total: number }
+  return row.total
+}
+
+export function resetPendingBlockVectors(db: Database.Database): void {
+  db.exec(`DELETE FROM pending_block_vectors`)
+  db.exec(`
+    INSERT INTO pending_block_vectors (block_id, content_updated_at, queued_at)
+    SELECT id, updated_at, updated_at
+    FROM blocks
+    ORDER BY created_at ASC
+  `)
 }
 
 export function searchVectorMatches(

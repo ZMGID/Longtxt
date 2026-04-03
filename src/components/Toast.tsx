@@ -1,32 +1,16 @@
-import { createContext, useCallback, useContext, useRef, useState } from 'react'
+import { useCallback, useRef, useState } from 'react'
+
+import { ToastContext, type ToastType } from './toast-context'
 
 /* ------------------------------------------------------------------ */
 /*  类型                                                                */
 /* ------------------------------------------------------------------ */
-
-type ToastType = 'success' | 'error' | 'info'
 
 interface Toast {
   id: number
   type: ToastType
   message: string
   exiting: boolean
-}
-
-interface ToastContextValue {
-  toast: (type: ToastType, message: string) => void
-}
-
-/* ------------------------------------------------------------------ */
-/*  Context                                                            */
-/* ------------------------------------------------------------------ */
-
-const ToastContext = createContext<ToastContextValue | null>(null)
-
-export function useToast(): ToastContextValue {
-  const ctx = useContext(ToastContext)
-  if (!ctx) throw new Error('useToast must be used within ToastProvider')
-  return ctx
 }
 
 /* ------------------------------------------------------------------ */

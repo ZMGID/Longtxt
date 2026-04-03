@@ -31,7 +31,8 @@ import { SearchPanel } from './components/SearchPanel'
 import { SettingsPanel } from './components/SettingsPanel'
 import { SnapshotsView } from './components/SnapshotsView'
 import { Timeline } from './components/Timeline'
-import { ToastProvider, useToast } from './components/Toast'
+import { ToastProvider } from './components/Toast'
+import { useToast } from './components/toast-context'
 import { useBlocks } from './hooks/useBlocks'
 import { useNotebooks } from './hooks/useNotebooks'
 import { useTags } from './hooks/useTags'
@@ -258,16 +259,20 @@ function AppInner() {
     void changbu.snapshots.list(snapshotQuery).then((items) => {
       if (active) {
         setSnapshots(items)
-        if (!selectedSnapshotId && items.length > 0) {
-          setSelectedSnapshotId(items[0].id)
-        }
+        setSelectedSnapshotId((currentId) => {
+          if (items.length === 0) {
+            return null
+          }
+
+          return currentId && items.some((snapshot) => snapshot.id === currentId) ? currentId : items[0].id
+        })
       }
     })
 
     return () => {
       active = false
     }
-  }, [activeView, snapshotQuery, selectedSnapshotId])
+  }, [activeView, snapshotQuery])
 
   useEffect(() => {
     if (activeView !== 'search') {
@@ -497,6 +502,8 @@ function AppInner() {
           ? `设置已保存，当前使用 live AI。文档生成最多引用 ${normalizedDocGenerationSettings.maxReferenceBlocks} 个块。`
           : `设置已保存，但尚未通过测试，当前仍使用 mock。文档生成最多引用 ${normalizedDocGenerationSettings.maxReferenceBlocks} 个块。`,
       )
+    } catch (reason) {
+      toast('error', reason instanceof Error ? reason.message : '设置保存失败。')
     } finally {
       setSettingsSaving(false)
     }
@@ -509,6 +516,8 @@ function AppInner() {
       const result = await changbu.settings.testApi(config)
       setTestResult(result)
       await refreshMeta()
+    } catch (reason) {
+      toast('error', reason instanceof Error ? reason.message : 'API 测试失败。')
     } finally {
       setSettingsTesting(false)
     }

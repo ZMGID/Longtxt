@@ -118,11 +118,23 @@ app.on('window-all-closed', () => {
   }
 })
 
-app.on('before-quit', async () => {
-  if (appContext) {
-    await appContext.whenIdle()
-    appContext.dispose()
+let isQuitting = false
+
+app.on('before-quit', (event) => {
+  if (isQuitting || !appContext) {
+    return
   }
 
-  unregisterHandlers?.()
+  event.preventDefault()
+  isQuitting = true
+
+  void (async () => {
+    try {
+      await appContext.whenIdle()
+    } finally {
+      appContext.dispose()
+      unregisterHandlers?.()
+      app.quit()
+    }
+  })()
 })

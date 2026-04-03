@@ -1,13 +1,23 @@
 import { render, screen } from '@testing-library/react'
+import { forwardRef, type ComponentProps, type ReactNode } from 'react'
 import { describe, expect, it, vi } from 'vitest'
 
 import type { Block } from '../../shared/types'
 import { Timeline } from './Timeline'
 
 vi.mock('react-virtuoso', async () => {
-  const React = await import('react')
+  type MockVirtuosoProps = ComponentProps<typeof Timeline>['blocks'] extends Block[]
+    ? {
+        data: Block[]
+        itemContent: (index: number, item: Block) => ReactNode
+        components?: {
+          Footer?: () => ReactNode
+        }
+        rangeChanged?: (range: { startIndex: number; endIndex: number }) => void
+      }
+    : never
 
-  const MockVirtuoso = React.forwardRef(function MockVirtuoso(props: any, _ref) {
+  const MockVirtuoso = forwardRef<HTMLDivElement, MockVirtuosoProps>(function MockVirtuoso(props) {
     const { data, itemContent, components, rangeChanged } = props
     const Footer = components?.Footer
 
@@ -18,7 +28,7 @@ vi.mock('react-virtuoso', async () => {
 
     return (
       <div data-testid="mock-virtuoso">
-        {data.map((item: any, index: number) => itemContent(index, item))}
+        {data.map((item, index) => itemContent(index, item))}
         {Footer ? <Footer /> : null}
       </div>
     )

@@ -30,6 +30,14 @@ CREATE INDEX IF NOT EXISTS idx_block_tags_block_id ON block_tags (block_id);
 CREATE INDEX IF NOT EXISTS idx_block_tags_tag_id ON block_tags (tag_id);
 CREATE INDEX IF NOT EXISTS idx_blocks_created_at ON blocks (created_at);
 
+CREATE TABLE IF NOT EXISTS pending_block_vectors (
+  block_id TEXT PRIMARY KEY REFERENCES blocks(id) ON DELETE CASCADE,
+  content_updated_at TEXT NOT NULL,
+  queued_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_pending_block_vectors_queued_at ON pending_block_vectors (queued_at);
+
 CREATE TABLE IF NOT EXISTS settings (
   key TEXT PRIMARY KEY,
   value TEXT

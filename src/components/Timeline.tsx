@@ -50,10 +50,11 @@ export function Timeline({
 }: TimelineProps) {
   const virtuosoRef = useRef<VirtuosoHandle | null>(null)
   const [topVisibleIndex, setTopVisibleIndex] = useState(0)
+  const boundedTopVisibleIndex = Math.min(topVisibleIndex, Math.max(0, blocks.length - 1))
   const miniTimelineGroups = useMemo(() => buildMiniTimelineGroups(blocks), [blocks])
   const activeMiniTimelineGroupKey = useMemo(
-    () => getActiveMiniTimelineGroupKey(miniTimelineGroups, topVisibleIndex),
-    [miniTimelineGroups, topVisibleIndex],
+    () => getActiveMiniTimelineGroupKey(miniTimelineGroups, boundedTopVisibleIndex),
+    [boundedTopVisibleIndex, miniTimelineGroups],
   )
 
   useEffect(() => {
@@ -71,9 +72,6 @@ export function Timeline({
     onFocusedBlockHandled?.()
   }, [blocks, focusedBlockId, onFocusedBlockHandled])
 
-  useEffect(() => {
-    setTopVisibleIndex((currentIndex) => Math.min(currentIndex, Math.max(0, blocks.length - 1)))
-  }, [blocks.length])
 
   if (loading) {
     return (

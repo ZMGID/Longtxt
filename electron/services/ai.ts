@@ -730,7 +730,7 @@ export async function probeAiConfig(config: AIConfig): Promise<ApiTestResult> {
 
   try {
     resolved = buildResolvedConfig(config)
-    resolvedBaseUrl = resolved.embedding.resolvedBaseUrl === resolved.llm.resolvedBaseUrl ? resolved.llm.resolvedBaseUrl : resolved.llm.resolvedBaseUrl
+    resolvedBaseUrl = resolved.llm.resolvedBaseUrl
   } catch (error) {
     return {
       success: false,
