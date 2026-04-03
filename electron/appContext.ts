@@ -41,7 +41,7 @@ import {
   deleteBlockRecord,
   getBlockById,
   getBlocksByIds,
-  listBlockContents,
+  listRecentBlockContents,
   listBlocks,
   removeTagFromBlock,
   syncAutoBlockTags,
@@ -72,7 +72,19 @@ import { searchBlocks as searchBlocksInDatabase, searchBlocksByTag } from './db/
 import { getAIConfig, getSetting, setSetting } from './db/settings'
 import { createSnapshot, getSnapshot, listSnapshots, removeSnapshot } from './db/snapshots'
 import { getOrCreateTag, getTagMemory, listAvailableTags } from './db/tags'
-import { deleteBlockVector, ensureVectorSchema, getVectorSchemaDimension, upsertBlockVector } from './db/vectors'
+import {
+  countBlockVectors,
+  countPendingBlockVectors,
+  deleteBlockVector,
+  enqueueBlockVector,
+  ensureVectorSchema,
+  getPendingBlockVectorsByIds,
+  getVectorSchemaDimension,
+  listPendingBlockVectors,
+  removePendingBlockVectors,
+  resetPendingBlockVectors,
+  upsertBlockVector,
+} from './db/vectors'
 import {
   DEFAULT_MOCK_EMBEDDING_DIMENSION,
   createConfigFingerprint,
@@ -96,6 +108,10 @@ import { cleanupOrphanAttachments, rebuildAttachmentIndex, saveImageDataUrl, syn
 import { confirmImportJob, exportJsonBundle, exportMarkdownBundle, previewJsonImport, previewMarkdownImport } from './services/importExport'
 
 const AI_LAST_TEST_RESULT_KEY = 'ai_last_test_result'
+const MAX_ENRICH_RETRIES = 1
+const ENRICH_RETRY_DELAY_MS = 500
+const TAGGER_CORPUS_LIMIT = 50
+const VECTOR_REINDEX_BATCH_SIZE = 12
 
 export interface AppContextOptions {
   dataDirectory: string
@@ -249,6 +265,18 @@ function parseApiTestResult(raw: string | null): ApiTestResult | null {
   }
 }
 
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+function isTransientEnrichError(error: unknown): boolean {
+  if (!(error instanceof Error)) {
+    return false
+  }
+
+  return /请求超时|fetch failed|network|socket|temporar|temporarily|rate limit|429|5\d\d/i.test(error.message)
+}
+
 export function createAppContext(options: AppContextOptions): AppContext {
   mkdirSync(options.dataDirectory, { recursive: true })
 
@@ -257,7 +285,11 @@ export function createAppContext(options: AppContextOptions): AppContext {
   const { vectorReady } = initializeDatabase(db)
   const tagger = createTaggerEngine()
   const pendingTasks = new Set<Promise<unknown>>()
+  const blockEnrichGenerations = new Map<string, number>()
   let reindexTask: Promise<void> | null = null
+  let reindexRequested = false
+  let reindexNeedsFullRebuild = false
+  let reindexProviderState: { embeddingProvider: EmbeddingProvider; mode: AIExecutionMode } | null = null
   let lastAiError: string | null = null
   let currentVectorDimension = vectorReady ? getVectorSchemaDimension(db) : null
   let vectorSchemaReady = vectorReady ? currentVectorDimension !== null : false
@@ -356,6 +388,40 @@ export function createAppContext(options: AppContextOptions): AppContext {
     lastAiError = error instanceof Error ? error.message : 'AI 运行失败。'
   }
 
+  function advanceBlockEnrichGeneration(blockId: string): number {
+    const nextGeneration = (blockEnrichGenerations.get(blockId) ?? 0) + 1
+    blockEnrichGenerations.set(blockId, nextGeneration)
+    return nextGeneration
+  }
+
+  function isCurrentBlockEnrichGeneration(blockId: string, generation: number): boolean {
+    return blockEnrichGenerations.get(blockId) === generation
+  }
+
+  function getFreshBlockForEnrich(blockId: string, generation: number): Block | null {
+    if (!isCurrentBlockEnrichGeneration(blockId, generation)) {
+      return null
+    }
+
+    try {
+      return getBlockById(db, blockId)
+    } catch {
+      return null
+    }
+  }
+
+  function enqueueBlocksForVectorReindex(blocks: Array<Pick<Block, 'id' | 'updatedAt'>>): void {
+    if (blocks.length === 0) {
+      return
+    }
+
+    const queuedAt = new Date().toISOString()
+
+    for (const block of blocks) {
+      enqueueBlockVector(db, block.id, block.updatedAt, queuedAt)
+    }
+  }
+
   async function getQueryEmbedding(query: string, mode: AIExecutionMode, embeddingProvider: EmbeddingProvider): Promise<number[] | null> {
     if (!vectorReady || !vectorSchemaReady) {
       return null
@@ -451,33 +517,51 @@ export function createAppContext(options: AppContextOptions): AppContext {
     }
   }
 
-  async function reindexVectors(embeddingProvider: EmbeddingProvider, mode: AIExecutionMode): Promise<void> {
+  async function reindexVectors(
+    embeddingProvider: EmbeddingProvider,
+    mode: AIExecutionMode,
+    options: { fullRebuild: boolean },
+  ): Promise<void> {
     if (!vectorReady || !currentVectorDimension) {
       vectorSchemaReady = false
       return
     }
 
-    const total = countBlocks(db)
-
-    if (total === 0) {
-      vectorSchemaReady = true
-      return
+    if (options.fullRebuild) {
+      resetPendingBlockVectors(db)
     }
 
-    vectorSchemaReady = false
-
     try {
-      const blocks = listBlocks(db, {
-        offset: 0,
-        limit: total,
-      })
+      while (true) {
+        const jobs = listPendingBlockVectors(db, VECTOR_REINDEX_BATCH_SIZE)
 
-      for (let index = 0; index < blocks.length; index += 12) {
-        const batch = blocks.slice(index, index + 12)
+        if (jobs.length === 0) {
+          break
+        }
+
+        const queuedIds = jobs.map((job) => job.blockId)
+        const blocks = getBlocksByIds(db, queuedIds)
+        const blockMap = new Map(blocks.map((block) => [block.id, block]))
+        const missingIds = queuedIds.filter((id) => !blockMap.has(id))
+
+        if (missingIds.length > 0) {
+          removePendingBlockVectors(db, missingIds)
+        }
+
+        const batch = queuedIds
+          .map((id) => blockMap.get(id))
+          .filter((block): block is Block => Boolean(block))
+
+        if (batch.length === 0) {
+          continue
+        }
+
         const embeddings = await embeddingProvider.embed(batch.map((block) => block.content))
+        const latestJobs = new Map(getPendingBlockVectorsByIds(db, batch.map((block) => block.id)).map((job) => [job.blockId, job]))
+        const completedIds: string[] = []
 
-        for (const [batchIndex, block] of batch.entries()) {
-          const vector = embeddings[batchIndex]
+        for (const [index, block] of batch.entries()) {
+          const vector = embeddings[index]
 
           if (!vector) {
             continue
@@ -486,21 +570,36 @@ export function createAppContext(options: AppContextOptions): AppContext {
           if (currentVectorDimension !== vector.length) {
             const schema = ensureVectorSchema(db, vector.length)
             currentVectorDimension = schema.currentDimension
-            vectorSchemaReady = false
+
+            if (schema.changed) {
+              vectorSchemaReady = false
+              resetPendingBlockVectors(db)
+            }
           }
 
-          upsertBlockVector(db, block.id, vector)
+          const latestJob = latestJobs.get(block.id)
+
+          if (!latestJob || latestJob.contentUpdatedAt !== block.updatedAt) {
+            continue
+          }
+
+          if (currentVectorDimension === vector.length) {
+            upsertBlockVector(db, block.id, vector)
+            completedIds.push(block.id)
+          }
         }
+
+        removePendingBlockVectors(db, completedIds)
       }
 
-      vectorSchemaReady = true
+      if (currentVectorDimension !== null && countPendingBlockVectors(db) === 0) {
+        vectorSchemaReady = true
+      }
 
       if (mode === 'live') {
         clearRuntimeAiError()
       }
     } catch (error) {
-      vectorSchemaReady = false
-
       if (mode === 'live') {
         rememberRuntimeAiError(error)
       }
@@ -509,113 +608,208 @@ export function createAppContext(options: AppContextOptions): AppContext {
     }
   }
 
-  function scheduleReindex(embeddingProvider: EmbeddingProvider, mode: AIExecutionMode): void {
+  function scheduleReindex(
+    embeddingProvider: EmbeddingProvider,
+    mode: AIExecutionMode,
+    options: { fullRebuild?: boolean } = {},
+  ): void {
+    if (!vectorReady || currentVectorDimension === null) {
+      return
+    }
+
+    reindexRequested = true
+    reindexProviderState = { embeddingProvider, mode }
+
+    if (options.fullRebuild) {
+      reindexNeedsFullRebuild = true
+    }
+
     if (reindexTask) {
       return
     }
 
     const task = trackTask(
-      reindexVectors(embeddingProvider, mode).finally(() => {
+      (async () => {
+        while (reindexRequested || reindexNeedsFullRebuild || countPendingBlockVectors(db) > 0) {
+          const providerState = reindexProviderState ?? { embeddingProvider, mode }
+          const fullRebuild = reindexNeedsFullRebuild
+
+          reindexRequested = false
+          reindexProviderState = null
+          reindexNeedsFullRebuild = false
+
+          await reindexVectors(providerState.embeddingProvider, providerState.mode, { fullRebuild })
+        }
+      })().finally(() => {
         reindexTask = null
+
+        if (reindexRequested || reindexNeedsFullRebuild || countPendingBlockVectors(db) > 0) {
+          const providerState = reindexProviderState ?? { embeddingProvider, mode }
+          scheduleReindex(providerState.embeddingProvider, providerState.mode)
+        }
       }),
     )
 
     reindexTask = task
   }
 
-  function ensureSchemaForDimension(dimension: number): void {
+  function ensureSchemaForDimension(dimension: number): boolean {
     if (!vectorReady) {
-      return
+      return false
     }
 
     const schema = ensureVectorSchema(db, dimension)
     currentVectorDimension = schema.currentDimension
 
-    if (!schema.changed && currentVectorDimension !== null && reindexTask === null) {
-      vectorSchemaReady = true
-      return
-    }
-
     if (schema.changed) {
       vectorSchemaReady = false
+      return true
     }
+
+    if (currentVectorDimension !== null && reindexTask === null && countPendingBlockVectors(db) === 0) {
+      vectorSchemaReady = true
+    }
+
+    return false
   }
 
-  function ensureVectorSchemaForCurrentState(): void {
+  function ensureVectorSchemaForCurrentState(forceFullRebuild = false): void {
     if (!vectorReady) {
       return
     }
 
     const preferredDimension = getPreferredVectorDimension()
-    ensureSchemaForDimension(preferredDimension)
+    const schemaChanged = ensureSchemaForDimension(preferredDimension)
+    const pendingCount = countPendingBlockVectors(db)
+    const blockCount = countBlocks(db)
+    const vectorCount = blockCount > 0 ? countBlockVectors(db) : 0
+    const shouldFullRebuild = schemaChanged || forceFullRebuild || (pendingCount === 0 && vectorCount < blockCount)
+
+    if (!shouldFullRebuild && pendingCount === 0) {
+      return
+    }
 
     const { mode, embeddingProvider } = getProviders()
-    scheduleReindex(embeddingProvider, mode)
+    scheduleReindex(embeddingProvider, mode, { fullRebuild: shouldFullRebuild })
   }
 
-  async function enrichBlock(blockId: string, content: string): Promise<void> {
+  async function enrichBlock(
+    blockId: string,
+    content: string,
+    generation: number,
+    options: { enqueueVector?: boolean } = {},
+  ): Promise<boolean> {
     const { mode, embeddingProvider, llmProvider } = getProviders()
+    const tagMemory = getTagMemory(db)
+    const assignment = await tagger.assign(content, {
+      corpusContents: [content, ...listRecentBlockContents(db, TAGGER_CORPUS_LIMIT, blockId)],
+      liveLlmProvider: mode === 'live' ? llmProvider : null,
+      tagMemory,
+    })
+    const currentBlock = getFreshBlockForEnrich(blockId, generation)
 
-    try {
-      const tagMemory = getTagMemory(db)
-      const assignment = await tagger.assign(content, {
-        corpusContents: listBlockContents(db),
-        liveLlmProvider: mode === 'live' ? llmProvider : null,
-        tagMemory,
-      })
-      const tags = [
-        ...assignment.categories.map((tagName) => getOrCreateTag(db, tagName, 'category')),
-        ...assignment.detailTags.map((tagName) => getOrCreateTag(db, tagName, 'detail')),
-      ]
-      syncAutoBlockTags(db, blockId, tags)
-
-      const [embedding] = await embeddingProvider.embed([content])
-
-      if (vectorReady && embedding) {
-        if (currentVectorDimension !== embedding.length) {
-          ensureSchemaForDimension(embedding.length)
-          scheduleReindex(embeddingProvider, mode)
-        }
-
-        if (currentVectorDimension === embedding.length) {
-          upsertBlockVector(db, blockId, embedding)
-        }
-      }
-
-      if (mode === 'live') {
-        clearRuntimeAiError()
-      }
-
-      const block = updateBlockState(db, {
-        id: blockId,
-        status: 'ready',
-        aiMode: mode,
-        summary: assignment.summary,
-        updatedAt: new Date().toISOString(),
-      })
-
-      emitBlockChanged({
-        block,
-        reason: 'enriched',
-      })
-    } catch (error) {
-      if (mode === 'live') {
-        rememberRuntimeAiError(error)
-      }
-
-      const block = updateBlockState(db, {
-        id: blockId,
-        status: 'error',
-        aiMode: mode,
-        updatedAt: new Date().toISOString(),
-        errorMessage: error instanceof Error ? error.message : '后台处理失败。',
-      })
-
-      emitBlockChanged({
-        block,
-        reason: 'enriched',
-      })
+    if (!currentBlock) {
+      return false
     }
+
+    const tags = [
+      ...assignment.categories.map((tagName) => getOrCreateTag(db, tagName, 'category')),
+      ...assignment.detailTags.map((tagName) => getOrCreateTag(db, tagName, 'detail')),
+    ]
+    syncAutoBlockTags(db, blockId, tags)
+
+    if (mode === 'live') {
+      clearRuntimeAiError()
+    }
+
+    const block = updateBlockState(db, {
+      id: blockId,
+      status: 'ready',
+      aiMode: mode,
+      summary: assignment.summary,
+      updatedAt: currentBlock.updatedAt,
+    })
+
+    if (options.enqueueVector !== false) {
+      enqueueBlocksForVectorReindex([block])
+      scheduleReindex(embeddingProvider, mode)
+    }
+
+    emitBlockChanged({
+      block,
+      reason: 'enriched',
+    })
+
+    return true
+  }
+
+  async function runEnrichWithRetry(
+    blockId: string,
+    content: string,
+    generation: number,
+    options: { enqueueVector?: boolean } = {},
+  ): Promise<boolean> {
+    const aiMode = getExecutionMode()
+
+    for (let attempt = 0; attempt <= MAX_ENRICH_RETRIES; attempt += 1) {
+      try {
+        return await enrichBlock(blockId, content, generation, options)
+      } catch (error) {
+        const currentBlock = getFreshBlockForEnrich(blockId, generation)
+
+        if (!currentBlock) {
+          return false
+        }
+
+        const isLastAttempt = attempt === MAX_ENRICH_RETRIES
+        const shouldRetry = aiMode === 'live' && isTransientEnrichError(error) && !isLastAttempt
+
+        if (shouldRetry) {
+          const block = updateBlockState(db, {
+            id: blockId,
+            status: 'pending',
+            aiMode,
+            updatedAt: currentBlock.updatedAt,
+            errorMessage: error instanceof Error ? `自动重试中：${error.message}` : '自动重试中。',
+          })
+
+          emitBlockChanged({
+            block,
+            reason: 'enriched',
+          })
+
+          await sleep(ENRICH_RETRY_DELAY_MS)
+          continue
+        }
+
+        if (aiMode === 'live') {
+          rememberRuntimeAiError(error)
+        }
+
+        const failedBlock = getFreshBlockForEnrich(blockId, generation)
+
+        if (!failedBlock) {
+          return false
+        }
+
+        const block = updateBlockState(db, {
+          id: blockId,
+          status: 'error',
+          aiMode,
+          updatedAt: failedBlock.updatedAt,
+          errorMessage: error instanceof Error ? error.message : '后台处理失败。',
+        })
+
+        emitBlockChanged({
+          block,
+          reason: 'enriched',
+        })
+
+        return false
+      }
+    }
+
+    return false
   }
 
   async function createStandaloneBlock(content: string): Promise<Block> {
@@ -630,6 +824,7 @@ export function createAppContext(options: AppContextOptions): AppContext {
       createdAt: now,
       updatedAt: now,
     })
+    const enrichGeneration = advanceBlockEnrichGeneration(block.id)
 
     syncBlockAttachmentRecords(db, options.dataDirectory, block.id, safeContent)
 
@@ -638,7 +833,7 @@ export function createAppContext(options: AppContextOptions): AppContext {
       reason: 'created',
     })
 
-    void trackTask(enrichBlock(block.id, safeContent))
+    void trackTask(runEnrichWithRetry(block.id, safeContent, enrichGeneration))
 
     return block
   }
@@ -663,6 +858,7 @@ export function createAppContext(options: AppContextOptions): AppContext {
 
     async updateBlock(id, content) {
       const safeContent = validateContent(content)
+      const enrichGeneration = advanceBlockEnrichGeneration(id)
       const aiMode = getExecutionMode()
       const updatedAt = new Date().toISOString()
       const block = updateBlockContent(db, {
@@ -687,19 +883,22 @@ export function createAppContext(options: AppContextOptions): AppContext {
         reason: 'updated',
       })
 
-      void trackTask(enrichBlock(id, safeContent))
+      void trackTask(runEnrichWithRetry(id, safeContent, enrichGeneration))
       void trackTask(cleanupOrphanAttachments(db, options.dataDirectory))
 
       return getBlockById(db, id)
     },
 
     async removeBlock(id) {
+      advanceBlockEnrichGeneration(id)
       touchNotebooksForBlock(db, id, new Date().toISOString())
       const deletedBlock = deleteBlockRecord(db, id)
 
       if (vectorReady) {
         deleteBlockVector(db, id)
       }
+
+      removePendingBlockVectors(db, [id])
 
       emitBlockChanged({
         block: deletedBlock,
@@ -886,6 +1085,7 @@ export function createAppContext(options: AppContextOptions): AppContext {
       })
 
       const block = transaction()
+      const enrichGeneration = advanceBlockEnrichGeneration(block.id)
       syncBlockAttachmentRecords(db, options.dataDirectory, block.id, safeContent)
 
       emitBlockChanged({
@@ -893,7 +1093,7 @@ export function createAppContext(options: AppContextOptions): AppContext {
         reason: 'created',
       })
 
-      void trackTask(enrichBlock(block.id, safeContent))
+      void trackTask(runEnrichWithRetry(block.id, safeContent, enrichGeneration))
 
       return getNotebookById(db, notebookId)
     },
@@ -1066,14 +1266,35 @@ export function createAppContext(options: AppContextOptions): AppContext {
           block,
           reason: 'created',
         })
-
-        if (job.format === 'markdown') {
-          void trackTask(enrichBlock(block.id, block.content))
-        }
       }
 
-      const { mode, embeddingProvider } = getProviders()
-      scheduleReindex(embeddingProvider, mode)
+      if (job.format === 'markdown') {
+        void trackTask(
+          (async () => {
+            const succeededIds: string[] = []
+
+            for (const block of importedBlocks) {
+              const enrichGeneration = advanceBlockEnrichGeneration(block.id)
+              const succeeded = await runEnrichWithRetry(block.id, block.content, enrichGeneration, { enqueueVector: false })
+
+              if (succeeded) {
+                succeededIds.push(block.id)
+              }
+            }
+
+            const enrichedBlocks = getBlocksByIds(db, succeededIds)
+            enqueueBlocksForVectorReindex(enrichedBlocks)
+
+            const { mode, embeddingProvider } = getProviders()
+            scheduleReindex(embeddingProvider, mode)
+          })(),
+        )
+      } else {
+        enqueueBlocksForVectorReindex(importedBlocks)
+        const { mode, embeddingProvider } = getProviders()
+        scheduleReindex(embeddingProvider, mode)
+      }
+
       void trackTask(cleanupOrphanAttachments(db, options.dataDirectory))
       return result
     },
@@ -1096,7 +1317,7 @@ export function createAppContext(options: AppContextOptions): AppContext {
         }
 
         clearRuntimeAiError()
-        ensureVectorSchemaForCurrentState()
+        ensureVectorSchemaForCurrentState(true)
       }
     },
 
@@ -1105,9 +1326,9 @@ export function createAppContext(options: AppContextOptions): AppContext {
       setSetting(db, AI_LAST_TEST_RESULT_KEY, JSON.stringify(result))
 
       if (vectorReady && result.success && result.embeddingDimension) {
-        ensureSchemaForDimension(result.embeddingDimension)
+        const schemaChanged = ensureSchemaForDimension(result.embeddingDimension)
         const embeddingProvider = createLiveEmbeddingProvider(config, tokenSink)
-        scheduleReindex(embeddingProvider, 'live')
+        scheduleReindex(embeddingProvider, 'live', { fullRebuild: schemaChanged })
       }
 
       return result

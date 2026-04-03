@@ -8,7 +8,7 @@
 
 - 在一条时间轴上持续记录
 - 每条记录按块存储到本地 SQLite
-- 系统自动生成标签与向量
+- 系统先补全标签与摘要，再由后台批处理补齐向量
 - 用户按关键词、标签或主题检索历史块
 - AI 基于召回块流式生成结构化文档
 
@@ -27,17 +27,20 @@
 ### 标签与检索
 
 - 默认标签库初始化
-- 规则优先 + LLM 兜底的自动标签
+- 规则优先 + LLM 兜底的自动标签与摘要
 - 手动添加 / 删除标签
 - 按标签浏览
 - 标签 + FTS5 + sqlite-vec 混合检索
 - 搜索结果关键词高亮
+- 新建或更新后先依赖标签 + FTS 检索，向量命中由后台批处理补强
 
 ### AI 与文档生成
 
 - OpenAI 兼容 Embedding / Chat API 接入
 - 硅基流动兼容性验证
 - 向量维度自适应（例如 `BAAI/bge-m3` 的 1024 维）
+- 向量补齐进入持久化队列，并由单飞后台批处理 drain
+- 快速连续编辑或删除块时，旧 enrich / 向量任务不会回写过期结果
 - 文档流式生成
 - 文档 Markdown 阅读态展示
 
@@ -48,6 +51,15 @@
 - 块内插入 Markdown 图片链接
 - `attachments` / `block_attachments` 数据表记录显式关联
 - 删除块或移除图片引用后清理孤儿附件
+
+### 笔记本、快照与导入导出
+
+- Notebook 支持 block / heading / divider / note / todo 混排
+- Notebook 引用块支持 excluded / locked / pinned 审核状态
+- 生成文档时会把结构项整理成 writing guide 参与生成
+- 支持保存和读取 notebook 关联快照
+- 支持 Markdown / JSON 导入导出
+- Markdown 导入会复用同一条 enrich + 后台向量补齐链路
 
 ## 技术栈
 
@@ -155,8 +167,7 @@ pnpm package:win
 - 多设备同步
 - 连接图可视化
 - 完整富文本编辑器（当前为 Markdown + textarea）
-- 导入 / 导出
-- 文档快照保存与分享
+- 快照分享能力
 - 面向公开发布的 Windows 安装包验证
 
 ## 开源发布前建议

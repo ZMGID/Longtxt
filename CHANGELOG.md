@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- 修复块 enrich 异步竞争：旧任务不会再覆盖较新的标签、摘要或错误状态，删除后的块也不会被晚到任务写回
+- 加固后台向量补齐 drain，确保 reindex 运行期间新入队任务也会继续处理到队列清空
+- 同步 README 与 CLAUDE 文档到“标签/摘要即时补全，向量后台批处理补齐”的当前实现
+
 ## 0.1.0
 
 - 初始化 Electron + React + TypeScript + Vite 桌面应用结构

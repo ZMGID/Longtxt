@@ -1,19 +1,36 @@
 // @vitest-environment node
 
-import { mkdtempSync, rmSync } from 'node:fs'
+import Database from 'better-sqlite3'
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { DOC_GENERATION_SETTINGS_KEY } from '../../shared/config'
-import type { DocGenerationChunk } from '../../shared/types'
+import type { AIConfig, BlockChangedEvent, DocGenerationChunk } from '../../shared/types'
 import { createAppContext, type AppContext, type AppContextOptions } from '../appContext'
+import { createConfigFingerprint } from '../services/ai'
 
 const createdContexts: AppContext[] = []
 const createdDirectories: string[] = []
 
-function makeContext(options: Partial<AppContextOptions> = {}): AppContext {
+function buildLiveConfig(): AIConfig {
+  return {
+    llm: {
+      endpoint: 'https://api.example.com',
+      apiKey: 'key-1',
+      model: 'gpt-4o-mini',
+    },
+    embedding: {
+      endpoint: 'https://api.example.com',
+      apiKey: 'key-2',
+      model: 'text-embedding-3-small',
+    },
+  }
+}
+
+function makeContextWithDirectory(options: Partial<AppContextOptions> = {}): { context: AppContext; directory: string } {
   const directory = mkdtempSync(join(tmpdir(), 'changbu-test-'))
   createdDirectories.push(directory)
 
@@ -24,7 +41,107 @@ function makeContext(options: Partial<AppContextOptions> = {}): AppContext {
   })
 
   createdContexts.push(context)
-  return context
+  return { context, directory }
+}
+
+function makeContext(options: Partial<AppContextOptions> = {}): AppContext {
+  return makeContextWithDirectory(options).context
+}
+
+function openDb(directory: string): Database.Database {
+  return new Database(join(directory, 'changbu.sqlite3'))
+}
+
+function makeLlmResponse(summary: string, categories: string[] = ['技术'], detailTags: string[] = ['Electron']): Response {
+  return new Response(
+    JSON.stringify({
+      choices: [
+        {
+          message: {
+            content: JSON.stringify({
+              categories,
+              detail_tags: detailTags,
+              summary,
+            }),
+          },
+        },
+      ],
+      usage: { prompt_tokens: 5, completion_tokens: 7, total_tokens: 12 },
+    }),
+    { status: 200, headers: { 'Content-Type': 'application/json' } },
+  )
+}
+
+function makeEmbeddingResponse(vectors: number[][]): Response {
+  return new Response(
+    JSON.stringify({
+      data: vectors.map((embedding) => ({ embedding })),
+      usage: { prompt_tokens: 3, total_tokens: 3 },
+    }),
+    { status: 200, headers: { 'Content-Type': 'application/json' } },
+  )
+}
+
+function makeEmbeddingResponder(vectors: number[][]): () => Promise<Response> {
+  return async () => makeEmbeddingResponse(vectors)
+}
+
+function createDeferredTask<T>(): {
+  promise: Promise<T>
+  resolve: (value: T) => void
+  reject: (error: unknown) => void
+} {
+  let resolve!: (value: T) => void
+  let reject!: (error: unknown) => void
+  const promise = new Promise<T>((nextResolve, nextReject) => {
+    resolve = nextResolve
+    reject = nextReject
+  })
+
+  return { promise, resolve, reject }
+}
+
+function createDeferredResponse(): {
+  promise: Promise<Response>
+  resolve: (response: Response) => void
+  reject: (error: unknown) => void
+} {
+  const deferred = createDeferredTask<Response>()
+  return deferred
+}
+
+async function configureLiveMode(context: AppContext, config = buildLiveConfig(), embeddingDimension = 4): Promise<void> {
+  await context.setSetting('ai_config', JSON.stringify(config))
+  await context.setSetting(
+    'ai_last_test_result',
+    JSON.stringify({
+      success: true,
+      modelsOk: true,
+      embeddingOk: true,
+      llmOk: true,
+      llmStreamingOk: true,
+      resolvedBaseUrl: 'https://api.example.com',
+      embeddingModel: config.embedding.model,
+      embeddingDimension,
+      chatModel: config.llm.model,
+      checkedAt: new Date().toISOString(),
+      configFingerprint: createConfigFingerprint(config),
+    }),
+  )
+}
+
+async function waitForCondition(condition: () => boolean | Promise<boolean>, timeoutMs = 2_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs
+
+  while (Date.now() < deadline) {
+    if (await condition()) {
+      return
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, 10))
+  }
+
+  throw new Error('Timed out waiting for condition.')
 }
 
 afterEach(() => {
@@ -59,9 +176,8 @@ describe('app context', () => {
     expect(searchResults[0].matchSource).toContain('fts')
 
     const meta = await context.getMeta()
-    if (meta.vectorReady) {
-      expect(searchResults[0].matchSource).toContain('vector')
-    }
+    expect(meta.vectorReady).toBeTypeOf('boolean')
+    expect(meta.vectorSchemaReady).toBeTypeOf('boolean')
 
     await context.updateBlock(created.id, '把搜索与文档生成链路也接进 Electron')
     await context.whenIdle()
@@ -88,6 +204,24 @@ describe('app context', () => {
     await context.removeBlock(created.id)
     const afterDelete = await context.listBlocks()
     expect(afterDelete).toHaveLength(0)
+  })
+
+  it('keeps tag enrichment working when corpus scoring only uses recent blocks', async () => {
+    const context = makeContext()
+
+    for (let index = 0; index < 80; index += 1) {
+      await context.createBlock(`历史记录 ${index + 1}：整理旅行、阅读和健身碎片。`)
+    }
+
+    const created = await context.createBlock('继续排查 React 列表性能，并补上 Electron IPC 联调记录。')
+    await context.whenIdle()
+
+    const block = await context.getBlock(created.id)
+    const tagNames = block.tags.map((tag) => tag.name)
+
+    expect(block.status).toBe('ready')
+    expect(tagNames).toContain('前端')
+    expect(tagNames).toContain('项目')
   })
 
   it('supports notebook creation, collection, ordering, and notebook-local block creation', async () => {
@@ -279,6 +413,388 @@ describe('app context', () => {
     expect(meta.activeAiMode).toBe('live')
     expect(meta.vectorDimension).toBe(4)
     expect(meta.lastAiTestResult?.embeddingDimension).toBe(4)
+
+    global.fetch = originalFetch
+  })
+
+  it('retries transient live enrich errors before succeeding', async () => {
+    const originalFetch = global.fetch
+    const events: BlockChangedEvent[] = []
+    const context = makeContext({
+      onBlockChanged: (event) => {
+        events.push(event)
+      },
+    })
+    const config = buildLiveConfig()
+    const configFingerprint = createConfigFingerprint(config)
+    const makeEmbeddingResponse = () =>
+      new Response(
+        JSON.stringify({
+          data: [{ embedding: [0.1, 0.2, 0.3, 0.4] }],
+          usage: { prompt_tokens: 3, total_tokens: 3 },
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      )
+    const makeLlmResponse = () =>
+      new Response(
+        JSON.stringify({
+          choices: [
+            {
+              message: {
+                content: '{"categories":["技术"],"detail_tags":["Electron"],"summary":"Electron 记录"}',
+              },
+            },
+          ],
+          usage: { prompt_tokens: 5, completion_tokens: 7, total_tokens: 12 },
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      )
+
+    global.fetch = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('请求超时'))
+      .mockResolvedValueOnce(makeLlmResponse())
+      .mockResolvedValueOnce(makeEmbeddingResponse())
+      .mockResolvedValueOnce(makeEmbeddingResponse()) as typeof global.fetch
+
+    await context.setSetting('ai_config', JSON.stringify(config))
+    await context.setSetting(
+      'ai_last_test_result',
+      JSON.stringify({
+        success: true,
+        modelsOk: true,
+        embeddingOk: true,
+        llmOk: true,
+        llmStreamingOk: true,
+        resolvedBaseUrl: 'https://api.example.com',
+        embeddingModel: 'text-embedding-3-small',
+        embeddingDimension: 4,
+        chatModel: 'gpt-4o-mini',
+        checkedAt: new Date().toISOString(),
+        configFingerprint,
+      }),
+    )
+
+    const created = await context.createBlock('记录 Electron IPC 重试行为')
+    await context.whenIdle()
+
+    const block = await context.getBlock(created.id)
+    expect(block.status).toBe('ready')
+    expect(block.errorMessage).toBeNull()
+    expect(block.summary).toBe('Electron 记录')
+    expect(block.tags.map((tag) => tag.name.toLowerCase())).toContain('electron')
+
+    const retryEvent = events.find((event) => event.block.id === created.id && event.block.status === 'pending' && event.block.errorMessage?.includes('自动重试中'))
+    expect(retryEvent).toBeDefined()
+
+    const meta = await context.getMeta()
+    expect(meta.lastAiError).toBeNull()
+    expect(global.fetch).toHaveBeenCalledTimes(3)
+
+    global.fetch = originalFetch
+  })
+
+  it('does not retry non-transient live enrich errors', async () => {
+    const originalFetch = global.fetch
+    const context = makeContext()
+    const config = buildLiveConfig()
+    const configFingerprint = createConfigFingerprint(config)
+
+    global.fetch = vi.fn().mockRejectedValue(new Error('标签 JSON 解析失败')) as typeof global.fetch
+
+    await context.setSetting('ai_config', JSON.stringify(config))
+    await context.setSetting(
+      'ai_last_test_result',
+      JSON.stringify({
+        success: true,
+        modelsOk: true,
+        embeddingOk: true,
+        llmOk: true,
+        llmStreamingOk: true,
+        resolvedBaseUrl: 'https://api.example.com',
+        embeddingModel: 'text-embedding-3-small',
+        embeddingDimension: 4,
+        chatModel: 'gpt-4o-mini',
+        checkedAt: new Date().toISOString(),
+        configFingerprint,
+      }),
+    )
+
+    const created = await context.createBlock('记录不会重试的标签错误')
+    await context.whenIdle()
+
+    const block = await context.getBlock(created.id)
+    expect(block.status).toBe('error')
+    expect(block.errorMessage).toBe('标签 JSON 解析失败')
+    expect(global.fetch).toHaveBeenCalledTimes(1)
+
+    const meta = await context.getMeta()
+    expect(meta.lastAiError).toBe('标签 JSON 解析失败')
+
+    global.fetch = originalFetch
+  })
+
+  it('ignores enrich results that arrive after the block is deleted', async () => {
+    const originalFetch = global.fetch
+    const delayedLlm = createDeferredResponse()
+    const events: BlockChangedEvent[] = []
+    const context = makeContext({
+      onBlockChanged: (event) => {
+        events.push(event)
+      },
+    })
+    const fetchMock = vi.fn().mockImplementationOnce(() => delayedLlm.promise)
+
+    global.fetch = fetchMock as typeof global.fetch
+
+    await configureLiveMode(context)
+
+    const created = await context.createBlock('删除前先挂起 enrich，确认晚到结果不会写回。')
+    await waitForCondition(() => fetchMock.mock.calls.length === 1)
+
+    await context.removeBlock(created.id)
+    delayedLlm.resolve(makeLlmResponse('过期摘要', ['技术'], ['过期标签']))
+    await context.whenIdle()
+
+    await expect(context.getBlock(created.id)).rejects.toThrow(`Block ${created.id} not found`)
+    expect(await context.listBlocks()).toEqual([])
+    expect(events.filter((event) => event.block.id === created.id).map((event) => event.reason)).toEqual(['created', 'deleted'])
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+
+    global.fetch = originalFetch
+  })
+
+  it('keeps the latest enrich result when the same block is updated twice quickly', async () => {
+    const originalFetch = global.fetch
+    const firstLlm = createDeferredResponse()
+    const context = makeContext()
+    const fetchMock = vi
+      .fn()
+      .mockImplementationOnce(() => firstLlm.promise)
+      .mockResolvedValueOnce(makeLlmResponse('第二版摘要', ['技术'], ['Electron']))
+      .mockResolvedValueOnce(makeEmbeddingResponse([[0.11, 0.12, 0.13, 0.14]]))
+
+    global.fetch = fetchMock as typeof global.fetch
+
+    await configureLiveMode(context)
+
+    const created = await context.createBlock('第一版内容只提到 React。')
+    await waitForCondition(() => fetchMock.mock.calls.length === 1)
+
+    await context.updateBlock(created.id, '第二版内容改成 Electron IPC。')
+    await waitForCondition(async () => (await context.getBlock(created.id)).summary === '第二版摘要')
+
+    firstLlm.resolve(makeLlmResponse('第一版摘要', ['技术'], ['React']))
+    await context.whenIdle()
+
+    const block = await context.getBlock(created.id)
+    const tagNames = block.tags.map((tag) => tag.name.toLowerCase())
+
+    expect(block.status).toBe('ready')
+    expect(block.content).toBe('第二版内容改成 Electron IPC。')
+    expect(block.summary).toBe('第二版摘要')
+    expect(tagNames).toContain('electron')
+    expect(tagNames).not.toContain('react')
+    expect(fetchMock).toHaveBeenCalledTimes(3)
+
+    global.fetch = originalFetch
+  })
+
+  it('does not let an older enrich failure overwrite a newer successful result', async () => {
+    const originalFetch = global.fetch
+    const firstLlm = createDeferredResponse()
+    const context = makeContext()
+    const fetchMock = vi
+      .fn()
+      .mockImplementationOnce(() => firstLlm.promise)
+      .mockResolvedValueOnce(makeLlmResponse('较新摘要', ['技术'], ['较新标签']))
+      .mockResolvedValueOnce(makeEmbeddingResponse([[0.21, 0.22, 0.23, 0.24]]))
+
+    global.fetch = fetchMock as typeof global.fetch
+
+    await configureLiveMode(context)
+
+    const created = await context.createBlock('旧内容会失败。')
+    await waitForCondition(() => fetchMock.mock.calls.length === 1)
+
+    await context.updateBlock(created.id, '新内容已经成功。')
+    await waitForCondition(async () => (await context.getBlock(created.id)).summary === '较新摘要')
+
+    firstLlm.reject(new Error('旧任务失败。'))
+    await context.whenIdle()
+
+    const block = await context.getBlock(created.id)
+
+    expect(block.status).toBe('ready')
+    expect(block.content).toBe('新内容已经成功。')
+    expect(block.summary).toBe('较新摘要')
+    expect(block.errorMessage).toBeNull()
+    expect(block.tags.map((tag) => tag.name)).toContain('较新标签')
+    expect(fetchMock).toHaveBeenCalledTimes(3)
+
+    global.fetch = originalFetch
+  })
+
+  it('does not mark vector schema as unavailable while queued vector work is still running', async () => {
+    const originalFetch = global.fetch
+    const firstEmbedding = createDeferredResponse()
+    const context = makeContext()
+
+    global.fetch = vi
+      .fn()
+      .mockResolvedValueOnce(makeLlmResponse('延迟向量摘要', ['技术'], ['队列']))
+      .mockImplementationOnce(() => firstEmbedding.promise)
+      .mockImplementation(makeEmbeddingResponder([[0.31, 0.32, 0.33, 0.34]])) as typeof global.fetch
+
+    await configureLiveMode(context)
+
+    const created = await context.createBlock('先完成标签摘要，再等待后台批量向量化。')
+    await waitForCondition(async () => (await context.getBlock(created.id)).status === 'ready')
+
+    const metaDuringQueue = await context.getMeta()
+    expect(metaDuringQueue.vectorReady).toBe(true)
+    expect(metaDuringQueue.vectorSchemaReady).toBe(true)
+
+    firstEmbedding.resolve(makeEmbeddingResponse([[0.41, 0.42, 0.43, 0.44]]))
+    await context.whenIdle()
+
+    const searchResults = await context.searchBlocks('后台批量向量化')
+    expect(searchResults.some((item) => item.block.id === created.id)).toBe(true)
+
+    global.fetch = originalFetch
+  })
+
+  it('removes stale vectors immediately after block updates and restores them after batched reindex', async () => {
+    const originalFetch = global.fetch
+    const firstEmbedding = createDeferredResponse()
+    const secondEmbedding = createDeferredResponse()
+    const context = makeContext()
+
+    global.fetch = vi
+      .fn()
+      .mockResolvedValueOnce(makeLlmResponse('首次摘要', ['技术'], ['React']))
+      .mockImplementationOnce(() => firstEmbedding.promise)
+      .mockResolvedValueOnce(makeLlmResponse('更新后摘要', ['技术'], ['Electron']))
+      .mockImplementationOnce(() => secondEmbedding.promise)
+      .mockImplementation(makeEmbeddingResponder([[0.81, 0.82, 0.83, 0.84]])) as typeof global.fetch
+
+    await configureLiveMode(context)
+
+    const created = await context.createBlock('第一版内容只提到 React。')
+    await waitForCondition(async () => (await context.getBlock(created.id)).status === 'ready')
+
+    firstEmbedding.resolve(makeEmbeddingResponse([[0.1, 0.2, 0.3, 0.4]]))
+    await context.whenIdle()
+
+    await context.updateBlock(created.id, '第二版内容改成 Electron IPC 方案。')
+    await waitForCondition(async () => (await context.getBlock(created.id)).status === 'ready')
+
+    const beforeSecondEmbedding = await context.searchBlocks('Electron IPC 方案')
+    expect(beforeSecondEmbedding.some((item) => item.block.id === created.id)).toBe(true)
+    expect(beforeSecondEmbedding.find((item) => item.block.id === created.id)?.matchSource).not.toContain('vector')
+
+    secondEmbedding.resolve(makeEmbeddingResponse([[0.5, 0.6, 0.7, 0.8]]))
+    await context.whenIdle()
+
+    const afterSecondEmbedding = await context.searchBlocks('Electron IPC 方案')
+    expect(afterSecondEmbedding.some((item) => item.block.id === created.id && item.matchSource.includes('vector'))).toBe(true)
+
+    global.fetch = originalFetch
+  })
+
+  it('drains newly queued blocks in the same reindex run', async () => {
+    const originalFetch = global.fetch
+    const firstBatch = createDeferredResponse()
+    const context = makeContext()
+
+    global.fetch = vi
+      .fn()
+      .mockResolvedValueOnce(makeLlmResponse('第一条摘要', ['技术'], ['A']))
+      .mockImplementationOnce(() => firstBatch.promise)
+      .mockResolvedValueOnce(makeLlmResponse('第二条摘要', ['技术'], ['B']))
+      .mockImplementation(makeEmbeddingResponder([[0.51, 0.52, 0.53, 0.54]])) as typeof global.fetch
+
+    await configureLiveMode(context)
+
+    const first = await context.createBlock('第一条记录：用于占住第一轮向量批处理。')
+    await waitForCondition(async () => (await context.getBlock(first.id)).status === 'ready')
+
+    const second = await context.createBlock('第二条记录：在第一轮向量处理中途加入队列。')
+    await waitForCondition(async () => (await context.getBlock(second.id)).status === 'ready')
+
+    firstBatch.resolve(makeEmbeddingResponse([[0.21, 0.22, 0.23, 0.24]]))
+    await context.whenIdle()
+
+    const secondResults = await context.searchBlocks('中途加入队列')
+    expect(secondResults.some((item) => item.block.id === second.id && item.matchSource.includes('vector'))).toBe(true)
+    expect(global.fetch).toHaveBeenCalledTimes(5)
+
+    global.fetch = originalFetch
+  })
+
+  it('queues imported markdown blocks for one batched vector reindex after enrich completes', async () => {
+    const originalFetch = global.fetch
+    const { context, directory } = makeContextWithDirectory()
+    const markdownPath = join(directory, 'import.md')
+    writeFileSync(markdownPath, '# 批量导入\n\n需要统一走后台向量补齐。', 'utf8')
+
+    global.fetch = vi
+      .fn()
+      .mockResolvedValueOnce(makeLlmResponse('导入摘要', ['技术'], ['导入']))
+      .mockImplementation(makeEmbeddingResponder([[0.31, 0.32, 0.33, 0.34]])) as typeof global.fetch
+
+    await configureLiveMode(context)
+
+    const preview = await context.previewImportMarkdown([markdownPath])
+    expect(preview?.totalBlocks).toBe(1)
+
+    const imported = await context.confirmImport(preview!.importId, 'overwrite_all')
+    expect(imported.imported).toBe(1)
+    await context.whenIdle()
+
+    const blocks = await context.listBlocks()
+    expect(blocks).toHaveLength(1)
+    expect(blocks[0].status).toBe('ready')
+
+    const results = await context.searchBlocks('后台向量补齐')
+    expect(results.some((item) => item.block.id === blocks[0].id && item.matchSource.includes('vector'))).toBe(true)
+    expect(global.fetch).toHaveBeenCalledTimes(3)
+
+    global.fetch = originalFetch
+  })
+
+  it('cleans pending vector jobs when a block is deleted', async () => {
+    const originalFetch = global.fetch
+    const deferredEmbedding = createDeferredResponse()
+    const { context, directory } = makeContextWithDirectory()
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(makeLlmResponse('删除前摘要', ['技术'], ['删除']))
+      .mockImplementationOnce(() => deferredEmbedding.promise)
+
+    global.fetch = fetchMock as typeof global.fetch
+
+    await configureLiveMode(context)
+
+    const created = await context.createBlock('删除前先进入待补向量队列。')
+    await waitForCondition(async () => (await context.getBlock(created.id)).status === 'ready')
+
+    const db = openDb(directory)
+    const pendingBeforeDelete = db.prepare('SELECT COUNT(*) AS total FROM pending_block_vectors WHERE block_id = ?').get(created.id) as { total: number }
+    expect(pendingBeforeDelete.total).toBe(1)
+    db.close()
+
+    await context.removeBlock(created.id)
+
+    const reopened = openDb(directory)
+    const pendingAfterDelete = reopened.prepare('SELECT COUNT(*) AS total FROM pending_block_vectors WHERE block_id = ?').get(created.id) as { total: number }
+    reopened.close()
+    expect(pendingAfterDelete.total).toBe(0)
+
+    deferredEmbedding.resolve(makeEmbeddingResponse([[0.61, 0.62, 0.63, 0.64]]))
+    await context.whenIdle()
+
+    expect(fetchMock).toHaveBeenCalledTimes(2)
 
     global.fetch = originalFetch
   })
