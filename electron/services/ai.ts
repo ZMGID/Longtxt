@@ -280,6 +280,25 @@ async function requestModels(config: AIEndpointConfig & { resolvedBaseUrl: strin
   return (json.data ?? []).map((item) => item.id ?? '').filter(Boolean)
 }
 
+async function requestProbeModelLists(
+  resolved: ResolvedAIConfig,
+): Promise<{ llmModels: string[]; embeddingModels: string[] }> {
+  const llmModels = await requestModels(resolved.llm)
+  const usesSameCatalog = resolved.llm.resolvedBaseUrl === resolved.embedding.resolvedBaseUrl
+
+  if (usesSameCatalog) {
+    return {
+      llmModels,
+      embeddingModels: llmModels,
+    }
+  }
+
+  return {
+    llmModels,
+    embeddingModels: await requestModels(resolved.embedding),
+  }
+}
+
 async function requestEmbeddings(config: AIEndpointConfig & { resolvedBaseUrl: string }, texts: string[], sink?: TokenUsageSink): Promise<number[][]> {
   const response = await fetchWithTimeout(
     buildEndpoint(config.resolvedBaseUrl, 'embeddings'),
@@ -762,10 +781,10 @@ export async function probeAiConfig(config: AIConfig): Promise<ApiTestResult> {
     configFingerprint,
   }
 
-  let availableModels: string[]
+  let availableModels: { llmModels: string[]; embeddingModels: string[] }
 
   try {
-    availableModels = await requestModels(resolved.llm)
+    availableModels = await requestProbeModelLists(resolved)
   } catch (error) {
     return {
       ...result,
@@ -773,10 +792,15 @@ export async function probeAiConfig(config: AIConfig): Promise<ApiTestResult> {
     }
   }
 
-  if (!availableModels.includes(resolved.embedding.model) || !availableModels.includes(resolved.llm.model)) {
+  const missingModels = [
+    availableModels.embeddingModels.includes(resolved.embedding.model) ? null : `Embedding 模型 ${resolved.embedding.model}`,
+    availableModels.llmModels.includes(resolved.llm.model) ? null : `LLM 模型 ${resolved.llm.model}`,
+  ].filter((item): item is string => Boolean(item))
+
+  if (missingModels.length > 0) {
     return {
       ...result,
-      error: `模型列表检测失败：未找到 ${resolved.embedding.model} 或 ${resolved.llm.model}。`,
+      error: `模型列表检测失败：未找到 ${missingModels.join('，')}。`,
     }
   }
 

@@ -1,7 +1,7 @@
 // @vitest-environment node
 
 import Database from 'better-sqlite3'
-import { mkdtempSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { homedir, tmpdir } from 'node:os'
 
@@ -9,9 +9,10 @@ import { describe, expect, it } from 'vitest'
 
 import type { AIConfig, DocGenerationChunk, SearchResult } from '../../shared/types'
 import { createAppContext } from '../appContext'
+import { resolveSettingsFilePath } from '../settingsFile'
 import * as sqliteVec from 'sqlite-vec'
 
-const USER_DB_PATH = join(homedir(), 'Library', 'Application Support', 'Electron', 'data', 'changbu.sqlite3')
+const USER_SETTINGS_PATH = resolveSettingsFilePath(join(homedir(), 'Library', 'Application Support', 'Electron', 'data'))
 const REPORT_PATH = join(tmpdir(), 'changbu-live-stress-report.json')
 const TOTAL_BLOCKS = 300
 const BATCH_SIZE = 25
@@ -167,19 +168,16 @@ function buildDataset(total: number): string[] {
 }
 
 function readUserAiConfig(): AIConfig {
-  const db = new Database(USER_DB_PATH, { readonly: true })
-
-  try {
-    const row = db.prepare("SELECT value FROM settings WHERE key = 'ai_config'").get() as { value: string } | undefined
-
-    if (!row?.value) {
-      throw new Error('未在用户数据库中找到 ai_config。')
-    }
-
-    return JSON.parse(row.value) as AIConfig
-  } finally {
-    db.close()
+  const raw = JSON.parse(readFileSync(USER_SETTINGS_PATH, 'utf8')) as {
+    settings?: Record<string, string>
   }
+  const value = raw.settings?.ai_config
+
+  if (!value) {
+    throw new Error('未在用户设置文件中找到 ai_config。')
+  }
+
+  return JSON.parse(value) as AIConfig
 }
 
 function openTempDatabase(databasePath: string): Database.Database {

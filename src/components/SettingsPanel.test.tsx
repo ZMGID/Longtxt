@@ -7,6 +7,7 @@ describe('SettingsPanel', () => {
   it('renders and updates max reference block setting', () => {
     const onDocGenerationSettingsChange = vi.fn()
     const onUISettingsChange = vi.fn()
+    const onOpenSettingsDirectory = vi.fn()
 
     render(
       <SettingsPanel
@@ -38,6 +39,7 @@ describe('SettingsPanel', () => {
         onSave={vi.fn()}
         onTest={vi.fn()}
         onOpenDataDirectory={vi.fn()}
+        onOpenSettingsDirectory={onOpenSettingsDirectory}
       />,
     )
 
@@ -54,5 +56,9 @@ describe('SettingsPanel', () => {
     fireEvent.click(checkbox)
 
     expect(onUISettingsChange).toHaveBeenCalledWith({ showMiniTimeline: false })
+
+    fireEvent.click(screen.getByRole('button', { name: '打开设置文件目录' }))
+
+    expect(onOpenSettingsDirectory).toHaveBeenCalledTimes(1)
   })
 })

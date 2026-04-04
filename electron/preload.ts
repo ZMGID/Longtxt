@@ -95,6 +95,7 @@ const api: ChangbuApi = {
     set: (key, value) => ipcRenderer.invoke(IPC_CHANNELS.settings.set, key, value),
     testApi: (config) => ipcRenderer.invoke(IPC_CHANNELS.settings.testApi, config),
     openDataDirectory: () => ipcRenderer.invoke(IPC_CHANNELS.settings.openDataDirectory),
+    openSettingsDirectory: () => ipcRenderer.invoke(IPC_CHANNELS.settings.openSettingsDirectory),
     getMeta: () => ipcRenderer.invoke(IPC_CHANNELS.settings.getMeta),
   },
   vectors: {

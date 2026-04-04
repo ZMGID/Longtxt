@@ -75,6 +75,80 @@ function migrateLegacyNotebookBlocks(db: Database.Database): void {
   transaction()
 }
 
+function migrateBlockAttachmentsSchema(db: Database.Database): void {
+  const row = db
+    .prepare(
+      `
+        SELECT sql
+        FROM sqlite_master
+        WHERE type = 'table'
+          AND name = 'block_attachments'
+      `,
+    )
+    .get() as { sql: string } | undefined
+
+  const sql = row?.sql ?? ''
+
+  if (!/PRIMARY KEY\s*\(\s*block_id\s*,\s*attachment_id\s*\)/i.test(sql)) {
+    db.exec(`CREATE INDEX IF NOT EXISTS idx_block_attachments_block_id ON block_attachments (block_id, sort_order);`)
+    db.exec(`CREATE INDEX IF NOT EXISTS idx_block_attachments_attachment_id ON block_attachments (attachment_id);`)
+    return
+  }
+
+  db.exec(`ALTER TABLE block_attachments RENAME TO block_attachments_legacy;`)
+  db.exec(`
+    CREATE TABLE block_attachments (
+      block_id TEXT NOT NULL REFERENCES blocks(id) ON DELETE CASCADE,
+      attachment_id TEXT NOT NULL REFERENCES attachments(id) ON DELETE CASCADE,
+      sort_order INTEGER NOT NULL DEFAULT 0,
+      alt_text TEXT,
+      PRIMARY KEY (block_id, sort_order)
+    );
+  `)
+
+  const legacyRows = db
+    .prepare(
+      `
+        SELECT block_id AS blockId, attachment_id AS attachmentId, sort_order AS sortOrder, alt_text AS altText
+        FROM block_attachments_legacy
+        ORDER BY block_id ASC, sort_order ASC, attachment_id ASC
+      `,
+    )
+    .all() as Array<{
+    blockId: string
+    attachmentId: string
+    sortOrder: number
+    altText: string | null
+  }>
+
+  const insert = db.prepare(
+    `
+      INSERT INTO block_attachments (block_id, attachment_id, sort_order, alt_text)
+      VALUES (?, ?, ?, ?)
+    `,
+  )
+
+  const transaction = db.transaction(() => {
+    let lastBlockId: string | null = null
+    let nextSortOrder = 0
+
+    for (const row of legacyRows) {
+      if (row.blockId !== lastBlockId) {
+        lastBlockId = row.blockId
+        nextSortOrder = 0
+      }
+
+      insert.run(row.blockId, row.attachmentId, nextSortOrder, row.altText)
+      nextSortOrder += 1
+    }
+  })
+
+  transaction()
+  db.exec(`DROP TABLE block_attachments_legacy;`)
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_block_attachments_block_id ON block_attachments (block_id, sort_order);`)
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_block_attachments_attachment_id ON block_attachments (attachment_id);`)
+}
+
 export function initializeDatabase(db: Database.Database): DatabaseBootstrapResult {
   db.pragma('journal_mode = WAL')
   db.pragma('foreign_keys = ON')
@@ -87,6 +161,7 @@ export function initializeDatabase(db: Database.Database): DatabaseBootstrapResu
   seedDefaultTags(db)
   migrateTagKinds(db)
   migrateLegacyNotebookBlocks(db)
+  migrateBlockAttachmentsSchema(db)
 
   let vectorReady = false
 

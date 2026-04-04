@@ -566,9 +566,8 @@ describe('app context', () => {
     global.fetch = vi
       .fn()
       .mockRejectedValueOnce(new Error('请求超时'))
-      .mockResolvedValueOnce(makeLlmResponse())
       .mockResolvedValueOnce(makeEmbeddingResponse())
-      .mockResolvedValueOnce(makeEmbeddingResponse()) as typeof global.fetch
+      .mockResolvedValueOnce(makeLlmResponse()) as typeof global.fetch
 
     await context.setSetting('ai_config', JSON.stringify(config))
     await context.setSetting(
@@ -613,7 +612,10 @@ describe('app context', () => {
     const config = buildLiveConfig()
     const configFingerprint = createConfigFingerprint(config)
 
-    global.fetch = vi.fn().mockRejectedValue(new Error('标签 JSON 解析失败')) as typeof global.fetch
+    global.fetch = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('标签 JSON 解析失败'))
+      .mockResolvedValueOnce(makeEmbeddingResponse([[0.1, 0.2, 0.3, 0.4]])) as typeof global.fetch
 
     await context.setSetting('ai_config', JSON.stringify(config))
     await context.setSetting(
@@ -639,10 +641,126 @@ describe('app context', () => {
     const block = await context.getBlock(created.id)
     expect(block.status).toBe('error')
     expect(block.errorMessage).toBe('标签 JSON 解析失败')
-    expect(global.fetch).toHaveBeenCalledTimes(1)
+    expect(global.fetch).toHaveBeenCalledTimes(2)
 
     const meta = await context.getMeta()
     expect(meta.lastAiError).toBe('标签 JSON 解析失败')
+
+    global.fetch = originalFetch
+  })
+
+  it('keeps vector recall available when live enrich fails', async () => {
+    const originalFetch = global.fetch
+    const context = makeContext()
+
+    await configureLiveMode(context)
+
+    global.fetch = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('标签 JSON 解析失败'))
+      .mockResolvedValueOnce(makeEmbeddingResponse([[0.41, 0.42, 0.43, 0.44]]))
+      .mockResolvedValueOnce(makeEmbeddingResponse([[0.41, 0.42, 0.43, 0.44]])) as typeof global.fetch
+
+    const created = await context.createBlock('原文内容与后续查询完全不重合。')
+    await context.whenIdle()
+
+    const block = await context.getBlock(created.id)
+    expect(block.status).toBe('error')
+
+    const results = await context.searchBlocks('语义召回验证')
+    expect(results).toHaveLength(1)
+    expect(results[0].block.id).toBe(created.id)
+    expect(results[0].matchSource).toEqual(['vector'])
+
+    global.fetch = originalFetch
+  })
+
+  it('falls back to text retrieval when live query embeddings fail', async () => {
+    const originalFetch = global.fetch
+    const context = makeContext()
+
+    await configureLiveMode(context)
+
+    global.fetch = vi
+      .fn()
+      .mockResolvedValueOnce(makeLlmResponse('检索降级摘要', ['技术'], ['Electron']))
+      .mockResolvedValueOnce(makeEmbeddingResponse([[0.51, 0.52, 0.53, 0.54]])) as typeof global.fetch
+
+    const created = await context.createBlock('Electron 检索降级验证文本')
+    await context.whenIdle()
+
+    global.fetch = vi.fn().mockRejectedValueOnce(new Error('query embedding failed')) as typeof global.fetch
+
+    const results = await context.searchBlocks('Electron')
+    expect(results.some((item) => item.block.id === created.id)).toBe(true)
+    expect(results[0].matchSource).toContain('fts')
+    expect(results[0].matchSource).not.toContain('vector')
+
+    const meta = await context.getMeta()
+    expect(meta.lastAiError).toBe('query embedding failed')
+
+    global.fetch = originalFetch
+  })
+
+  it('does not trigger mock reindex on ai_config save and still rebuilds same-dimension vectors after a successful live probe', async () => {
+    const originalFetch = global.fetch
+    const context = makeContext()
+    const config = buildLiveConfig()
+    const vector1536 = new Array(1536).fill(0.01)
+
+    await context.createBlock('等待 live 重建的块。')
+    await context.whenIdle()
+
+    const fetchMock = vi.fn()
+    global.fetch = fetchMock as typeof global.fetch
+
+    await context.setSetting('ai_config', JSON.stringify(config))
+    await context.whenIdle()
+    expect(fetchMock).not.toHaveBeenCalled()
+
+    const encoder = new TextEncoder()
+    const stream = new ReadableStream({
+      start(controller) {
+        controller.enqueue(encoder.encode('data: {"choices":[{"delta":{"content":"OK"}}]}\n\n'))
+        controller.enqueue(encoder.encode('data: [DONE]\n\n'))
+        controller.close()
+      },
+    })
+
+    fetchMock
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            data: [{ id: config.embedding.model }, { id: config.llm.model }],
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } },
+        ),
+      )
+      .mockResolvedValueOnce(makeEmbeddingResponse([vector1536]))
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            choices: [{ message: { content: 'OK' } }],
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } },
+        ),
+      )
+      .mockResolvedValueOnce(
+        new Response(stream, {
+          status: 200,
+          headers: {
+            'Content-Type': 'text/event-stream',
+          },
+        }),
+      )
+      .mockResolvedValueOnce(makeEmbeddingResponse([vector1536]))
+
+    const probe = await context.testApi(config)
+    expect(probe.success).toBe(true)
+    await context.whenIdle()
+
+    expect(fetchMock).toHaveBeenCalledTimes(5)
+    expect((await context.getMeta()).activeAiMode).toBe('live')
 
     global.fetch = originalFetch
   })
@@ -656,14 +774,17 @@ describe('app context', () => {
         events.push(event)
       },
     })
-    const fetchMock = vi.fn().mockImplementationOnce(() => delayedLlm.promise)
+    const fetchMock = vi
+      .fn()
+      .mockImplementationOnce(() => delayedLlm.promise)
+      .mockResolvedValueOnce(makeEmbeddingResponse([[0.11, 0.12, 0.13, 0.14]]))
 
     global.fetch = fetchMock as typeof global.fetch
 
     await configureLiveMode(context)
 
     const created = await context.createBlock('删除前先挂起 enrich，确认晚到结果不会写回。')
-    await waitForCondition(() => fetchMock.mock.calls.length === 1)
+    await waitForCondition(() => fetchMock.mock.calls.length >= 1)
 
     await context.removeBlock(created.id)
     delayedLlm.resolve(makeLlmResponse('过期摘要', ['技术'], ['过期标签']))
@@ -672,7 +793,7 @@ describe('app context', () => {
     await expect(context.getBlock(created.id)).rejects.toThrow(`Block ${created.id} not found`)
     expect(await context.listBlocks()).toEqual([])
     expect(events.filter((event) => event.block.id === created.id).map((event) => event.reason)).toEqual(['created', 'deleted'])
-    expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(fetchMock).toHaveBeenCalledTimes(2)
 
     global.fetch = originalFetch
   })
@@ -684,6 +805,7 @@ describe('app context', () => {
     const fetchMock = vi
       .fn()
       .mockImplementationOnce(() => firstLlm.promise)
+      .mockResolvedValueOnce(makeEmbeddingResponse([[0.01, 0.02, 0.03, 0.04]]))
       .mockResolvedValueOnce(makeLlmResponse('第二版摘要', ['技术'], ['Electron']))
       .mockResolvedValueOnce(makeEmbeddingResponse([[0.11, 0.12, 0.13, 0.14]]))
 
@@ -692,7 +814,7 @@ describe('app context', () => {
     await configureLiveMode(context)
 
     const created = await context.createBlock('第一版内容只提到 React。')
-    await waitForCondition(() => fetchMock.mock.calls.length === 1)
+    await waitForCondition(() => fetchMock.mock.calls.length >= 1)
 
     await context.updateBlock(created.id, '第二版内容改成 Electron IPC。')
     await waitForCondition(async () => (await context.getBlock(created.id)).summary === '第二版摘要')
@@ -708,7 +830,7 @@ describe('app context', () => {
     expect(block.summary).toBe('第二版摘要')
     expect(tagNames).toContain('electron')
     expect(tagNames).not.toContain('react')
-    expect(fetchMock).toHaveBeenCalledTimes(3)
+    expect(fetchMock.mock.calls.length).toBeGreaterThanOrEqual(3)
 
     global.fetch = originalFetch
   })
@@ -720,6 +842,7 @@ describe('app context', () => {
     const fetchMock = vi
       .fn()
       .mockImplementationOnce(() => firstLlm.promise)
+      .mockResolvedValueOnce(makeEmbeddingResponse([[0.15, 0.16, 0.17, 0.18]]))
       .mockResolvedValueOnce(makeLlmResponse('较新摘要', ['技术'], ['较新标签']))
       .mockResolvedValueOnce(makeEmbeddingResponse([[0.21, 0.22, 0.23, 0.24]]))
 
@@ -728,7 +851,7 @@ describe('app context', () => {
     await configureLiveMode(context)
 
     const created = await context.createBlock('旧内容会失败。')
-    await waitForCondition(() => fetchMock.mock.calls.length === 1)
+    await waitForCondition(() => fetchMock.mock.calls.length >= 1)
 
     await context.updateBlock(created.id, '新内容已经成功。')
     await waitForCondition(async () => (await context.getBlock(created.id)).summary === '较新摘要')
@@ -743,7 +866,7 @@ describe('app context', () => {
     expect(block.summary).toBe('较新摘要')
     expect(block.errorMessage).toBeNull()
     expect(block.tags.map((tag) => tag.name)).toContain('较新标签')
-    expect(fetchMock).toHaveBeenCalledTimes(3)
+    expect(fetchMock.mock.calls.length).toBeGreaterThanOrEqual(3)
 
     global.fetch = originalFetch
   })

@@ -9,6 +9,8 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 import { afterEach, describe, expect, it } from 'vitest'
 
 import { createAppContext, type AppContext } from '../appContext'
+import { initializeDatabase } from '../db'
+import { baseMigrations } from '../db/migrations'
 
 const contexts: AppContext[] = []
 const directories: string[] = []
@@ -111,6 +113,99 @@ describe('attachments', () => {
     await context.whenIdle()
 
     expect(existsSync(outsidePath)).toBe(true)
+    db.close()
+  })
+
+  it('allows the same managed attachment to appear multiple times in one block', async () => {
+    const context = makeContext()
+    const directory = directories[directories.length - 1]
+    const db = openDb(directory)
+    const saved = await context.saveImage(ONE_BY_ONE_PNG, 'duplicate.png')
+
+    const block = await context.createBlock(`第一处引用 ![图一](${saved.fileUrl})\n\n第二处引用 ![图二](${saved.fileUrl})`)
+    await context.whenIdle()
+
+    const rows = db
+      .prepare(
+        `
+          SELECT sort_order AS sortOrder, alt_text AS altText
+          FROM block_attachments
+          WHERE block_id = ?
+          ORDER BY sort_order ASC
+        `,
+      )
+      .all(block.id) as Array<{ sortOrder: number; altText: string | null }>
+
+    expect(rows).toEqual([
+      { sortOrder: 0, altText: '图一' },
+      { sortOrder: 1, altText: '图二' },
+    ])
+
+    db.close()
+  })
+
+  it('migrates legacy attachment links so duplicate references can be stored after bootstrap', () => {
+    const directory = mkdtempSync(join(tmpdir(), 'changbu-attachments-migrate-'))
+    directories.push(directory)
+    const db = openDb(directory)
+
+    db.exec(baseMigrations)
+    db.exec(`DROP INDEX IF EXISTS idx_block_attachments_block_id;`)
+    db.exec(`DROP INDEX IF EXISTS idx_block_attachments_attachment_id;`)
+    db.exec(`DROP TABLE block_attachments;`)
+    db.exec(`
+      CREATE TABLE block_attachments (
+        block_id TEXT NOT NULL REFERENCES blocks(id) ON DELETE CASCADE,
+        attachment_id TEXT NOT NULL REFERENCES attachments(id) ON DELETE CASCADE,
+        sort_order INTEGER NOT NULL DEFAULT 0,
+        alt_text TEXT,
+        PRIMARY KEY (block_id, attachment_id)
+      );
+    `)
+    db.exec(`CREATE INDEX idx_block_attachments_block_id ON block_attachments (block_id);`)
+    db.exec(`CREATE INDEX idx_block_attachments_attachment_id ON block_attachments (attachment_id);`)
+
+    const now = new Date().toISOString()
+    db.prepare(`INSERT INTO blocks (id, content, status, ai_mode, created_at, updated_at) VALUES (?, ?, 'ready', 'mock', ?, ?)`)
+      .run('block-legacy', 'legacy', now, now)
+    db.prepare(
+      `
+        INSERT INTO attachments (id, file_url, file_path, mime_type, filename, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+      `,
+    ).run('attachment-1', 'file:///tmp/legacy.png', '/tmp/legacy.png', 'image/png', 'legacy.png', now, now)
+    db.prepare(
+      `
+        INSERT INTO block_attachments (block_id, attachment_id, sort_order, alt_text)
+        VALUES (?, ?, ?, ?)
+      `,
+    ).run('block-legacy', 'attachment-1', 0, '旧引用')
+
+    initializeDatabase(db)
+
+    db.prepare(
+      `
+        INSERT INTO block_attachments (block_id, attachment_id, sort_order, alt_text)
+        VALUES (?, ?, ?, ?)
+      `,
+    ).run('block-legacy', 'attachment-1', 1, '新引用')
+
+    const rows = db
+      .prepare(
+        `
+          SELECT sort_order AS sortOrder, alt_text AS altText
+          FROM block_attachments
+          WHERE block_id = ?
+          ORDER BY sort_order ASC
+        `,
+      )
+      .all('block-legacy') as Array<{ sortOrder: number; altText: string | null }>
+
+    expect(rows).toEqual([
+      { sortOrder: 0, altText: '旧引用' },
+      { sortOrder: 1, altText: '新引用' },
+    ])
+
     db.close()
   })
 })

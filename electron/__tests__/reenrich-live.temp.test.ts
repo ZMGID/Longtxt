@@ -1,6 +1,7 @@
 // @vitest-environment node
 
 import Database from 'better-sqlite3'
+import { readFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 
@@ -8,9 +9,11 @@ import { describe, expect, it } from 'vitest'
 
 import type { AIConfig } from '../../shared/types'
 import { createAppContext } from '../appContext'
+import { resolveSettingsFilePath } from '../settingsFile'
 
 const dataDirectory = join(homedir(), 'Library', 'Application Support', 'Electron', 'data')
 const dbPath = join(dataDirectory, 'changbu.sqlite3')
+const settingsPath = resolveSettingsFilePath(dataDirectory)
 const targetCount = 100
 const batchSize = 10
 
@@ -19,19 +22,16 @@ function openDb(): Database.Database {
 }
 
 function readAiConfig(): AIConfig {
-  const db = openDb()
-
-  try {
-    const row = db.prepare("SELECT value FROM settings WHERE key = 'ai_config'").get() as { value: string } | undefined
-
-    if (!row?.value) {
-      throw new Error('未找到 ai_config。')
-    }
-
-    return JSON.parse(row.value) as AIConfig
-  } finally {
-    db.close()
+  const raw = JSON.parse(readFileSync(settingsPath, 'utf8')) as {
+    settings?: Record<string, string>
   }
+  const value = raw.settings?.ai_config
+
+  if (!value) {
+    throw new Error('未找到 ai_config。')
+  }
+
+  return JSON.parse(value) as AIConfig
 }
 
 function listManualBlocks(): Array<{ id: string; content: string; index: number }> {

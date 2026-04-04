@@ -16,6 +16,7 @@ interface SettingsPanelProps {
   onSave: () => Promise<void>
   onTest: () => Promise<void>
   onOpenDataDirectory: () => Promise<void>
+  onOpenSettingsDirectory: () => Promise<void>
 }
 
 function SettingField({
@@ -107,6 +108,7 @@ export function SettingsPanel({
   onSave,
   onTest,
   onOpenDataDirectory,
+  onOpenSettingsDirectory,
 }: SettingsPanelProps) {
   return (
     <section className="grid gap-4 xl:grid-cols-[minmax(0,1.1fr)_340px]">
@@ -217,6 +219,13 @@ export function SettingsPanel({
             className="rounded border border-stone-200 bg-white/70 px-4 py-2 text-sm font-medium text-stone-700 transition duration-150 hover:bg-stone-50 active:scale-[0.97]"
           >
             打开数据目录
+          </button>
+          <button
+            type="button"
+            onClick={() => { void onOpenSettingsDirectory() }}
+            className="rounded border border-stone-200 bg-white/70 px-4 py-2 text-sm font-medium text-stone-700 transition duration-150 hover:bg-stone-50 active:scale-[0.97]"
+          >
+            打开设置文件目录
           </button>
         </div>
 

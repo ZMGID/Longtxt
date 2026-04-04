@@ -169,4 +169,78 @@ describe('live ai services', () => {
     expect(result.embeddingDimension).toBe(4)
     expect(result.resolvedBaseUrl).toBe('https://api.example.com/v1')
   })
+
+  it('probes llm and embedding models against their own providers', async () => {
+    const mixedConfig = {
+      llm: {
+        endpoint: 'https://api.deepseek.com',
+        apiKey: 'deepseek-key',
+        model: 'deepseek-chat',
+      },
+      embedding: {
+        endpoint: 'https://api.siliconflow.cn',
+        apiKey: 'siliconflow-key',
+        model: 'BAAI/bge-m3',
+      },
+    }
+    const encoder = new TextEncoder()
+    const stream = new ReadableStream({
+      start(controller) {
+        controller.enqueue(encoder.encode('data: {"choices":[{"delta":{"content":"OK"}}]}\n\n'))
+        controller.enqueue(encoder.encode('data: [DONE]\n\n'))
+        controller.close()
+      },
+    })
+
+    global.fetch = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            data: [{ id: 'deepseek-chat' }, { id: 'deepseek-reasoner' }],
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } },
+        ),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            data: [{ id: 'BAAI/bge-m3' }, { id: 'Qwen/Qwen3-Embedding-8B' }],
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } },
+        ),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            data: [{ embedding: [0.1, 0.2, 0.3, 0.4] }],
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } },
+        ),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            choices: [{ message: { content: 'OK' } }],
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } },
+        ),
+      )
+      .mockResolvedValueOnce(
+        new Response(stream, {
+          status: 200,
+          headers: {
+            'Content-Type': 'text/event-stream',
+          },
+        }),
+      ) as typeof global.fetch
+
+    const result = await probeAiConfig(mixedConfig)
+
+    expect(result.success).toBe(true)
+    expect(result.modelsOk).toBe(true)
+    expect(result.embeddingOk).toBe(true)
+    expect(result.llmOk).toBe(true)
+    expect(result.llmStreamingOk).toBe(true)
+  })
 })

@@ -14,6 +14,9 @@ const TAG_KIND_WEIGHT: Record<string, number> = {
   detail: 1,
   user: 1,
 }
+const VECTOR_ALLOWED_SCAN_FACTOR = 4
+const VECTOR_ALLOWED_SCAN_MIN = 50
+const VECTOR_ALLOWED_SCAN_MAX = 200
 
 interface SearchBlocksOptions {
   limit?: number
@@ -143,10 +146,22 @@ export function searchBlocks(db: Database.Database, query: string, options: Sear
       return []
     }
 
+    if (allowedBlockIds && allowedBlockIds.length <= limit * 2) {
+      return []
+    }
+
+    const candidateLimit = allowedBlockIds
+      ? Math.min(countBlockVectors(db), Math.max(limit * VECTOR_ALLOWED_SCAN_FACTOR, VECTOR_ALLOWED_SCAN_MIN, 1), VECTOR_ALLOWED_SCAN_MAX)
+      : limit
+
+    if (candidateLimit <= 0) {
+      return []
+    }
+
     const rawMatches = searchVectorMatches(
       db,
       options.queryEmbedding,
-      allowedBlockIds ? Math.max(countBlockVectors(db), limit) : limit,
+      candidateLimit,
     )
 
     if (!allowedBlockIds) {

@@ -167,6 +167,7 @@ function createNotebookApiMock() {
         checkedAt: '2026-04-01T09:00:00.000Z',
       }),
       openDataDirectory: async () => undefined,
+      openSettingsDirectory: async () => undefined,
       getMeta: async () => ({
         dataDirectory: '/tmp',
         totalBlockCount: 1,

@@ -18,9 +18,7 @@ export function setSetting(db: Database.Database, key: string, value: string): v
   ).run(key, value)
 }
 
-export function getAIConfig(db: Database.Database): AIConfig {
-  const saved = getSetting(db, 'ai_config')
-
+export function parseAIConfig(saved: string | null): AIConfig {
   if (!saved) {
     return DEFAULT_AI_CONFIG
   }
@@ -40,4 +38,8 @@ export function getAIConfig(db: Database.Database): AIConfig {
   } catch {
     return DEFAULT_AI_CONFIG
   }
+}
+
+export function getAIConfig(db: Database.Database): AIConfig {
+  return parseAIConfig(getSetting(db, 'ai_config'))
 }

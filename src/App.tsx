@@ -865,6 +865,9 @@ function AppInner() {
             onOpenDataDirectory={async () => {
               await changbu.settings.openDataDirectory()
             }}
+            onOpenSettingsDirectory={async () => {
+              await changbu.settings.openSettingsDirectory()
+            }}
           />
           </div>
         )

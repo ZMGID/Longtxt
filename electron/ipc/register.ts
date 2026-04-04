@@ -62,6 +62,7 @@ export function createIpcHandlers(context: AppContext) {
     [IPC_CHANNELS.settings.set]: (_event: unknown, key: string, value: string) => context.setSetting(key, value),
     [IPC_CHANNELS.settings.testApi]: (_event: unknown, config: Parameters<AppContext['testApi']>[0]) => context.testApi(config),
     [IPC_CHANNELS.settings.openDataDirectory]: () => context.openDataDirectory(),
+    [IPC_CHANNELS.settings.openSettingsDirectory]: () => context.openSettingsDirectory(),
     [IPC_CHANNELS.settings.getMeta]: () => context.getMeta(),
     [IPC_CHANNELS.vectors.retryFailed]: () => context.retryFailedVectors(),
   }

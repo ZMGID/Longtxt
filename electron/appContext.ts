@@ -1,10 +1,10 @@
 import { mkdirSync } from 'node:fs'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 
 import Database from 'better-sqlite3'
 import { v4 as uuid } from 'uuid'
 
-import { DEFAULT_PAGE_SIZE, DOC_GENERATION_SETTINGS_KEY, parseDocGenerationSettings } from '../shared/config'
+import { DEFAULT_PAGE_SIZE, DOC_GENERATION_SETTINGS_KEY, UI_SETTINGS_KEY, parseDocGenerationSettings } from '../shared/config'
 import type {
   AIConfig,
   AIExecutionMode,
@@ -72,7 +72,7 @@ import {
   updateNotebookTitle,
 } from './db/notebooks'
 import { searchBlocks as searchBlocksInDatabase, searchBlocksByTag } from './db/search'
-import { getAIConfig, getSetting, setSetting } from './db/settings'
+import { getSetting as getDbSetting, parseAIConfig, setSetting as setDbSetting } from './db/settings'
 import { createSnapshot, getSnapshot, listSnapshots, removeSnapshot } from './db/snapshots'
 import { getOrCreateTag, getTagMemory, listAvailableTags } from './db/tags'
 import {
@@ -115,15 +115,29 @@ import {
 import { createTaggerEngine } from './services/tagger'
 import { cleanupOrphanAttachments, rebuildAttachmentIndex, saveImageDataUrl, syncBlockAttachmentRecords } from './services/attachments'
 import { confirmImportJob, exportJsonBundle, exportMarkdownBundle, previewJsonImport, previewMarkdownImport } from './services/importExport'
+import { createSettingsFileStore, resolveSettingsFilePath } from './settingsFile'
 
 const AI_LAST_TEST_RESULT_KEY = 'ai_last_test_result'
+const VECTOR_INDEX_STATE_KEY = 'vector_index_state'
+const FILE_BACKED_SETTING_KEYS = new Set([
+  'ai_config',
+  AI_LAST_TEST_RESULT_KEY,
+  DOC_GENERATION_SETTINGS_KEY,
+  UI_SETTINGS_KEY,
+])
 const MAX_ENRICH_RETRIES = 1
 const ENRICH_RETRY_DELAY_MS = 500
 const TAGGER_CORPUS_LIMIT = 50
 const VECTOR_REINDEX_BATCH_SIZE = 12
 
+interface VectorIndexState {
+  mode: AIExecutionMode
+  configFingerprint: string | null
+}
+
 export interface AppContextOptions {
   dataDirectory: string
+  settingsFilePath?: string
   onBlockChanged?: (event: BlockChangedEvent) => void
   onNotebooksChanged?: (event: NotebookChangedEvent) => void
   onMetaChanged?: (event: MetaChangedEvent) => void
@@ -190,6 +204,7 @@ export interface AppContext {
   testApi(config: AIConfig): Promise<ApiTestResult>
   getMeta(): Promise<AppMeta>
   openDataDirectory(): Promise<void>
+  openSettingsDirectory(): Promise<void>
   retryFailedVectors(): Promise<number>
   whenIdle(): Promise<void>
   dispose(): void
@@ -278,6 +293,49 @@ function parseApiTestResult(raw: string | null): ApiTestResult | null {
   }
 }
 
+function parseVectorIndexState(raw: string | null): VectorIndexState | null {
+  if (!raw) {
+    return null
+  }
+
+  try {
+    const parsed = JSON.parse(raw) as Partial<VectorIndexState>
+
+    if (parsed.mode !== 'mock' && parsed.mode !== 'live') {
+      return null
+    }
+
+    return {
+      mode: parsed.mode,
+      configFingerprint: typeof parsed.configFingerprint === 'string' ? parsed.configFingerprint : null,
+    }
+  } catch {
+    return null
+  }
+}
+
+function createMockVectorIndexState(): VectorIndexState {
+  return {
+    mode: 'mock',
+    configFingerprint: null,
+  }
+}
+
+function createLiveVectorIndexState(configFingerprint: string): VectorIndexState {
+  return {
+    mode: 'live',
+    configFingerprint,
+  }
+}
+
+function isSameVectorIndexState(left: VectorIndexState | null, right: VectorIndexState | null): boolean {
+  if (!left || !right) {
+    return left === right
+  }
+
+  return left.mode === right.mode && left.configFingerprint === right.configFingerprint
+}
+
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
@@ -296,16 +354,26 @@ export function createAppContext(options: AppContextOptions): AppContext {
   const databasePath = join(options.dataDirectory, 'changbu.sqlite3')
   const db = new Database(databasePath)
   const { vectorReady } = initializeDatabase(db)
+  const settingsStore = createSettingsFileStore({
+    filePath: options.settingsFilePath ?? resolveSettingsFilePath(options.dataDirectory),
+    seedValues: Object.fromEntries(
+      Array.from(FILE_BACKED_SETTING_KEYS)
+        .map((key) => [key, getDbSetting(db, key)] as const)
+        .filter((entry): entry is [string, string] => entry[1] !== null),
+    ),
+  })
   const tagger = createTaggerEngine()
   const pendingTasks = new Set<Promise<unknown>>()
   const blockEnrichGenerations = new Map<string, number>()
   let reindexTask: Promise<void> | null = null
   let reindexRequested = false
   let reindexNeedsFullRebuild = false
-  let reindexProviderState: { embeddingProvider: EmbeddingProvider; mode: AIExecutionMode } | null = null
+  let reindexProviderState: { embeddingProvider: EmbeddingProvider; mode: AIExecutionMode; indexState: VectorIndexState } | null = null
+  let activeReindexState: { indexState: VectorIndexState; fullRebuild: boolean } | null = null
   let lastAiError: string | null = null
   let currentVectorDimension = vectorReady ? getVectorSchemaDimension(db) : null
   let vectorSchemaReady = vectorReady ? currentVectorDimension !== null : false
+  let currentVectorIndexState = parseVectorIndexState(getDbSetting(db, VECTOR_INDEX_STATE_KEY))
   const importJobs = new Map<string, Awaited<ReturnType<typeof previewMarkdownImport>>['job']>()
 
   // 累计 token 用量（自程序启动后）
@@ -363,20 +431,25 @@ export function createAppContext(options: AppContextOptions): AppContext {
   }
 
   function getLastAiTestResult(): ApiTestResult | null {
-    return parseApiTestResult(getSetting(db, AI_LAST_TEST_RESULT_KEY))
+    return parseApiTestResult(settingsStore.get(AI_LAST_TEST_RESULT_KEY))
   }
 
   function getSavedConfig(): AIConfig {
-    return getAIConfig(db)
+    return parseAIConfig(settingsStore.get('ai_config'))
   }
 
   function getDocGenerationSettings(): DocGenerationSettings {
-    return parseDocGenerationSettings(getSetting(db, DOC_GENERATION_SETTINGS_KEY))
+    return parseDocGenerationSettings(settingsStore.get(DOC_GENERATION_SETTINGS_KEY))
   }
 
   function getSavedConfigFingerprint(): string | null {
     const config = getSavedConfig()
     return isAIConfigured(config) ? createConfigFingerprint(config) : null
+  }
+
+  function persistVectorIndexState(state: VectorIndexState | null): void {
+    currentVectorIndexState = state
+    setDbSetting(db, VECTOR_INDEX_STATE_KEY, state ? JSON.stringify(state) : '')
   }
 
   function getPreferredVectorDimension(): number {
@@ -391,6 +464,29 @@ export function createAppContext(options: AppContextOptions): AppContext {
     return isAIConfigured(config) && lastTestResult?.success && Boolean(savedFingerprint) && lastTestResult.configFingerprint === savedFingerprint
       ? 'live'
       : 'mock'
+  }
+
+  function getDesiredVectorIndexState(): VectorIndexState | null {
+    const config = getSavedConfig()
+    const savedFingerprint = getSavedConfigFingerprint()
+
+    if (!isAIConfigured(config)) {
+      return createMockVectorIndexState()
+    }
+
+    if (getExecutionMode() === 'live' && savedFingerprint) {
+      return createLiveVectorIndexState(savedFingerprint)
+    }
+
+    return null
+  }
+
+  function isVectorIndexCompatible(targetState: VectorIndexState | null): boolean {
+    return vectorReady && vectorSchemaReady && isSameVectorIndexState(currentVectorIndexState, targetState)
+  }
+
+  function canUseVectorSearch(): boolean {
+    return isVectorIndexCompatible(getDesiredVectorIndexState())
   }
 
   function getProviders(): {
@@ -416,8 +512,32 @@ export function createAppContext(options: AppContextOptions): AppContext {
     }
   }
 
-  function clearRuntimeAiError(): void {
+  function getVectorProviderState():
+    | {
+        mode: AIExecutionMode
+        embeddingProvider: EmbeddingProvider
+        indexState: VectorIndexState
+      }
+    | null {
+    const desiredState = getDesiredVectorIndexState()
+
+    if (!desiredState) {
+      return null
+    }
+
+    const { mode, embeddingProvider } = getProviders()
+
+    return {
+      mode,
+      embeddingProvider,
+      indexState: desiredState,
+    }
+  }
+
+  function clearRuntimeAiError(): boolean {
+    const changed = lastAiError !== null
     lastAiError = null
+    return changed
   }
 
   function rememberRuntimeAiError(error: unknown): void {
@@ -455,6 +575,7 @@ export function createAppContext(options: AppContextOptions): AppContext {
 
     for (const block of blocks) {
       enqueueBlockVector(db, block.id, block.updatedAt, queuedAt)
+      removeFailedBlockVector(db, block.id)
     }
 
     emitMetaChanged({
@@ -462,17 +583,47 @@ export function createAppContext(options: AppContextOptions): AppContext {
     })
   }
 
+  function scheduleCurrentVectorReindex(options: { fullRebuild?: boolean } = {}): void {
+    const providerState = getVectorProviderState()
+
+    if (!providerState || !vectorReady || currentVectorDimension === null) {
+      return
+    }
+
+    const reindexAlreadyRefreshingTarget =
+      Boolean(activeReindexState?.fullRebuild) && isSameVectorIndexState(activeReindexState?.indexState ?? null, providerState.indexState)
+    const queuedFullRebuildForTarget =
+      reindexNeedsFullRebuild && isSameVectorIndexState(reindexProviderState?.indexState ?? null, providerState.indexState)
+    const needsFullRebuild =
+      Boolean(options.fullRebuild) ||
+      (!isSameVectorIndexState(currentVectorIndexState, providerState.indexState) &&
+        !reindexAlreadyRefreshingTarget &&
+        !queuedFullRebuildForTarget)
+
+    scheduleReindex(providerState.embeddingProvider, providerState.mode, providerState.indexState, {
+      fullRebuild: needsFullRebuild,
+    })
+  }
+
   async function getQueryEmbedding(query: string, mode: AIExecutionMode, embeddingProvider: EmbeddingProvider): Promise<number[] | null> {
-    if (!vectorReady || !vectorSchemaReady) {
+    if (!canUseVectorSearch()) {
       return null
     }
 
     try {
-      return (await embeddingProvider.embed([query]))[0] ?? null
+      const embedding = (await embeddingProvider.embed([query]))[0] ?? null
+
+      if (mode === 'live') {
+        clearRuntimeAiError()
+      }
+
+      return embedding
     } catch (error) {
       if (mode === 'live') {
         rememberRuntimeAiError(error)
-        throw error
+        emitMetaChanged({
+          reason: 'vector-failure',
+        })
       }
 
       return null
@@ -506,7 +657,7 @@ export function createAppContext(options: AppContextOptions): AppContext {
     const results = searchBlocksInDatabase(db, topic, {
       limit: Math.max(blockEntries.length, maxReferenceBlocks * 2, 20),
       queryEmbedding,
-      vectorEnabled: vectorReady && vectorSchemaReady && Boolean(queryEmbedding),
+      vectorEnabled: canUseVectorSearch() && Boolean(queryEmbedding),
       allowedBlockIds: blockEntries.map((entry) => entry.blockId),
     })
     const resultMap = new Map(results.map((result) => [result.block.id, result]))
@@ -560,6 +711,7 @@ export function createAppContext(options: AppContextOptions): AppContext {
   async function reindexVectors(
     embeddingProvider: EmbeddingProvider,
     mode: AIExecutionMode,
+    indexState: VectorIndexState,
     options: { fullRebuild: boolean },
   ): Promise<void> {
     if (!vectorReady || !currentVectorDimension) {
@@ -568,6 +720,7 @@ export function createAppContext(options: AppContextOptions): AppContext {
     }
 
     if (options.fullRebuild) {
+      persistVectorIndexState(null)
       resetPendingBlockVectors(db)
     }
 
@@ -612,6 +765,7 @@ export function createAppContext(options: AppContextOptions): AppContext {
             currentVectorDimension = schema.currentDimension
 
             if (schema.changed) {
+              persistVectorIndexState(null)
               vectorSchemaReady = false
               resetPendingBlockVectors(db)
             }
@@ -639,10 +793,7 @@ export function createAppContext(options: AppContextOptions): AppContext {
 
       if (currentVectorDimension !== null && countPendingBlockVectors(db) === 0) {
         vectorSchemaReady = true
-      }
-
-      if (mode === 'live') {
-        clearRuntimeAiError()
+        persistVectorIndexState(indexState)
       }
 
       emitMetaChanged({
@@ -652,9 +803,11 @@ export function createAppContext(options: AppContextOptions): AppContext {
       // 将当前 pending batch 中尚未完成的块记录到失败表
       const remainingJobs = listPendingBlockVectors(db, VECTOR_REINDEX_BATCH_SIZE)
       for (const job of remainingJobs) {
-        const block = getBlockById(db, job.blockId)
-        if (block) {
+        try {
+          const block = getBlockById(db, job.blockId)
           insertFailedBlockVector(db, block.id, block.content, error instanceof Error ? error.message : String(error))
+        } catch {
+          continue
         }
       }
       removePendingBlockVectors(db, remainingJobs.map((j) => j.blockId))
@@ -674,6 +827,7 @@ export function createAppContext(options: AppContextOptions): AppContext {
   function scheduleReindex(
     embeddingProvider: EmbeddingProvider,
     mode: AIExecutionMode,
+    indexState: VectorIndexState,
     options: { fullRebuild?: boolean } = {},
   ): void {
     if (!vectorReady || currentVectorDimension === null) {
@@ -681,7 +835,7 @@ export function createAppContext(options: AppContextOptions): AppContext {
     }
 
     reindexRequested = true
-    reindexProviderState = { embeddingProvider, mode }
+    reindexProviderState = { embeddingProvider, mode, indexState }
 
     if (options.fullRebuild) {
       reindexNeedsFullRebuild = true
@@ -694,21 +848,27 @@ export function createAppContext(options: AppContextOptions): AppContext {
     const task = trackTask(
       (async () => {
         while (reindexRequested || reindexNeedsFullRebuild || countPendingBlockVectors(db) > 0) {
-          const providerState = reindexProviderState ?? { embeddingProvider, mode }
+          const providerState = reindexProviderState ?? { embeddingProvider, mode, indexState }
           const fullRebuild = reindexNeedsFullRebuild
 
           reindexRequested = false
           reindexProviderState = null
           reindexNeedsFullRebuild = false
+          activeReindexState = {
+            indexState: providerState.indexState,
+            fullRebuild,
+          }
 
-          await reindexVectors(providerState.embeddingProvider, providerState.mode, { fullRebuild })
+          await reindexVectors(providerState.embeddingProvider, providerState.mode, providerState.indexState, { fullRebuild })
+          activeReindexState = null
         }
       })().finally(() => {
         reindexTask = null
+        activeReindexState = null
 
         if (reindexRequested || reindexNeedsFullRebuild || countPendingBlockVectors(db) > 0) {
-          const providerState = reindexProviderState ?? { embeddingProvider, mode }
-          scheduleReindex(providerState.embeddingProvider, providerState.mode)
+          const providerState = reindexProviderState ?? { embeddingProvider, mode, indexState }
+          scheduleReindex(providerState.embeddingProvider, providerState.mode, providerState.indexState)
         }
       }),
     )
@@ -725,6 +885,7 @@ export function createAppContext(options: AppContextOptions): AppContext {
     currentVectorDimension = schema.currentDimension
 
     if (schema.changed) {
+      persistVectorIndexState(null)
       vectorSchemaReady = false
       return true
     }
@@ -741,28 +902,42 @@ export function createAppContext(options: AppContextOptions): AppContext {
       return
     }
 
+    const desiredState = getDesiredVectorIndexState()
+
+    if (!desiredState) {
+      return
+    }
+
     const preferredDimension = getPreferredVectorDimension()
     const schemaChanged = ensureSchemaForDimension(preferredDimension)
     const pendingCount = countPendingBlockVectors(db)
     const blockCount = countBlocks(db)
     const vectorCount = blockCount > 0 ? countBlockVectors(db) : 0
-    const shouldFullRebuild = schemaChanged || forceFullRebuild || (pendingCount === 0 && vectorCount < blockCount)
+    const shouldFullRebuild =
+      schemaChanged ||
+      forceFullRebuild ||
+      !isSameVectorIndexState(currentVectorIndexState, desiredState) ||
+      (pendingCount === 0 && vectorCount < blockCount)
 
     if (!shouldFullRebuild && pendingCount === 0) {
       return
     }
 
-    const { mode, embeddingProvider } = getProviders()
-    scheduleReindex(embeddingProvider, mode, { fullRebuild: shouldFullRebuild })
+    const providerState = getVectorProviderState()
+
+    if (!providerState) {
+      return
+    }
+
+    scheduleReindex(providerState.embeddingProvider, providerState.mode, desiredState, { fullRebuild: shouldFullRebuild })
   }
 
   async function enrichBlock(
     blockId: string,
     content: string,
     generation: number,
-    options: { enqueueVector?: boolean } = {},
   ): Promise<boolean> {
-    const { mode, embeddingProvider, llmProvider } = getProviders()
+    const { mode, llmProvider } = getProviders()
     const tagMemory = getTagMemory(db)
     const assignment = await tagger.assign(content, {
       corpusContents: [content, ...listRecentBlockContents(db, TAGGER_CORPUS_LIMIT, blockId)],
@@ -793,11 +968,6 @@ export function createAppContext(options: AppContextOptions): AppContext {
       updatedAt: currentBlock.updatedAt,
     })
 
-    if (options.enqueueVector !== false) {
-      enqueueBlocksForVectorReindex([block])
-      scheduleReindex(embeddingProvider, mode)
-    }
-
     emitBlockChanged({
       block,
       reason: 'enriched',
@@ -810,13 +980,12 @@ export function createAppContext(options: AppContextOptions): AppContext {
     blockId: string,
     content: string,
     generation: number,
-    options: { enqueueVector?: boolean } = {},
   ): Promise<boolean> {
     const aiMode = getExecutionMode()
 
     for (let attempt = 0; attempt <= MAX_ENRICH_RETRIES; attempt += 1) {
       try {
-        return await enrichBlock(blockId, content, generation, options)
+        return await enrichBlock(blockId, content, generation)
       } catch (error) {
         const currentBlock = getFreshBlockForEnrich(blockId, generation)
 
@@ -875,21 +1044,55 @@ export function createAppContext(options: AppContextOptions): AppContext {
     return false
   }
 
+  function createBlockWithAttachments(content: string, now: string, aiMode: AIExecutionMode): Block {
+    const transaction = db.transaction(() => {
+      const block = createBlockRecord(db, {
+        id: uuid(),
+        content,
+        status: 'pending',
+        aiMode,
+        createdAt: now,
+        updatedAt: now,
+      })
+
+      syncBlockAttachmentRecords(db, options.dataDirectory, block.id, content)
+      removeFailedBlockVector(db, block.id)
+      return block
+    })
+
+    return transaction()
+  }
+
+  function updateBlockWithAttachments(id: string, content: string, updatedAt: string, aiMode: AIExecutionMode): Block {
+    const transaction = db.transaction(() => {
+      const block = updateBlockContent(db, {
+        id,
+        content,
+        status: 'pending',
+        aiMode,
+        updatedAt,
+      })
+
+      syncBlockAttachmentRecords(db, options.dataDirectory, id, content)
+      clearAutoBlockTags(db, id)
+
+      if (vectorReady) {
+        deleteBlockVector(db, id)
+      }
+
+      removeFailedBlockVector(db, id)
+      return block
+    })
+
+    return transaction()
+  }
+
   async function createStandaloneBlock(content: string): Promise<Block> {
     const safeContent = validateContent(content)
     const now = new Date().toISOString()
     const aiMode = getExecutionMode()
-    const block = createBlockRecord(db, {
-      id: uuid(),
-      content: safeContent,
-      status: 'pending',
-      aiMode,
-      createdAt: now,
-      updatedAt: now,
-    })
+    const block = createBlockWithAttachments(safeContent, now, aiMode)
     const enrichGeneration = advanceBlockEnrichGeneration(block.id)
-
-    syncBlockAttachmentRecords(db, options.dataDirectory, block.id, safeContent)
 
     emitBlockChanged({
       block,
@@ -897,6 +1100,8 @@ export function createAppContext(options: AppContextOptions): AppContext {
     })
 
     void trackTask(runEnrichWithRetry(block.id, safeContent, enrichGeneration))
+    enqueueBlocksForVectorReindex([block])
+    scheduleCurrentVectorReindex()
 
     return block
   }
@@ -924,22 +1129,8 @@ export function createAppContext(options: AppContextOptions): AppContext {
       const enrichGeneration = advanceBlockEnrichGeneration(id)
       const aiMode = getExecutionMode()
       const updatedAt = new Date().toISOString()
-      const block = updateBlockContent(db, {
-        id,
-        content: safeContent,
-        status: 'pending',
-        aiMode,
-        updatedAt,
-      })
-
-      syncBlockAttachmentRecords(db, options.dataDirectory, id, safeContent)
+      const block = updateBlockWithAttachments(id, safeContent, updatedAt, aiMode)
       emitTouchedNotebooks(touchNotebooksForBlock(db, id, updatedAt), 'updated')
-
-      clearAutoBlockTags(db, id)
-
-      if (vectorReady) {
-        deleteBlockVector(db, id)
-      }
 
       emitBlockChanged({
         block,
@@ -947,6 +1138,8 @@ export function createAppContext(options: AppContextOptions): AppContext {
       })
 
       void trackTask(runEnrichWithRetry(id, safeContent, enrichGeneration))
+      enqueueBlocksForVectorReindex([block])
+      scheduleCurrentVectorReindex()
       void trackTask(cleanupOrphanAttachments(db, options.dataDirectory))
 
       return getBlockById(db, id)
@@ -962,6 +1155,7 @@ export function createAppContext(options: AppContextOptions): AppContext {
       }
 
       removePendingBlockVectors(db, [id])
+      removeFailedBlockVector(db, id)
       emitMetaChanged({
         reason: 'vector-queue',
       })
@@ -1038,7 +1232,7 @@ export function createAppContext(options: AppContextOptions): AppContext {
       return searchBlocksInDatabase(db, normalizedQuery, {
         limit,
         queryEmbedding,
-        vectorEnabled: vectorReady && vectorSchemaReady && Boolean(queryEmbedding),
+        vectorEnabled: canUseVectorSearch() && Boolean(queryEmbedding),
       })
     },
 
@@ -1056,7 +1250,7 @@ export function createAppContext(options: AppContextOptions): AppContext {
       const results = searchBlocksInDatabase(db, safeTopic, {
         limit: 30,
         queryEmbedding,
-        vectorEnabled: vectorReady && vectorSchemaReady && Boolean(queryEmbedding),
+        vectorEnabled: canUseVectorSearch() && Boolean(queryEmbedding),
       })
       const blocks = selectDocumentReferenceBlocks(results, maxReferenceBlocks)
 
@@ -1206,12 +1400,13 @@ export function createAppContext(options: AppContextOptions): AppContext {
         })
 
         appendBlockToNotebook(db, notebookId, block.id, now)
+        syncBlockAttachmentRecords(db, options.dataDirectory, block.id, safeContent)
+        removeFailedBlockVector(db, block.id)
         return block
       })
 
       const block = transaction()
       const enrichGeneration = advanceBlockEnrichGeneration(block.id)
-      syncBlockAttachmentRecords(db, options.dataDirectory, block.id, safeContent)
 
       emitBlockChanged({
         block,
@@ -1223,6 +1418,8 @@ export function createAppContext(options: AppContextOptions): AppContext {
       })
 
       void trackTask(runEnrichWithRetry(block.id, safeContent, enrichGeneration))
+      enqueueBlocksForVectorReindex([block])
+      scheduleCurrentVectorReindex()
 
       return getNotebookById(db, notebookId)
     },
@@ -1439,41 +1636,33 @@ export function createAppContext(options: AppContextOptions): AppContext {
       if (job.format === 'markdown') {
         void trackTask(
           (async () => {
-            const succeededIds: string[] = []
-
             for (const block of importedBlocks) {
               const enrichGeneration = advanceBlockEnrichGeneration(block.id)
-              const succeeded = await runEnrichWithRetry(block.id, block.content, enrichGeneration, { enqueueVector: false })
-
-              if (succeeded) {
-                succeededIds.push(block.id)
-              }
+              await runEnrichWithRetry(block.id, block.content, enrichGeneration)
             }
-
-            const enrichedBlocks = getBlocksByIds(db, succeededIds)
-            enqueueBlocksForVectorReindex(enrichedBlocks)
-
-            const { mode, embeddingProvider } = getProviders()
-            scheduleReindex(embeddingProvider, mode)
           })(),
         )
-      } else {
-        enqueueBlocksForVectorReindex(importedBlocks)
-        const { mode, embeddingProvider } = getProviders()
-        scheduleReindex(embeddingProvider, mode)
       }
+
+      enqueueBlocksForVectorReindex(importedBlocks)
+      scheduleCurrentVectorReindex()
 
       void trackTask(cleanupOrphanAttachments(db, options.dataDirectory))
       return result
     },
 
     async getSetting(key) {
-      return getSetting(db, key)
+      return FILE_BACKED_SETTING_KEYS.has(key) ? settingsStore.get(key) : getDbSetting(db, key)
     },
 
     async setSetting(key, value) {
-      const previousValue = getSetting(db, key)
-      setSetting(db, key, value)
+      const previousValue = FILE_BACKED_SETTING_KEYS.has(key) ? settingsStore.get(key) : getDbSetting(db, key)
+
+      if (FILE_BACKED_SETTING_KEYS.has(key)) {
+        settingsStore.set(key, value)
+      } else {
+        setDbSetting(db, key, value)
+      }
 
       if (key === 'ai_config' && previousValue !== value) {
         const savedConfig = getSavedConfig()
@@ -1481,11 +1670,14 @@ export function createAppContext(options: AppContextOptions): AppContext {
         const lastTestResult = getLastAiTestResult()
 
         if (!savedFingerprint || lastTestResult?.configFingerprint !== savedFingerprint) {
-          setSetting(db, AI_LAST_TEST_RESULT_KEY, '')
+          settingsStore.set(AI_LAST_TEST_RESULT_KEY, '')
         }
 
         clearRuntimeAiError()
-        ensureVectorSchemaForCurrentState(true)
+
+        if (!isAIConfigured(savedConfig)) {
+          ensureVectorSchemaForCurrentState(true)
+        }
       }
 
       emitMetaChanged({
@@ -1495,12 +1687,16 @@ export function createAppContext(options: AppContextOptions): AppContext {
 
     async testApi(config) {
       const result = await probeAiConfig(config)
-      setSetting(db, AI_LAST_TEST_RESULT_KEY, JSON.stringify(result))
+      settingsStore.set(AI_LAST_TEST_RESULT_KEY, JSON.stringify(result))
 
       if (vectorReady && result.success && result.embeddingDimension) {
         const schemaChanged = ensureSchemaForDimension(result.embeddingDimension)
+        const configFingerprint = result.configFingerprint ?? createConfigFingerprint(config)
+        const targetState = createLiveVectorIndexState(configFingerprint)
         const embeddingProvider = createLiveEmbeddingProvider(config, tokenSink)
-        scheduleReindex(embeddingProvider, 'live', { fullRebuild: schemaChanged })
+        scheduleReindex(embeddingProvider, 'live', targetState, {
+          fullRebuild: schemaChanged || !isSameVectorIndexState(currentVectorIndexState, targetState),
+        })
       }
 
       emitMetaChanged({
@@ -1544,14 +1740,17 @@ export function createAppContext(options: AppContextOptions): AppContext {
 
       const now = new Date().toISOString()
       for (const record of failed) {
-        const block = getBlockById(db, record.blockId)
-        enqueueBlockVector(db, record.blockId, block.updatedAt, now)
+        try {
+          const block = getBlockById(db, record.blockId)
+          enqueueBlockVector(db, record.blockId, block.updatedAt, now)
+        } catch {
+          continue
+        }
       }
 
       clearFailedBlockVectors(db)
 
-      const { mode, embeddingProvider } = getProviders()
-      scheduleReindex(embeddingProvider, mode)
+      scheduleCurrentVectorReindex()
       emitMetaChanged({
         reason: 'vector-retry',
       })
@@ -1565,6 +1764,18 @@ export function createAppContext(options: AppContextOptions): AppContext {
       }
 
       const openResult = await options.openPath(options.dataDirectory)
+
+      if (openResult) {
+        throw new Error(openResult)
+      }
+    },
+
+    async openSettingsDirectory() {
+      if (!options.openPath) {
+        return
+      }
+
+      const openResult = await options.openPath(dirname(settingsStore.filePath))
 
       if (openResult) {
         throw new Error(openResult)

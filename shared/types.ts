@@ -361,6 +361,7 @@ export interface ChangbuApi {
     set(key: string, value: string): Promise<void>
     testApi(config: AIConfig): Promise<ApiTestResult>
     openDataDirectory(): Promise<void>
+    openSettingsDirectory(): Promise<void>
     getMeta(): Promise<AppMeta>
   }
   vectors: {

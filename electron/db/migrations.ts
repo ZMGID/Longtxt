@@ -58,11 +58,11 @@ CREATE TABLE IF NOT EXISTS block_attachments (
   attachment_id TEXT NOT NULL REFERENCES attachments(id) ON DELETE CASCADE,
   sort_order INTEGER NOT NULL DEFAULT 0,
   alt_text TEXT,
-  PRIMARY KEY (block_id, attachment_id)
+  PRIMARY KEY (block_id, sort_order)
 );
 
 CREATE INDEX IF NOT EXISTS idx_attachments_file_url ON attachments (file_url);
-CREATE INDEX IF NOT EXISTS idx_block_attachments_block_id ON block_attachments (block_id);
+CREATE INDEX IF NOT EXISTS idx_block_attachments_block_id ON block_attachments (block_id, sort_order);
 CREATE INDEX IF NOT EXISTS idx_block_attachments_attachment_id ON block_attachments (attachment_id);
 
 CREATE TABLE IF NOT EXISTS snapshots (

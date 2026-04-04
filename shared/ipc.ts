@@ -59,6 +59,7 @@ export const IPC_CHANNELS = {
     set: 'settings:set',
     testApi: 'settings:test-api',
     openDataDirectory: 'settings:open-data-directory',
+    openSettingsDirectory: 'settings:open-settings-directory',
     getMeta: 'settings:get-meta',
   },
   vectors: {
