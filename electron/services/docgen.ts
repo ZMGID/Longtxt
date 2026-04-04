@@ -19,6 +19,8 @@ export interface SelectedReferenceResult {
 
 export interface DocumentPromptContext {
   writingGuide?: string | null
+  temperature?: number
+  maxTokens?: number
 }
 
 function reciprocalRank(rank: number): number {

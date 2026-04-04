@@ -1,12 +1,30 @@
-import type { AIConfig, DocGenerationSettings, UISettings } from './types'
+import type { AIConfig, BlockEnrichSettings, CalendarSettings, DocGenerationSettings, UISettings } from './types'
 
 export const APP_NAME = '长布'
 
 export const DEFAULT_PAGE_SIZE = 200
+export const BLOCK_ENRICH_SETTINGS_KEY = 'block_enrich_settings'
+export const CALENDAR_SETTINGS_KEY = 'calendar_settings'
 export const DOC_GENERATION_SETTINGS_KEY = 'doc_generation_settings'
 export const UI_SETTINGS_KEY = 'ui_settings'
+export const MIN_BLOCK_ENRICH_BATCH_BLOCKS = 1
+export const MAX_BLOCK_ENRICH_BATCH_BLOCKS = 10
+export const MIN_BLOCK_ENRICH_QUEUE_DEBOUNCE_MS = 100
+export const MAX_BLOCK_ENRICH_QUEUE_DEBOUNCE_MS = 5_000
+export const MIN_BLOCK_ENRICH_RESPONSE_RESERVE_TOKENS = 256
+export const MAX_BLOCK_ENRICH_RESPONSE_RESERVE_TOKENS = 8_192
 export const MIN_DOC_GENERATION_REFERENCE_BLOCKS = 1
 export const MAX_DOC_GENERATION_REFERENCE_BLOCKS = 30
+export const MIN_DOC_GENERATION_RETRIEVAL_LIMIT = 10
+export const MAX_DOC_GENERATION_RETRIEVAL_LIMIT = 100
+export const MIN_DOC_GENERATION_TEMPERATURE = 0
+export const MAX_DOC_GENERATION_TEMPERATURE = 1
+export const MIN_DOC_GENERATION_MAX_OUTPUT_TOKENS = 200
+export const MAX_DOC_GENERATION_MAX_OUTPUT_TOKENS = 4_000
+export const MIN_CALENDAR_MAX_SUGGESTIONS_PER_BLOCK = 0
+export const MAX_CALENDAR_MAX_SUGGESTIONS_PER_BLOCK = 8
+export const MIN_CALENDAR_UPCOMING_DAYS = 1
+export const MAX_CALENDAR_UPCOMING_DAYS = 120
 
 export const DEFAULT_AI_CONFIG: AIConfig = {
   llm: {
@@ -23,10 +41,26 @@ export const DEFAULT_AI_CONFIG: AIConfig = {
 
 export const DEFAULT_DOC_GENERATION_SETTINGS: DocGenerationSettings = {
   maxReferenceBlocks: 10,
+  retrievalLimit: 30,
+  temperature: 0.1,
+  maxOutputTokens: 1200,
+}
+
+export const DEFAULT_BLOCK_ENRICH_SETTINGS: BlockEnrichSettings = {
+  queueEnabled: false,
+  maxBatchBlocks: 5,
+  queueDebounceMs: 800,
+  responseReserveTokens: 1_600,
 }
 
 export const DEFAULT_UI_SETTINGS: UISettings = {
   showMiniTimeline: true,
+}
+
+export const DEFAULT_CALENDAR_SETTINGS: CalendarSettings = {
+  aiSuggestionsEnabled: true,
+  maxSuggestionsPerBlock: 3,
+  upcomingDays: 30,
 }
 
 function clampDocGenerationReferenceBlocks(value: number): number {
@@ -40,6 +74,94 @@ function clampDocGenerationReferenceBlocks(value: number): number {
   )
 }
 
+function clampDocGenerationRetrievalLimit(value: number): number {
+  if (!Number.isFinite(value)) {
+    return DEFAULT_DOC_GENERATION_SETTINGS.retrievalLimit
+  }
+
+  return Math.min(
+    MAX_DOC_GENERATION_RETRIEVAL_LIMIT,
+    Math.max(MIN_DOC_GENERATION_RETRIEVAL_LIMIT, Math.round(value)),
+  )
+}
+
+function clampDocGenerationTemperature(value: number): number {
+  if (!Number.isFinite(value)) {
+    return DEFAULT_DOC_GENERATION_SETTINGS.temperature
+  }
+
+  return Math.min(
+    MAX_DOC_GENERATION_TEMPERATURE,
+    Math.max(MIN_DOC_GENERATION_TEMPERATURE, Number(value.toFixed(2))),
+  )
+}
+
+function clampDocGenerationMaxOutputTokens(value: number): number {
+  if (!Number.isFinite(value)) {
+    return DEFAULT_DOC_GENERATION_SETTINGS.maxOutputTokens
+  }
+
+  return Math.min(
+    MAX_DOC_GENERATION_MAX_OUTPUT_TOKENS,
+    Math.max(MIN_DOC_GENERATION_MAX_OUTPUT_TOKENS, Math.round(value)),
+  )
+}
+
+function clampBlockEnrichBatchBlocks(value: number): number {
+  if (!Number.isFinite(value)) {
+    return DEFAULT_BLOCK_ENRICH_SETTINGS.maxBatchBlocks
+  }
+
+  return Math.min(
+    MAX_BLOCK_ENRICH_BATCH_BLOCKS,
+    Math.max(MIN_BLOCK_ENRICH_BATCH_BLOCKS, Math.round(value)),
+  )
+}
+
+function clampBlockEnrichQueueDebounceMs(value: number): number {
+  if (!Number.isFinite(value)) {
+    return DEFAULT_BLOCK_ENRICH_SETTINGS.queueDebounceMs
+  }
+
+  return Math.min(
+    MAX_BLOCK_ENRICH_QUEUE_DEBOUNCE_MS,
+    Math.max(MIN_BLOCK_ENRICH_QUEUE_DEBOUNCE_MS, Math.round(value)),
+  )
+}
+
+function clampBlockEnrichResponseReserveTokens(value: number): number {
+  if (!Number.isFinite(value)) {
+    return DEFAULT_BLOCK_ENRICH_SETTINGS.responseReserveTokens
+  }
+
+  return Math.min(
+    MAX_BLOCK_ENRICH_RESPONSE_RESERVE_TOKENS,
+    Math.max(MIN_BLOCK_ENRICH_RESPONSE_RESERVE_TOKENS, Math.round(value)),
+  )
+}
+
+function clampCalendarMaxSuggestionsPerBlock(value: number): number {
+  if (!Number.isFinite(value)) {
+    return DEFAULT_CALENDAR_SETTINGS.maxSuggestionsPerBlock
+  }
+
+  return Math.min(
+    MAX_CALENDAR_MAX_SUGGESTIONS_PER_BLOCK,
+    Math.max(MIN_CALENDAR_MAX_SUGGESTIONS_PER_BLOCK, Math.round(value)),
+  )
+}
+
+function clampCalendarUpcomingDays(value: number): number {
+  if (!Number.isFinite(value)) {
+    return DEFAULT_CALENDAR_SETTINGS.upcomingDays
+  }
+
+  return Math.min(
+    MAX_CALENDAR_UPCOMING_DAYS,
+    Math.max(MIN_CALENDAR_UPCOMING_DAYS, Math.round(value)),
+  )
+}
+
 export function normalizeDocGenerationSettings(
   value: Partial<DocGenerationSettings> | null | undefined,
 ): DocGenerationSettings {
@@ -48,6 +170,21 @@ export function normalizeDocGenerationSettings(
       typeof value?.maxReferenceBlocks === 'number'
         ? value.maxReferenceBlocks
         : DEFAULT_DOC_GENERATION_SETTINGS.maxReferenceBlocks,
+    ),
+    retrievalLimit: clampDocGenerationRetrievalLimit(
+      typeof value?.retrievalLimit === 'number'
+        ? value.retrievalLimit
+        : DEFAULT_DOC_GENERATION_SETTINGS.retrievalLimit,
+    ),
+    temperature: clampDocGenerationTemperature(
+      typeof value?.temperature === 'number'
+        ? value.temperature
+        : DEFAULT_DOC_GENERATION_SETTINGS.temperature,
+    ),
+    maxOutputTokens: clampDocGenerationMaxOutputTokens(
+      typeof value?.maxOutputTokens === 'number'
+        ? value.maxOutputTokens
+        : DEFAULT_DOC_GENERATION_SETTINGS.maxOutputTokens,
     ),
   }
 }
@@ -61,6 +198,75 @@ export function parseDocGenerationSettings(raw: string | null): DocGenerationSet
     return normalizeDocGenerationSettings(JSON.parse(raw) as Partial<DocGenerationSettings>)
   } catch {
     return DEFAULT_DOC_GENERATION_SETTINGS
+  }
+}
+
+export function normalizeBlockEnrichSettings(
+  value: Partial<BlockEnrichSettings> | null | undefined,
+): BlockEnrichSettings {
+  return {
+    queueEnabled: typeof value?.queueEnabled === 'boolean'
+      ? value.queueEnabled
+      : DEFAULT_BLOCK_ENRICH_SETTINGS.queueEnabled,
+    maxBatchBlocks: clampBlockEnrichBatchBlocks(
+      typeof value?.maxBatchBlocks === 'number'
+        ? value.maxBatchBlocks
+        : DEFAULT_BLOCK_ENRICH_SETTINGS.maxBatchBlocks,
+    ),
+    queueDebounceMs: clampBlockEnrichQueueDebounceMs(
+      typeof value?.queueDebounceMs === 'number'
+        ? value.queueDebounceMs
+        : DEFAULT_BLOCK_ENRICH_SETTINGS.queueDebounceMs,
+    ),
+    responseReserveTokens: clampBlockEnrichResponseReserveTokens(
+      typeof value?.responseReserveTokens === 'number'
+        ? value.responseReserveTokens
+        : DEFAULT_BLOCK_ENRICH_SETTINGS.responseReserveTokens,
+    ),
+  }
+}
+
+export function parseBlockEnrichSettings(raw: string | null): BlockEnrichSettings {
+  if (!raw) {
+    return DEFAULT_BLOCK_ENRICH_SETTINGS
+  }
+
+  try {
+    return normalizeBlockEnrichSettings(JSON.parse(raw) as Partial<BlockEnrichSettings>)
+  } catch {
+    return DEFAULT_BLOCK_ENRICH_SETTINGS
+  }
+}
+
+export function normalizeCalendarSettings(
+  value: Partial<CalendarSettings> | null | undefined,
+): CalendarSettings {
+  return {
+    aiSuggestionsEnabled: typeof value?.aiSuggestionsEnabled === 'boolean'
+      ? value.aiSuggestionsEnabled
+      : DEFAULT_CALENDAR_SETTINGS.aiSuggestionsEnabled,
+    maxSuggestionsPerBlock: clampCalendarMaxSuggestionsPerBlock(
+      typeof value?.maxSuggestionsPerBlock === 'number'
+        ? value.maxSuggestionsPerBlock
+        : DEFAULT_CALENDAR_SETTINGS.maxSuggestionsPerBlock,
+    ),
+    upcomingDays: clampCalendarUpcomingDays(
+      typeof value?.upcomingDays === 'number'
+        ? value.upcomingDays
+        : DEFAULT_CALENDAR_SETTINGS.upcomingDays,
+    ),
+  }
+}
+
+export function parseCalendarSettings(raw: string | null): CalendarSettings {
+  if (!raw) {
+    return DEFAULT_CALENDAR_SETTINGS
+  }
+
+  try {
+    return normalizeCalendarSettings(JSON.parse(raw) as Partial<CalendarSettings>)
+  } catch {
+    return DEFAULT_CALENDAR_SETTINGS
   }
 }
 

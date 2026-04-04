@@ -34,6 +34,8 @@ describe('mock ai services', () => {
     const liveLlmProvider = {
       streamDocument: vi.fn(),
       suggestTags: vi.fn().mockResolvedValue({ categories: ['工作'], detailTags: ['项目', '新方向'] }),
+      suggestTagsBatch: vi.fn().mockResolvedValue([{ categories: ['工作'], detailTags: ['项目', '新方向'], summary: null }]),
+      extractCalendarSuggestions: vi.fn().mockResolvedValue([]),
     }
     const tagger = createTaggerEngine()
     const result = await tagger.assign('这段内容比较抽象，像是在摸索一个还没成形的方向。', {
@@ -42,7 +44,7 @@ describe('mock ai services', () => {
     })
 
     expect(result.usedFallback).toBe(false)
-    expect(liveLlmProvider.suggestTags).toHaveBeenCalled()
+    expect(liveLlmProvider.suggestTagsBatch).toHaveBeenCalled()
     expect(result.categories).toContain('工作')
     expect(result.detailTags).toContain('项目')
   })
@@ -51,6 +53,8 @@ describe('mock ai services', () => {
     const liveLlmProvider = {
       streamDocument: vi.fn(),
       suggestTags: vi.fn().mockResolvedValue({ categories: ['工作'], detailTags: ['项目', '进度'] }),
+      suggestTagsBatch: vi.fn().mockResolvedValue([{ categories: ['工作'], detailTags: ['项目', '进度'], summary: null }]),
+      extractCalendarSuggestions: vi.fn().mockResolvedValue([]),
     }
     const tagger = createTaggerEngine()
     const result = await tagger.assign('今天继续测试长布接入 SiliconFlow，重点验证 embedding 维度、自动标签和文档生成是否走 live。', {
@@ -132,5 +136,71 @@ describe('mock ai services', () => {
       detailTags: ['项目', '自定义标签'],
       summary: null,
     })
+  })
+
+  it('sanitizes live llm batch tag output to valid JSON tags', async () => {
+    const originalFetch = global.fetch
+    const provider = createLiveLLMProvider({
+      llm: {
+        endpoint: 'https://api.example.com/v1',
+        apiKey: 'key',
+        model: 'gpt-4o-mini',
+      },
+      embedding: {
+        endpoint: 'https://api.example.com/v1',
+        apiKey: 'key',
+        model: 'text-embedding-3-small',
+      },
+    })
+
+    global.fetch = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          choices: [
+            {
+              message: {
+                content: '```json\n{"items":[{"index":0,"categories":["工作"],"detail_tags":["项目","项目"],"summary":"项目记录"},{"index":1,"categories":["技术"],"detail_tags":["Electron"],"summary":"Electron 记录"}]}\n```',
+              },
+            },
+          ],
+        }),
+        {
+          status: 200,
+          headers: {
+            'Content-Type': 'application/json',
+          },
+        },
+      ),
+    ) as typeof global.fetch
+
+    const tags = await provider.suggestTagsBatch([
+      {
+        content: '想做一个项目',
+        categoryCandidates: ['工作', '生活'],
+        detailCandidates: ['项目', '想法'],
+        userTags: [],
+      },
+      {
+        content: '继续排查 Electron 窗口事件',
+        categoryCandidates: ['技术', '工作'],
+        detailCandidates: ['Electron', 'IPC'],
+        userTags: [],
+      },
+    ])
+
+    global.fetch = originalFetch
+
+    expect(tags).toEqual([
+      {
+        categories: ['工作'],
+        detailTags: ['项目'],
+        summary: '项目记录',
+      },
+      {
+        categories: ['技术'],
+        detailTags: ['Electron'],
+        summary: 'Electron 记录',
+      },
+    ])
   })
 })

@@ -27,6 +27,9 @@ export const changbu = {
   get snapshots() {
     return getApi().snapshots
   },
+  get calendar() {
+    return getApi().calendar
+  },
   get notebooks() {
     return getApi().notebooks
   },

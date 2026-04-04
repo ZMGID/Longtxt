@@ -29,6 +29,17 @@ export const IPC_CHANNELS = {
     get: 'snapshots:get',
     remove: 'snapshots:remove',
   },
+  calendar: {
+    listYears: 'calendar:list-years',
+    getYearHeatmap: 'calendar:get-year-heatmap',
+    getDayDetail: 'calendar:get-day-detail',
+    listUpcoming: 'calendar:list-upcoming',
+    createEntry: 'calendar:create-entry',
+    updateEntry: 'calendar:update-entry',
+    removeEntry: 'calendar:remove-entry',
+    acceptSuggestion: 'calendar:accept-suggestion',
+    dismissSuggestion: 'calendar:dismiss-suggestion',
+  },
   notebooks: {
     list: 'notebooks:list',
     get: 'notebooks:get',
@@ -69,6 +80,7 @@ export const IPC_CHANNELS = {
     blockChanged: 'events:block-changed',
     notebooksChanged: 'events:notebooks-changed',
     metaChanged: 'events:meta-changed',
+    calendarChanged: 'events:calendar-changed',
     docGenerationChunk: 'events:doc-generation-chunk',
   },
 } as const

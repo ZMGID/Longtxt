@@ -7,7 +7,7 @@ import { tmpdir } from 'node:os'
 
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { DOC_GENERATION_SETTINGS_KEY } from '../../shared/config'
+import { BLOCK_ENRICH_SETTINGS_KEY, DOC_GENERATION_SETTINGS_KEY } from '../../shared/config'
 import type { AIConfig, BlockChangedEvent, DocGenerationChunk, MetaChangedEvent, NotebookChangedEvent } from '../../shared/types'
 import { createAppContext, type AppContext, type AppContextOptions } from '../appContext'
 import { createConfigFingerprint } from '../services/ai'
@@ -70,6 +70,57 @@ function makeLlmResponse(summary: string, categories: string[] = ['技术'], det
         },
       ],
       usage: { prompt_tokens: 5, completion_tokens: 7, total_tokens: 12 },
+    }),
+    { status: 200, headers: { 'Content-Type': 'application/json' } },
+  )
+}
+
+function makeBatchLlmResponse(items: Array<{ index: number; summary: string; categories?: string[]; detailTags?: string[] }>): Response {
+  return new Response(
+    JSON.stringify({
+      choices: [
+        {
+          message: {
+            content: JSON.stringify({
+              items: items.map((item) => ({
+                index: item.index,
+                categories: item.categories ?? ['技术'],
+                detail_tags: item.detailTags ?? ['Electron'],
+                summary: item.summary,
+              })),
+            }),
+          },
+        },
+      ],
+      usage: { prompt_tokens: 8, completion_tokens: 12, total_tokens: 20 },
+    }),
+    { status: 200, headers: { 'Content-Type': 'application/json' } },
+  )
+}
+
+function makeCalendarSuggestionResponse(
+  items: Array<{ title: string; date: string; startTime?: string | null; allDay?: boolean; notes?: string | null; evidenceText?: string | null; confidence?: number }>,
+): Response {
+  return new Response(
+    JSON.stringify({
+      choices: [
+        {
+          message: {
+            content: JSON.stringify({
+              items: items.map((item) => ({
+                title: item.title,
+                date: item.date,
+                start_time: item.startTime ?? null,
+                all_day: item.allDay ?? !item.startTime,
+                notes: item.notes ?? null,
+                evidence_text: item.evidenceText ?? null,
+                confidence: item.confidence ?? 0.9,
+              })),
+            }),
+          },
+        },
+      ],
+      usage: { prompt_tokens: 6, completion_tokens: 10, total_tokens: 16 },
     }),
     { status: 200, headers: { 'Content-Type': 'application/json' } },
   )
@@ -145,6 +196,15 @@ async function waitForCondition(condition: () => boolean | Promise<boolean>, tim
   }
 
   throw new Error('Timed out waiting for condition.')
+}
+
+function formatLocalDate(value: string): string {
+  const date = new Date(value)
+  return [
+    date.getFullYear(),
+    String(date.getMonth() + 1).padStart(2, '0'),
+    String(date.getDate()).padStart(2, '0'),
+  ].join('-')
 }
 
 afterEach(() => {
@@ -388,8 +448,18 @@ describe('app context', () => {
         configFingerprint: 'placeholder',
       }),
     )
+    await context.setSetting(
+      BLOCK_ENRICH_SETTINGS_KEY,
+      JSON.stringify({
+        queueEnabled: true,
+        maxBatchBlocks: 6,
+        queueDebounceMs: 1200,
+        responseReserveTokens: 2400,
+      }),
+    )
 
     expect(await context.getSetting('ai_config')).toContain('api.example.com')
+    expect(await context.getSetting(BLOCK_ENRICH_SETTINGS_KEY)).toContain('"maxBatchBlocks":6')
 
     const meta = await context.getMeta()
     expect(meta.dataDirectory).toContain('changbu-test-')
@@ -398,6 +468,7 @@ describe('app context', () => {
     expect(meta.activeAiMode).toBe('mock')
     expect(meta.lastAiTestResult?.success).toBe(true)
     expect(meta.resolvedBaseUrl).toBe('https://api.example.com')
+    expect(meta.modelCallCounts).toEqual({ llm: 0, embedding: 0 })
     expect(typeof meta.vectorSchemaReady).toBe('boolean')
   })
 
@@ -601,7 +672,76 @@ describe('app context', () => {
 
     const meta = await context.getMeta()
     expect(meta.lastAiError).toBeNull()
+    expect(meta.modelCallCounts).toEqual({ llm: 2, embedding: 1 })
+    expect(meta.tokenUsage?.requestCount).toBe(3)
     expect(global.fetch).toHaveBeenCalledTimes(3)
+
+    global.fetch = originalFetch
+  })
+
+  it('batches live enrich requests when the queue setting is enabled', async () => {
+    const originalFetch = global.fetch
+    const context = makeContext()
+
+    await configureLiveMode(context)
+    await context.setSetting(
+      BLOCK_ENRICH_SETTINGS_KEY,
+      JSON.stringify({
+        queueEnabled: true,
+        maxBatchBlocks: 2,
+        queueDebounceMs: 3000,
+        responseReserveTokens: 1600,
+      }),
+    )
+
+    const fetchMock = vi.fn(async (input: string | URL, init?: RequestInit) => {
+      const url = String(input)
+      const body = init?.body ? JSON.parse(String(init.body)) as { input?: string[]; messages?: Array<{ content?: string }> } : {}
+
+      if (url.includes('/chat/completions')) {
+        const userMessage = body.messages?.find((message) => typeof message.content === 'string' && message.content.includes('块索引'))?.content ?? ''
+        expect(userMessage).toContain('块索引：0')
+        expect(userMessage).toContain('块索引：1')
+
+        const isReactBatch = userMessage.includes('React 页面结构') || userMessage.includes('第二条：整理 SQLite 查询计划')
+        const isElectronBatch = userMessage.includes('第三条：排查 Electron 事件链路') || userMessage.includes('第四条：整理批量队列日志')
+
+        if (isReactBatch) {
+          return makeBatchLlmResponse([
+            { index: 0, summary: '第一条批量摘要', detailTags: ['React'] },
+            { index: 1, summary: '第二条批量摘要', detailTags: ['SQLite'] },
+          ])
+        }
+
+        if (isElectronBatch) {
+          return makeBatchLlmResponse([
+            { index: 0, summary: '第三条批量摘要', detailTags: ['Electron'] },
+            { index: 1, summary: '第四条批量摘要', detailTags: ['队列'] },
+          ])
+        }
+
+        throw new Error(`Unexpected batch payload: ${userMessage}`)
+      }
+
+      const vectors = (body.input ?? []).map((_, index) => [0.11 + index * 0.01, 0.21, 0.31, 0.41])
+      return makeEmbeddingResponse(vectors)
+    })
+
+    global.fetch = fetchMock as typeof global.fetch
+
+    const first = await context.createBlock('第一条：补 React 页面结构')
+    const second = await context.createBlock('第二条：整理 SQLite 查询计划')
+    const third = await context.createBlock('第三条：排查 Electron 事件链路')
+    const fourth = await context.createBlock('第四条：整理批量队列日志')
+    await context.whenIdle()
+
+    expect((await context.getBlock(first.id)).summary).toBe('第一条批量摘要')
+    expect((await context.getBlock(second.id)).summary).toBe('第二条批量摘要')
+    expect((await context.getBlock(third.id)).summary).toBe('第三条批量摘要')
+    expect((await context.getBlock(fourth.id)).summary).toBe('第四条批量摘要')
+
+    const chatCalls = fetchMock.mock.calls.filter(([input]) => String(input).includes('/chat/completions'))
+    expect(chatCalls).toHaveLength(2)
 
     global.fetch = originalFetch
   })
@@ -1228,5 +1368,90 @@ describe('app context', () => {
     expect(snapshot.notebookId).toBe(notebook.id)
     expect((await context.listSnapshots('', notebook.id))).toHaveLength(1)
     expect((await context.getSnapshot(snapshot.id)).notebookTitle).toBe('发布工作台')
+  })
+
+  it('extracts calendar suggestions from dated blocks and supports accepting them', async () => {
+    const originalFetch = global.fetch
+    const context = makeContext()
+
+    global.fetch = vi.fn(async (input, init) => {
+      const url = String(input)
+
+      if (url.endsWith('/embeddings')) {
+        return makeEmbeddingResponse([[0.11, 0.12, 0.13, 0.14]])
+      }
+
+      if (url.endsWith('/chat/completions')) {
+        const body = JSON.parse(String(init?.body ?? '{}')) as {
+          messages?: Array<{ content?: string }>
+        }
+        const systemPrompt = body.messages?.[0]?.content ?? ''
+
+        if (typeof systemPrompt === 'string' && systemPrompt.includes('日历计划提取助手')) {
+          return makeCalendarSuggestionResponse([
+            {
+              title: '和设计师过一遍首屏',
+              date: '2026-04-10',
+              startTime: '10:30',
+              allDay: false,
+              notes: '重点确认排版和动效',
+              evidenceText: '4月10日上午10:30和设计师过一遍首屏',
+              confidence: 0.93,
+            },
+            {
+              title: '提交最终文案',
+              date: '2026-04-12',
+              allDay: true,
+              notes: '把首页文案整理后发出',
+              evidenceText: '4月12日提交最终文案',
+              confidence: 0.88,
+            },
+          ])
+        }
+
+        return makeLlmResponse('排期记录', ['工作'], ['排期'])
+      }
+
+      throw new Error(`Unexpected fetch url: ${url}`)
+    }) as typeof global.fetch
+
+    await configureLiveMode(context)
+
+    const created = await context.createBlock('4月10日上午10:30和设计师过一遍首屏，再在4月12日提交最终文案。')
+    await context.whenIdle()
+
+    const createdDay = formatLocalDate(created.createdAt)
+    const createdDayDetail = await context.getCalendarDayDetail(createdDay)
+    expect(createdDayDetail.blockCount).toBe(1)
+    expect(createdDayDetail.blocks[0]?.id).toBe(created.id)
+
+    const suggestionDay = await context.getCalendarDayDetail('2026-04-10')
+    expect(suggestionDay.suggestions).toHaveLength(1)
+    expect(suggestionDay.suggestions[0]).toMatchObject({
+      title: '和设计师过一遍首屏',
+      startTime: '10:30',
+      allDay: false,
+      sourceBlockId: created.id,
+    })
+
+    const secondSuggestionDay = await context.getCalendarDayDetail('2026-04-12')
+    expect(secondSuggestionDay.suggestions).toHaveLength(1)
+    const accepted = await context.acceptCalendarSuggestion(secondSuggestionDay.suggestions[0].id, {
+      title: '提交首页最终文案',
+    })
+
+    expect(accepted).toMatchObject({
+      title: '提交首页最终文案',
+      source: 'ai-accepted',
+      linkedBlockId: created.id,
+    })
+
+    const upcoming = await context.listUpcomingCalendarEntries(14)
+    expect(upcoming.some((entry) => entry.title === '提交首页最终文案')).toBe(true)
+
+    const years = await context.listCalendarYears()
+    expect(years).toContain(2026)
+
+    global.fetch = originalFetch
   })
 })

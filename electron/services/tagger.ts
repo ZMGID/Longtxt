@@ -1,7 +1,7 @@
 import { Jieba } from '@node-rs/jieba'
 import { dict } from '@node-rs/jieba/dict'
 
-import type { LLMProvider } from './ai'
+import type { LLMProvider, TagSuggestionBatchOptions } from './ai'
 import { DEFAULT_TAG_DEFINITIONS, STRONG_TAG_HINTS, TAG_STOPWORDS, TECH_SIGNAL_PATTERNS } from './defaultTags'
 
 const LOW_CONFIDENCE_THRESHOLD = 1.25
@@ -11,6 +11,7 @@ const jieba = Jieba.withDict(dict)
 export interface TaggerAssignOptions {
   corpusContents: string[]
   liveLlmProvider?: LLMProvider | null
+  batchOptions?: TagSuggestionBatchOptions
   tagMemory?: {
     categories: string[]
     details: string[]
@@ -28,6 +29,7 @@ export interface TagAssignmentResult {
 
 export interface TaggerEngine {
   assign(content: string, options: TaggerAssignOptions): Promise<TagAssignmentResult>
+  assignBatch(items: Array<{ content: string; options: TaggerAssignOptions }>): Promise<TagAssignmentResult[]>
 }
 
 function normalizeToken(token: string): string {
@@ -160,72 +162,149 @@ function pickRuleCandidates(scoredTags: Array<{ name: string; score: number }>):
   }
 }
 
+interface PreparedTagAssignment {
+  content: string
+  ruleResult: TagAssignmentResult
+  llmInput: {
+    content: string
+    categoryCandidates: string[]
+    detailCandidates: string[]
+    userTags: string[]
+  }
+  liveLlmProvider: LLMProvider | null
+  batchOptions?: TagSuggestionBatchOptions
+}
+
+function prepareTagAssignment(content: string, options: TaggerAssignOptions): PreparedTagAssignment {
+  const corpusContents = options.corpusContents.length > 0 ? options.corpusContents : [content]
+  const scoredTags = scoreDefaultTags(content, corpusContents)
+  const ruleResult = pickRuleTags(scoredTags)
+  const ruleCandidates = pickRuleCandidates(scoredTags)
+
+  return {
+    content,
+    ruleResult,
+    llmInput: {
+      content,
+      categoryCandidates: options.tagMemory?.categories ?? ruleCandidates.categories,
+      detailCandidates: Array.from(new Set([...(options.tagMemory?.details ?? []), ...ruleCandidates.details])),
+      userTags: options.tagMemory?.users ?? [],
+    },
+    liveLlmProvider: options.liveLlmProvider ?? null,
+    batchOptions: options.batchOptions,
+  }
+}
+
+function isSameBatchOptions(
+  left: TagSuggestionBatchOptions | undefined,
+  right: TagSuggestionBatchOptions | undefined,
+): boolean {
+  return (left?.maxBatchBlocks ?? null) === (right?.maxBatchBlocks ?? null)
+    && (left?.responseReserveTokens ?? null) === (right?.responseReserveTokens ?? null)
+}
+
+function resolveTagAssignment(
+  prepared: PreparedTagAssignment,
+  llmTags?: {
+    categories: string[]
+    detailTags: string[]
+    summary: string | null
+  } | null,
+): TagAssignmentResult {
+  if (llmTags && (llmTags.categories.length > 0 || llmTags.detailTags.length > 0)) {
+    return {
+      categories: llmTags.categories.slice(0, 3),
+      detailTags: llmTags.detailTags.slice(0, 5),
+      summary: llmTags.summary ?? buildFallbackSummary(prepared.content),
+      confidence: prepared.ruleResult.confidence,
+      usedFallback: false,
+    }
+  }
+
+  if (
+    (prepared.ruleResult.categories.length > 0 || prepared.ruleResult.detailTags.length > 0)
+    && prepared.ruleResult.confidence >= HIGH_CONFIDENCE_THRESHOLD
+  ) {
+    return prepared.ruleResult
+  }
+
+  if (!prepared.liveLlmProvider) {
+    if (prepared.ruleResult.categories.length > 0 || prepared.ruleResult.detailTags.length > 0) {
+      return prepared.ruleResult
+    }
+
+    return {
+      categories: ['创意'],
+      detailTags: ['想法', '临时'],
+      summary: buildFallbackSummary(prepared.content),
+      confidence: 0,
+      usedFallback: true,
+    }
+  }
+
+  if (
+    (prepared.ruleResult.categories.length > 0 || prepared.ruleResult.detailTags.length > 0)
+    && prepared.ruleResult.confidence >= LOW_CONFIDENCE_THRESHOLD
+  ) {
+    return prepared.ruleResult
+  }
+
+  if (prepared.ruleResult.categories.length > 0 || prepared.ruleResult.detailTags.length > 0) {
+    return {
+      categories: prepared.ruleResult.categories,
+      detailTags: prepared.ruleResult.detailTags,
+      summary: buildFallbackSummary(prepared.content),
+      confidence: prepared.ruleResult.confidence,
+      usedFallback: true,
+    }
+  }
+
+  return {
+    categories: ['创意'],
+    detailTags: ['想法', '临时'],
+    summary: buildFallbackSummary(prepared.content),
+    confidence: 0,
+    usedFallback: true,
+  }
+}
+
 export function createTaggerEngine(): TaggerEngine {
+  const assignBatch = async (items: Array<{ content: string; options: TaggerAssignOptions }>): Promise<TagAssignmentResult[]> => {
+    const prepared = items.map((item) => prepareTagAssignment(item.content, item.options))
+    const sharedLiveProvider = prepared[0]?.liveLlmProvider ?? null
+    const sharedBatchOptions = prepared[0]?.batchOptions
+    const canBatchWithLiveProvider =
+      Boolean(sharedLiveProvider)
+      && prepared.every((item) => item.liveLlmProvider === sharedLiveProvider && isSameBatchOptions(item.batchOptions, sharedBatchOptions))
+
+    if (canBatchWithLiveProvider && sharedLiveProvider) {
+      const llmResults = await sharedLiveProvider.suggestTagsBatch(
+        prepared.map((item) => item.llmInput),
+        sharedBatchOptions,
+      )
+      return prepared.map((item, index) => resolveTagAssignment(item, llmResults[index] ?? null))
+    }
+
+    const results: TagAssignmentResult[] = []
+
+    for (const item of prepared) {
+      const llmTags = item.liveLlmProvider
+        ? await item.liveLlmProvider.suggestTags(item.llmInput)
+        : null
+      results.push(resolveTagAssignment(item, llmTags))
+    }
+
+    return results
+  }
+
   return {
     async assign(content, options) {
-      const corpusContents = options.corpusContents.length > 0 ? options.corpusContents : [content]
-      const scoredTags = scoreDefaultTags(content, corpusContents)
-      const ruleResult = pickRuleTags(scoredTags)
-      const ruleCandidates = pickRuleCandidates(scoredTags)
+      const [result] = await assignBatch([{ content, options }])
+      return result
+    },
 
-      if (options.liveLlmProvider) {
-        const llmTags = await options.liveLlmProvider.suggestTags({
-          content,
-          categoryCandidates: options.tagMemory?.categories ?? ruleCandidates.categories,
-          detailCandidates: Array.from(new Set([...(options.tagMemory?.details ?? []), ...ruleCandidates.details])),
-          userTags: options.tagMemory?.users ?? [],
-        })
-
-        if (llmTags.categories.length > 0 || llmTags.detailTags.length > 0) {
-          return {
-            categories: llmTags.categories.slice(0, 3),
-            detailTags: llmTags.detailTags.slice(0, 5),
-            summary: llmTags.summary ?? buildFallbackSummary(content),
-            confidence: ruleResult.confidence,
-            usedFallback: false,
-          }
-        }
-      }
-
-      if ((ruleResult.categories.length > 0 || ruleResult.detailTags.length > 0) && ruleResult.confidence >= HIGH_CONFIDENCE_THRESHOLD) {
-        return ruleResult
-      }
-
-      if (!options.liveLlmProvider) {
-        if (ruleResult.categories.length > 0 || ruleResult.detailTags.length > 0) {
-          return ruleResult
-        }
-
-        return {
-          categories: ['创意'],
-          detailTags: ['想法', '临时'],
-          summary: buildFallbackSummary(content),
-          confidence: 0,
-          usedFallback: true,
-        }
-      }
-
-      if ((ruleResult.categories.length > 0 || ruleResult.detailTags.length > 0) && ruleResult.confidence >= LOW_CONFIDENCE_THRESHOLD) {
-        return ruleResult
-      }
-
-      if (ruleResult.categories.length > 0 || ruleResult.detailTags.length > 0) {
-        return {
-          categories: ruleResult.categories,
-          detailTags: ruleResult.detailTags,
-          summary: buildFallbackSummary(content),
-          confidence: ruleResult.confidence,
-          usedFallback: true,
-        }
-      }
-
-      return {
-        categories: ['创意'],
-        detailTags: ['想法', '临时'],
-        summary: buildFallbackSummary(content),
-        confidence: 0,
-        usedFallback: true,
-      }
+    async assignBatch(items) {
+      return assignBatch(items)
     },
   }
 }

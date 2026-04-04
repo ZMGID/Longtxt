@@ -2,7 +2,7 @@ import type { ReactNode } from 'react'
 
 import type { AppMeta } from '../../shared/types'
 
-export type AppView = 'timeline' | 'search' | 'notebooks' | 'graph' | 'snapshots' | 'settings'
+export type AppView = 'timeline' | 'calendar' | 'search' | 'notebooks' | 'graph' | 'snapshots' | 'settings'
 
 interface AppSidebarProps {
   activeView: AppView
@@ -20,6 +20,7 @@ interface SidebarItem {
 
 const items: SidebarItem[] = [
   { id: 'timeline', label: '时间轴', icon: ({ active }) => <TimelineIcon active={active} /> },
+  { id: 'calendar', label: '日历', icon: ({ active }) => <CalendarIcon active={active} /> },
   { id: 'search', label: '搜索生成', icon: ({ active }) => <SearchIcon active={active} /> },
   { id: 'notebooks', label: '笔记本', icon: ({ active }) => <NotebookIcon active={active} /> },
   { id: 'graph', label: '连接图', icon: ({ active }) => <GraphIcon active={active} /> },
@@ -59,6 +60,13 @@ export function AppSidebar({ activeView, blockCount, aiStatusLabel, meta, onSele
       </nav>
 
       <div className="mt-auto flex flex-col items-center gap-2 px-2 pb-3">
+        <SidebarSplitStat
+          topValue={formatCompactNumber(meta?.modelCallCounts.llm ?? 0)}
+          topLabel="LLM"
+          bottomValue={formatCompactNumber(meta?.modelCallCounts.embedding ?? 0)}
+          bottomLabel="向量"
+          title={`模型调用 · LLM ${meta?.modelCallCounts.llm ?? 0} 次 / 向量 ${meta?.modelCallCounts.embedding ?? 0} 次`}
+        />
         <SidebarStat
           value={formatCompactNumber(blockCount)}
           label="块"
@@ -81,6 +89,36 @@ export function AppSidebar({ activeView, blockCount, aiStatusLabel, meta, onSele
   )
 }
 
+function SidebarSplitStat({
+  topValue,
+  topLabel,
+  bottomValue,
+  bottomLabel,
+  title,
+}: {
+  topValue: string
+  topLabel: string
+  bottomValue: string
+  bottomLabel: string
+  title: string
+}) {
+  return (
+    <div
+      title={title}
+      className="flex w-11 flex-col overflow-hidden rounded-xl bg-black/[0.04] text-center text-stone-500"
+    >
+      <div className="px-1 py-1.5">
+        <span className="text-[11px] font-semibold leading-none text-stone-800">{topValue}</span>
+        <span className="mt-1 block text-[9px] uppercase tracking-[0.12em]">{topLabel}</span>
+      </div>
+      <div className="border-t border-black/5 px-1 py-1.5">
+        <span className="text-[11px] font-semibold leading-none text-stone-800">{bottomValue}</span>
+        <span className="mt-1 block text-[9px] tracking-[0.08em]">{bottomLabel}</span>
+      </div>
+    </div>
+  )
+}
+
 function SidebarStat({ value, label, title }: { value: string; label: string; title: string }) {
   return (
     <div
@@ -94,7 +132,7 @@ function SidebarStat({ value, label, title }: { value: string; label: string; ti
 }
 
 function formatCompactNumber(value: number | null | undefined): string {
-  if (!value || value < 0) {
+  if (value == null || value < 0) {
     return '?'
   }
 
@@ -154,6 +192,20 @@ function SearchIcon({ active }: { active: boolean }) {
       <path d="m16 16 4 4" />
       <path d="M18 5v3" />
       <path d="M16.5 6.5h3" />
+    </SidebarIconFrame>
+  )
+}
+
+function CalendarIcon({ active }: { active: boolean }) {
+  return (
+    <SidebarIconFrame active={active}>
+      <rect x="4" y="5" width="16" height="14" rx="2" />
+      <path d="M8 3.5v3" />
+      <path d="M16 3.5v3" />
+      <path d="M4 9h16" />
+      <path d="M8 12h3" />
+      <path d="M13 12h3" />
+      <path d="M8 15h3" />
     </SidebarIconFrame>
   )
 }

@@ -1,11 +1,12 @@
 import { contextBridge, ipcRenderer } from 'electron'
 
 import { IPC_CHANNELS } from '../shared/ipc'
-import type { BlockChangedEvent, ChangbuApi, DocGenerationChunk, MetaChangedEvent, NotebookChangedEvent } from '../shared/types'
+import type { BlockChangedEvent, CalendarChangedEvent, ChangbuApi, DocGenerationChunk, MetaChangedEvent, NotebookChangedEvent } from '../shared/types'
 
 const blockListeners = new Set<(event: BlockChangedEvent) => void>()
 const notebookListeners = new Set<(event: NotebookChangedEvent) => void>()
 const metaListeners = new Set<(event: MetaChangedEvent) => void>()
+const calendarListeners = new Set<(event: CalendarChangedEvent) => void>()
 const docListeners = new Set<(chunk: DocGenerationChunk) => void>()
 
 ipcRenderer.on(IPC_CHANNELS.events.blockChanged, (_event, payload: BlockChangedEvent) => {
@@ -22,6 +23,12 @@ ipcRenderer.on(IPC_CHANNELS.events.notebooksChanged, (_event, payload: NotebookC
 
 ipcRenderer.on(IPC_CHANNELS.events.metaChanged, (_event, payload: MetaChangedEvent) => {
   for (const listener of metaListeners) {
+    listener(payload)
+  }
+})
+
+ipcRenderer.on(IPC_CHANNELS.events.calendarChanged, (_event, payload: CalendarChangedEvent) => {
+  for (const listener of calendarListeners) {
     listener(payload)
   }
 })
@@ -62,6 +69,17 @@ const api: ChangbuApi = {
     list: (query, notebookId) => ipcRenderer.invoke(IPC_CHANNELS.snapshots.list, query, notebookId),
     get: (id) => ipcRenderer.invoke(IPC_CHANNELS.snapshots.get, id),
     remove: (id) => ipcRenderer.invoke(IPC_CHANNELS.snapshots.remove, id),
+  },
+  calendar: {
+    listYears: () => ipcRenderer.invoke(IPC_CHANNELS.calendar.listYears),
+    getYearHeatmap: (year) => ipcRenderer.invoke(IPC_CHANNELS.calendar.getYearHeatmap, year),
+    getDayDetail: (date) => ipcRenderer.invoke(IPC_CHANNELS.calendar.getDayDetail, date),
+    listUpcoming: (limitDays) => ipcRenderer.invoke(IPC_CHANNELS.calendar.listUpcoming, limitDays),
+    createEntry: (input) => ipcRenderer.invoke(IPC_CHANNELS.calendar.createEntry, input),
+    updateEntry: (id, patch) => ipcRenderer.invoke(IPC_CHANNELS.calendar.updateEntry, id, patch),
+    removeEntry: (id) => ipcRenderer.invoke(IPC_CHANNELS.calendar.removeEntry, id),
+    acceptSuggestion: (suggestionId, overrides) => ipcRenderer.invoke(IPC_CHANNELS.calendar.acceptSuggestion, suggestionId, overrides),
+    dismissSuggestion: (suggestionId) => ipcRenderer.invoke(IPC_CHANNELS.calendar.dismissSuggestion, suggestionId),
   },
   notebooks: {
     list: () => ipcRenderer.invoke(IPC_CHANNELS.notebooks.list),
@@ -118,6 +136,12 @@ const api: ChangbuApi = {
       metaListeners.add(listener)
       return () => {
         metaListeners.delete(listener)
+      }
+    },
+    onCalendarChanged(listener) {
+      calendarListeners.add(listener)
+      return () => {
+        calendarListeners.delete(listener)
       }
     },
     onDocGenerationChunk(listener) {

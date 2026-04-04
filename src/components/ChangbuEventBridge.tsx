@@ -13,6 +13,7 @@ export function ChangbuEventBridge() {
       void queryClient.invalidateQueries({ queryKey: queryKeys.blocks() })
       void queryClient.invalidateQueries({ queryKey: queryKeys.tags() })
       void queryClient.invalidateQueries({ queryKey: queryKeys.graphRoot() })
+      void queryClient.invalidateQueries({ queryKey: queryKeys.calendarRoot() })
     })
     const unsubscribeNotebooksChanged = changbu.events.onNotebooksChanged((event) => {
       void queryClient.invalidateQueries({ queryKey: queryKeys.notebooks() })
@@ -29,11 +30,15 @@ export function ChangbuEventBridge() {
     const unsubscribeMetaChanged = changbu.events.onMetaChanged(() => {
       void queryClient.invalidateQueries({ queryKey: queryKeys.meta() })
     })
+    const unsubscribeCalendarChanged = changbu.events.onCalendarChanged(() => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.calendarRoot() })
+    })
 
     return () => {
       unsubscribeBlockChanged()
       unsubscribeNotebooksChanged()
       unsubscribeMetaChanged()
+      unsubscribeCalendarChanged()
     }
   }, [queryClient])
 

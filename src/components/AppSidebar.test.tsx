@@ -15,6 +15,10 @@ const sampleMeta: AppMeta = {
   activeAiMode: 'live',
   lastAiError: null,
   lastAiTestResult: null,
+  modelCallCounts: {
+    llm: 7,
+    embedding: 3,
+  },
   tokenUsage: null,
   failedVectorCount: 0,
 }
@@ -34,6 +38,10 @@ describe('AppSidebar', () => {
     expect(screen.getByTestId('app-sidebar').className).toContain('w-[68px]')
     expect(screen.getByRole('button', { name: '搜索生成' }).className).toContain('bg-black/[0.08]')
     expect(screen.getByText('20')).toBeInTheDocument()
+    expect(screen.getByText('7')).toBeInTheDocument()
+    expect(screen.getByText('3')).toBeInTheDocument()
+    expect(screen.getByText('LLM')).toBeInTheDocument()
+    expect(screen.getByText('向量')).toBeInTheDocument()
     expect(screen.getByText('Live')).toBeInTheDocument()
     expect(screen.getByText('1k')).toBeInTheDocument()
   })

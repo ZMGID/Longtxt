@@ -1,9 +1,33 @@
-import { DEFAULT_DOC_GENERATION_SETTINGS, MAX_DOC_GENERATION_REFERENCE_BLOCKS, MIN_DOC_GENERATION_REFERENCE_BLOCKS } from '../../shared/config'
-import type { AIConfig, ApiTestResult, AppMeta, DocGenerationSettings, UISettings } from '../../shared/types'
+import {
+  DEFAULT_BLOCK_ENRICH_SETTINGS,
+  DEFAULT_CALENDAR_SETTINGS,
+  DEFAULT_DOC_GENERATION_SETTINGS,
+  MAX_BLOCK_ENRICH_BATCH_BLOCKS,
+  MAX_BLOCK_ENRICH_QUEUE_DEBOUNCE_MS,
+  MAX_BLOCK_ENRICH_RESPONSE_RESERVE_TOKENS,
+  MAX_CALENDAR_MAX_SUGGESTIONS_PER_BLOCK,
+  MAX_CALENDAR_UPCOMING_DAYS,
+  MAX_DOC_GENERATION_MAX_OUTPUT_TOKENS,
+  MAX_DOC_GENERATION_REFERENCE_BLOCKS,
+  MAX_DOC_GENERATION_RETRIEVAL_LIMIT,
+  MAX_DOC_GENERATION_TEMPERATURE,
+  MIN_BLOCK_ENRICH_BATCH_BLOCKS,
+  MIN_BLOCK_ENRICH_QUEUE_DEBOUNCE_MS,
+  MIN_BLOCK_ENRICH_RESPONSE_RESERVE_TOKENS,
+  MIN_CALENDAR_MAX_SUGGESTIONS_PER_BLOCK,
+  MIN_CALENDAR_UPCOMING_DAYS,
+  MIN_DOC_GENERATION_MAX_OUTPUT_TOKENS,
+  MIN_DOC_GENERATION_REFERENCE_BLOCKS,
+  MIN_DOC_GENERATION_RETRIEVAL_LIMIT,
+  MIN_DOC_GENERATION_TEMPERATURE,
+} from '../../shared/config'
+import type { AIConfig, ApiTestResult, AppMeta, BlockEnrichSettings, CalendarSettings, DocGenerationSettings, UISettings } from '../../shared/types'
 
 interface SettingsPanelProps {
   config: AIConfig
   docGenerationSettings: DocGenerationSettings
+  blockEnrichSettings: BlockEnrichSettings
+  calendarSettings: CalendarSettings
   uiSettings: UISettings
   meta: AppMeta | null
   saving: boolean
@@ -12,6 +36,8 @@ interface SettingsPanelProps {
   onRetryFailedVectors?: () => Promise<void>
   onChange: (nextConfig: AIConfig) => void
   onDocGenerationSettingsChange: (nextSettings: DocGenerationSettings) => void
+  onBlockEnrichSettingsChange: (nextSettings: BlockEnrichSettings) => void
+  onCalendarSettingsChange: (nextSettings: CalendarSettings) => void
   onUISettingsChange: (nextSettings: UISettings) => void
   onSave: () => Promise<void>
   onTest: () => Promise<void>
@@ -93,9 +119,48 @@ function SettingCheckbox({
   )
 }
 
+function SettingNumberField({
+  label,
+  description,
+  value,
+  min,
+  max,
+  step = 1,
+  onChange,
+}: {
+  label: string
+  description: string
+  value: number
+  min: number
+  max: number
+  step?: number
+  onChange: (value: number) => void
+}) {
+  return (
+    <label className="block space-y-1">
+      <span className="text-xs font-medium uppercase tracking-wider text-stone-400">{label}</span>
+      <input
+        type="number"
+        min={min}
+        max={max}
+        step={step}
+        value={value}
+        onChange={(event) => {
+          const nextValue = Number(event.target.value)
+          onChange(Number.isFinite(nextValue) ? nextValue : value)
+        }}
+        className="w-full rounded border border-stone-200 bg-white/70 px-3 py-2 text-sm text-stone-900 outline-none transition focus:border-stone-400 focus:ring-1 focus:ring-stone-200"
+      />
+      <p className="text-xs leading-5 text-stone-500">{description}</p>
+    </label>
+  )
+}
+
 export function SettingsPanel({
   config,
   docGenerationSettings,
+  blockEnrichSettings,
+  calendarSettings,
   uiSettings,
   meta,
   saving,
@@ -104,6 +169,8 @@ export function SettingsPanel({
   onRetryFailedVectors,
   onChange,
   onDocGenerationSettingsChange,
+  onBlockEnrichSettingsChange,
+  onCalendarSettingsChange,
   onUISettingsChange,
   onSave,
   onTest,
@@ -158,28 +225,152 @@ export function SettingsPanel({
         </ConfigSection>
 
         <ConfigSection title="文档生成" description="文档生成会先筛选相关块，再在达标结果中按上限引用。建议范围 6 到 12。">
-          <label className="block space-y-1">
-            <span className="text-xs font-medium uppercase tracking-wider text-stone-400">最大引用块数</span>
-            <input
-              type="number"
-              min={MIN_DOC_GENERATION_REFERENCE_BLOCKS}
-              max={MAX_DOC_GENERATION_REFERENCE_BLOCKS}
-              step={1}
-              value={docGenerationSettings.maxReferenceBlocks}
-              onChange={(event) => {
-                const nextValue = Number(event.target.value)
-                onDocGenerationSettingsChange({
-                  maxReferenceBlocks: Number.isFinite(nextValue)
-                    ? nextValue
-                    : DEFAULT_DOC_GENERATION_SETTINGS.maxReferenceBlocks,
-                })
-              }}
-              className="w-full rounded border border-stone-200 bg-white/70 px-3 py-2 text-sm text-stone-900 outline-none transition focus:border-stone-400 focus:ring-1 focus:ring-stone-200"
-            />
-            <p className="text-xs leading-5 text-stone-500">
-              默认 10，保存时会自动限制在 {MIN_DOC_GENERATION_REFERENCE_BLOCKS} 到 {MAX_DOC_GENERATION_REFERENCE_BLOCKS} 之间。
-            </p>
-          </label>
+          <SettingNumberField
+            label="最大引用块数"
+            value={docGenerationSettings.maxReferenceBlocks}
+            min={MIN_DOC_GENERATION_REFERENCE_BLOCKS}
+            max={MAX_DOC_GENERATION_REFERENCE_BLOCKS}
+            onChange={(value) => {
+              onDocGenerationSettingsChange({
+                ...docGenerationSettings,
+                maxReferenceBlocks: value,
+              })
+            }}
+            description={`默认 ${DEFAULT_DOC_GENERATION_SETTINGS.maxReferenceBlocks}，保存时会自动限制在 ${MIN_DOC_GENERATION_REFERENCE_BLOCKS} 到 ${MAX_DOC_GENERATION_REFERENCE_BLOCKS} 之间。`}
+          />
+          <SettingNumberField
+            label="召回候选块数"
+            value={docGenerationSettings.retrievalLimit}
+            min={MIN_DOC_GENERATION_RETRIEVAL_LIMIT}
+            max={MAX_DOC_GENERATION_RETRIEVAL_LIMIT}
+            onChange={(value) => {
+              onDocGenerationSettingsChange({
+                ...docGenerationSettings,
+                retrievalLimit: value,
+              })
+            }}
+            description={`默认 ${DEFAULT_DOC_GENERATION_SETTINGS.retrievalLimit}。生成前先从搜索结果里取这么多候选块，再筛选引用。`}
+          />
+          <SettingNumberField
+            label="生成温度"
+            value={docGenerationSettings.temperature}
+            min={MIN_DOC_GENERATION_TEMPERATURE}
+            max={MAX_DOC_GENERATION_TEMPERATURE}
+            step={0.05}
+            onChange={(value) => {
+              onDocGenerationSettingsChange({
+                ...docGenerationSettings,
+                temperature: value,
+              })
+            }}
+            description={`默认 ${DEFAULT_DOC_GENERATION_SETTINGS.temperature}。越低越稳，越高越发散。建议 0 到 0.4。`}
+          />
+          <SettingNumberField
+            label="输出 Token 上限"
+            value={docGenerationSettings.maxOutputTokens}
+            min={MIN_DOC_GENERATION_MAX_OUTPUT_TOKENS}
+            max={MAX_DOC_GENERATION_MAX_OUTPUT_TOKENS}
+            onChange={(value) => {
+              onDocGenerationSettingsChange({
+                ...docGenerationSettings,
+                maxOutputTokens: value,
+              })
+            }}
+            description={`默认 ${DEFAULT_DOC_GENERATION_SETTINGS.maxOutputTokens}。限制单次文档生成的输出长度与成本。`}
+          />
+        </ConfigSection>
+
+        <ConfigSection title="块 enrich" description="控制块创建后的标签和摘要请求方式。默认逐条发送；开启队列后会在短时间内合并多条 live 请求，并按模型上下文与预留 token 自动限流。">
+          <SettingCheckbox
+            label="启用 live enrich 队列"
+            description="仅对已启用的 live AI 生效。创建多个块时会先短暂聚合，再合并请求，以减少调用次数和费用。"
+            checked={blockEnrichSettings.queueEnabled}
+            onChange={(checked) => {
+              onBlockEnrichSettingsChange({
+                ...blockEnrichSettings,
+                queueEnabled: checked,
+              })
+            }}
+          />
+          <SettingNumberField
+            label="单次最多合并块数"
+            value={blockEnrichSettings.maxBatchBlocks}
+            min={MIN_BLOCK_ENRICH_BATCH_BLOCKS}
+            max={MAX_BLOCK_ENRICH_BATCH_BLOCKS}
+            onChange={(value) => {
+              onBlockEnrichSettingsChange({
+                ...blockEnrichSettings,
+                maxBatchBlocks: value,
+              })
+            }}
+            description={`默认 ${DEFAULT_BLOCK_ENRICH_SETTINGS.maxBatchBlocks}。保存时会自动限制在 ${MIN_BLOCK_ENRICH_BATCH_BLOCKS} 到 ${MAX_BLOCK_ENRICH_BATCH_BLOCKS} 之间。`}
+          />
+          <SettingNumberField
+            label="聚合等待时间（ms）"
+            value={blockEnrichSettings.queueDebounceMs}
+            min={MIN_BLOCK_ENRICH_QUEUE_DEBOUNCE_MS}
+            max={MAX_BLOCK_ENRICH_QUEUE_DEBOUNCE_MS}
+            onChange={(value) => {
+              onBlockEnrichSettingsChange({
+                ...blockEnrichSettings,
+                queueDebounceMs: value,
+              })
+            }}
+            description={`默认 ${DEFAULT_BLOCK_ENRICH_SETTINGS.queueDebounceMs}ms。达到块数上限前，会最多等待这段时间再一起发送。`}
+          />
+          <SettingNumberField
+            label="预留输出 Token"
+            value={blockEnrichSettings.responseReserveTokens}
+            min={MIN_BLOCK_ENRICH_RESPONSE_RESERVE_TOKENS}
+            max={MAX_BLOCK_ENRICH_RESPONSE_RESERVE_TOKENS}
+            onChange={(value) => {
+              onBlockEnrichSettingsChange({
+                ...blockEnrichSettings,
+                responseReserveTokens: value,
+              })
+            }}
+            description={`默认 ${DEFAULT_BLOCK_ENRICH_SETTINGS.responseReserveTokens}。批量请求会先按模型上下文估算，再预留这部分空间给返回结果。`}
+          />
+        </ConfigSection>
+
+        <ConfigSection title="日历与计划" description="控制日历页的 AI 日期建议和未来安排窗口。AI 建议只会生成待确认项，不会直接替你落正式安排。">
+          <SettingCheckbox
+            label="启用 AI 日期建议"
+            description="块 enrich 完成后，若内容中存在明确未来日期安排，会在日历里生成待确认建议。"
+            checked={calendarSettings.aiSuggestionsEnabled}
+            onChange={(checked) => {
+              onCalendarSettingsChange({
+                ...calendarSettings,
+                aiSuggestionsEnabled: checked,
+              })
+            }}
+          />
+          <SettingNumberField
+            label="每块最多建议条数"
+            value={calendarSettings.maxSuggestionsPerBlock}
+            min={MIN_CALENDAR_MAX_SUGGESTIONS_PER_BLOCK}
+            max={MAX_CALENDAR_MAX_SUGGESTIONS_PER_BLOCK}
+            onChange={(value) => {
+              onCalendarSettingsChange({
+                ...calendarSettings,
+                maxSuggestionsPerBlock: value,
+              })
+            }}
+            description={`默认 ${DEFAULT_CALENDAR_SETTINGS.maxSuggestionsPerBlock}。建议限制在 ${MIN_CALENDAR_MAX_SUGGESTIONS_PER_BLOCK} 到 ${MAX_CALENDAR_MAX_SUGGESTIONS_PER_BLOCK} 条之间。`}
+          />
+          <SettingNumberField
+            label="未来安排窗口（天）"
+            value={calendarSettings.upcomingDays}
+            min={MIN_CALENDAR_UPCOMING_DAYS}
+            max={MAX_CALENDAR_UPCOMING_DAYS}
+            onChange={(value) => {
+              onCalendarSettingsChange({
+                ...calendarSettings,
+                upcomingDays: value,
+              })
+            }}
+            description={`默认 ${DEFAULT_CALENDAR_SETTINGS.upcomingDays}。控制日历页右侧“未来安排”列表的日期范围。`}
+          />
         </ConfigSection>
 
         <ConfigSection title="界面" description="控制时间轴页的辅助信息显示方式。">

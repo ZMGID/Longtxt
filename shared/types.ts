@@ -8,6 +8,10 @@ export type TagSource = 'auto' | 'manual'
 
 export type TagKind = 'category' | 'detail' | 'user'
 
+export type CalendarEntryStatus = 'planned' | 'done' | 'canceled'
+
+export type CalendarEntrySource = 'manual' | 'ai-accepted'
+
 export interface Tag {
   id: string
   name: string
@@ -215,10 +219,26 @@ export interface AIConfig {
 
 export interface DocGenerationSettings {
   maxReferenceBlocks: number
+  retrievalLimit: number
+  temperature: number
+  maxOutputTokens: number
+}
+
+export interface BlockEnrichSettings {
+  queueEnabled: boolean
+  maxBatchBlocks: number
+  queueDebounceMs: number
+  responseReserveTokens: number
 }
 
 export interface UISettings {
   showMiniTimeline: boolean
+}
+
+export interface CalendarSettings {
+  aiSuggestionsEnabled: boolean
+  maxSuggestionsPerBlock: number
+  upcomingDays: number
 }
 
 export interface PaginationInput {
@@ -248,6 +268,11 @@ export interface TokenUsage {
   requestCount: number
 }
 
+export interface ModelCallCounts {
+  llm: number
+  embedding: number
+}
+
 export interface AppMeta {
   dataDirectory: string
   totalBlockCount: number
@@ -259,8 +284,87 @@ export interface AppMeta {
   activeAiMode: AIExecutionMode
   lastAiError: string | null
   lastAiTestResult: ApiTestResult | null
+  modelCallCounts: ModelCallCounts
   tokenUsage: TokenUsage | null
   failedVectorCount: number
+}
+
+export interface CalendarDaySummary {
+  date: string
+  blockCount: number
+  intensityLevel: number
+  hasEntries: boolean
+  hasSuggestions: boolean
+}
+
+export interface CalendarHeatmap {
+  year: number
+  totalContributions: number
+  maxBlockCount: number
+  days: CalendarDaySummary[]
+}
+
+export interface CalendarEntry {
+  id: string
+  title: string
+  notes: string | null
+  date: string
+  startTime: string | null
+  allDay: boolean
+  status: CalendarEntryStatus
+  source: CalendarEntrySource
+  linkedBlockId: string | null
+  createdAt: string
+  updatedAt: string
+}
+
+export interface CalendarSuggestion {
+  id: string
+  title: string
+  notes: string | null
+  date: string
+  startTime: string | null
+  allDay: boolean
+  sourceBlockId: string
+  confidence: number
+  evidenceText: string | null
+  createdAt: string
+  updatedAt: string
+}
+
+export interface CalendarDayDetail {
+  date: string
+  blockCount: number
+  blocks: Block[]
+  entries: CalendarEntry[]
+  suggestions: CalendarSuggestion[]
+}
+
+export interface CalendarEntryInput {
+  title: string
+  date: string
+  notes?: string | null
+  startTime?: string | null
+  allDay?: boolean
+  linkedBlockId?: string | null
+}
+
+export interface CalendarEntryPatch {
+  title?: string
+  date?: string
+  notes?: string | null
+  startTime?: string | null
+  allDay?: boolean
+  status?: CalendarEntryStatus
+}
+
+export interface CalendarSuggestionAcceptInput {
+  title?: string
+  date?: string
+  notes?: string | null
+  startTime?: string | null
+  allDay?: boolean
+  linkedBlockId?: string | null
 }
 
 export interface BlockChangedEvent {
@@ -274,7 +378,13 @@ export interface NotebookChangedEvent {
 }
 
 export interface MetaChangedEvent {
-  reason: 'settings' | 'ai-test' | 'vector-queue' | 'vector-failure' | 'vector-retry' | 'doc-generation'
+  reason: 'settings' | 'ai-test' | 'vector-queue' | 'vector-failure' | 'vector-retry' | 'doc-generation' | 'usage' | 'calendar-suggestion'
+}
+
+export interface CalendarChangedEvent {
+  reason: 'entry-created' | 'entry-updated' | 'entry-deleted' | 'suggestion-updated'
+  date?: string
+  sourceBlockId?: string
 }
 
 export interface DocGenerationStart {
@@ -320,6 +430,17 @@ export interface ChangbuApi {
     list(query?: string, notebookId?: string | null): Promise<Snapshot[]>
     get(id: string): Promise<Snapshot>
     remove(id: string): Promise<void>
+  }
+  calendar: {
+    listYears(): Promise<number[]>
+    getYearHeatmap(year: number): Promise<CalendarHeatmap>
+    getDayDetail(date: string): Promise<CalendarDayDetail>
+    listUpcoming(limitDays?: number): Promise<CalendarEntry[]>
+    createEntry(input: CalendarEntryInput): Promise<CalendarEntry>
+    updateEntry(id: string, patch: CalendarEntryPatch): Promise<CalendarEntry>
+    removeEntry(id: string): Promise<void>
+    acceptSuggestion(suggestionId: string, overrides?: CalendarSuggestionAcceptInput): Promise<CalendarEntry>
+    dismissSuggestion(suggestionId: string): Promise<void>
   }
   notebooks: {
     list(): Promise<NotebookSummary[]>
@@ -371,6 +492,7 @@ export interface ChangbuApi {
     onBlockChanged(listener: (event: BlockChangedEvent) => void): () => void
     onNotebooksChanged(listener: (event: NotebookChangedEvent) => void): () => void
     onMetaChanged(listener: (event: MetaChangedEvent) => void): () => void
+    onCalendarChanged(listener: (event: CalendarChangedEvent) => void): () => void
     onDocGenerationChunk(listener: (chunk: DocGenerationChunk) => void): () => void
   }
 }

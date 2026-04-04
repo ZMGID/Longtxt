@@ -3,12 +3,20 @@ import { startTransition, useEffect, useRef, useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 
 import {
+  BLOCK_ENRICH_SETTINGS_KEY,
+  CALENDAR_SETTINGS_KEY,
   DEFAULT_AI_CONFIG,
+  DEFAULT_BLOCK_ENRICH_SETTINGS,
+  DEFAULT_CALENDAR_SETTINGS,
   DEFAULT_DOC_GENERATION_SETTINGS,
   DEFAULT_UI_SETTINGS,
   DOC_GENERATION_SETTINGS_KEY,
+  normalizeBlockEnrichSettings,
+  normalizeCalendarSettings,
   normalizeDocGenerationSettings,
   normalizeUISettings,
+  parseBlockEnrichSettings,
+  parseCalendarSettings,
   parseDocGenerationSettings,
   parseUISettings,
   UI_SETTINGS_KEY,
@@ -18,7 +26,9 @@ import type {
   AIExecutionMode,
   ApiTestResult,
   AppMeta,
+  BlockEnrichSettings,
   Block,
+  CalendarSettings,
   DocGenerationChunk,
   DocGenerationSettings,
   RelatedBlockResult,
@@ -27,6 +37,7 @@ import type {
 } from '../shared/types'
 import { AppSidebar, type AppView } from './components/AppSidebar'
 import { BlockCard } from './components/BlockCard'
+import { CalendarView } from './components/CalendarView'
 import { ChangbuEventBridge } from './components/ChangbuEventBridge'
 import { GraphView } from './components/GraphView'
 import { InputBar } from './components/InputBar'
@@ -129,6 +140,8 @@ function AppInner() {
   const [document, setDocument] = useState<DocumentState>(initialDocumentState)
   const [config, setConfig] = useState<AIConfig>(DEFAULT_AI_CONFIG)
   const [docGenerationSettings, setDocGenerationSettings] = useState<DocGenerationSettings>(DEFAULT_DOC_GENERATION_SETTINGS)
+  const [blockEnrichSettings, setBlockEnrichSettings] = useState<BlockEnrichSettings>(DEFAULT_BLOCK_ENRICH_SETTINGS)
+  const [calendarSettings, setCalendarSettings] = useState<CalendarSettings>(DEFAULT_CALENDAR_SETTINGS)
   const [uiSettings, setUiSettings] = useState<UISettings>(DEFAULT_UI_SETTINGS)
   const [settingsSaving, setSettingsSaving] = useState(false)
   const [settingsTesting, setSettingsTesting] = useState(false)
@@ -183,6 +196,22 @@ function AppInner() {
       }
 
       setDocGenerationSettings(parseDocGenerationSettings(saved))
+    })
+
+    void changbu.settings.get(BLOCK_ENRICH_SETTINGS_KEY).then((saved) => {
+      if (!active) {
+        return
+      }
+
+      setBlockEnrichSettings(parseBlockEnrichSettings(saved))
+    })
+
+    void changbu.settings.get(CALENDAR_SETTINGS_KEY).then((saved) => {
+      if (!active) {
+        return
+      }
+
+      setCalendarSettings(parseCalendarSettings(saved))
     })
 
     void changbu.settings.get(UI_SETTINGS_KEY).then((saved) => {
@@ -443,20 +472,26 @@ function AppInner() {
   async function handleSaveSettings(): Promise<void> {
     setSettingsSaving(true)
     const normalizedDocGenerationSettings = normalizeDocGenerationSettings(docGenerationSettings)
+    const normalizedBlockEnrichSettings = normalizeBlockEnrichSettings(blockEnrichSettings)
+    const normalizedCalendarSettings = normalizeCalendarSettings(calendarSettings)
     const normalizedUISettings = normalizeUISettings(uiSettings)
 
     try {
       await changbu.settings.set('ai_config', JSON.stringify(config))
       await changbu.settings.set(DOC_GENERATION_SETTINGS_KEY, JSON.stringify(normalizedDocGenerationSettings))
+      await changbu.settings.set(BLOCK_ENRICH_SETTINGS_KEY, JSON.stringify(normalizedBlockEnrichSettings))
+      await changbu.settings.set(CALENDAR_SETTINGS_KEY, JSON.stringify(normalizedCalendarSettings))
       await changbu.settings.set(UI_SETTINGS_KEY, JSON.stringify(normalizedUISettings))
       setDocGenerationSettings(normalizedDocGenerationSettings)
+      setBlockEnrichSettings(normalizedBlockEnrichSettings)
+      setCalendarSettings(normalizedCalendarSettings)
       setUiSettings(normalizedUISettings)
       const nextMeta = await refreshMeta()
       toast(
         nextMeta.activeAiMode === 'live' ? 'success' : 'info',
         nextMeta.activeAiMode === 'live'
-          ? `设置已保存，当前使用 live AI。文档生成最多引用 ${normalizedDocGenerationSettings.maxReferenceBlocks} 个块。`
-          : `设置已保存，但尚未通过测试，当前仍使用 mock。文档生成最多引用 ${normalizedDocGenerationSettings.maxReferenceBlocks} 个块。`,
+          ? `设置已保存，当前使用 live AI。文档生成引用上限 ${normalizedDocGenerationSettings.maxReferenceBlocks}、候选 ${normalizedDocGenerationSettings.retrievalLimit}、输出 ${normalizedDocGenerationSettings.maxOutputTokens} token；块 enrich ${normalizedBlockEnrichSettings.queueEnabled ? `队列已启用（最多 ${normalizedBlockEnrichSettings.maxBatchBlocks} 块 / ${normalizedBlockEnrichSettings.queueDebounceMs}ms）` : '保持逐条'}；日历 AI 建议${normalizedCalendarSettings.aiSuggestionsEnabled ? `已启用（每块最多 ${normalizedCalendarSettings.maxSuggestionsPerBlock} 条）` : '已关闭'}。`
+          : `设置已保存，但尚未通过测试，当前仍使用 mock。文档生成引用上限 ${normalizedDocGenerationSettings.maxReferenceBlocks}、候选 ${normalizedDocGenerationSettings.retrievalLimit}、输出 ${normalizedDocGenerationSettings.maxOutputTokens} token；块 enrich ${normalizedBlockEnrichSettings.queueEnabled ? `队列已启用（最多 ${normalizedBlockEnrichSettings.maxBatchBlocks} 块 / ${normalizedBlockEnrichSettings.queueDebounceMs}ms）` : '保持逐条'}；日历 AI 建议${normalizedCalendarSettings.aiSuggestionsEnabled ? `已启用（每块最多 ${normalizedCalendarSettings.maxSuggestionsPerBlock} 条）` : '已关闭'}。`,
       )
     } catch (reason) {
       toast('error', reason instanceof Error ? reason.message : '设置保存失败。')
@@ -564,6 +599,7 @@ function AppInner() {
 
   const activeViewTitle = {
     timeline: '时间轴',
+    calendar: '日历',
     search: '搜索生成',
     notebooks: '笔记本',
     graph: '连接图',
@@ -602,6 +638,19 @@ function AppInner() {
               focusedBlockId={focusedBlockId}
               onFocusedBlockHandled={() => {
                 setFocusedBlockId(null)
+              }}
+            />
+          </div>
+        )
+      case 'calendar':
+        return (
+          <div className="min-h-0 flex-1 overflow-y-auto">
+            <CalendarView
+              settings={calendarSettings}
+              onJumpToBlock={async (blockId) => {
+                await ensureBlockLoaded(blockId)
+                setActiveView('timeline')
+                setFocusedBlockId(blockId)
               }}
             />
           </div>
@@ -849,26 +898,30 @@ function AppInner() {
         return (
           <div className="min-h-0 flex-1 overflow-y-auto">
             <SettingsPanel
-            config={config}
-            docGenerationSettings={docGenerationSettings}
-            uiSettings={uiSettings}
-            meta={meta}
-            saving={settingsSaving}
-            testing={settingsTesting}
-            testResult={testResult}
-            onChange={handleConfigChange}
-            onDocGenerationSettingsChange={setDocGenerationSettings}
-            onUISettingsChange={setUiSettings}
-            onSave={handleSaveSettings}
-            onTest={handleTestSettings}
-            onRetryFailedVectors={handleRetryFailedVectors}
-            onOpenDataDirectory={async () => {
-              await changbu.settings.openDataDirectory()
-            }}
-            onOpenSettingsDirectory={async () => {
-              await changbu.settings.openSettingsDirectory()
-            }}
-          />
+              config={config}
+              docGenerationSettings={docGenerationSettings}
+              blockEnrichSettings={blockEnrichSettings}
+              calendarSettings={calendarSettings}
+              uiSettings={uiSettings}
+              meta={meta}
+              saving={settingsSaving}
+              testing={settingsTesting}
+              testResult={testResult}
+              onChange={handleConfigChange}
+              onDocGenerationSettingsChange={setDocGenerationSettings}
+              onBlockEnrichSettingsChange={setBlockEnrichSettings}
+              onCalendarSettingsChange={setCalendarSettings}
+              onUISettingsChange={setUiSettings}
+              onSave={handleSaveSettings}
+              onTest={handleTestSettings}
+              onRetryFailedVectors={handleRetryFailedVectors}
+              onOpenDataDirectory={async () => {
+                await changbu.settings.openDataDirectory()
+              }}
+              onOpenSettingsDirectory={async () => {
+                await changbu.settings.openSettingsDirectory()
+              }}
+            />
           </div>
         )
     }

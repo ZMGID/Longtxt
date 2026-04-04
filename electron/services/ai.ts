@@ -68,6 +68,34 @@ interface TagSuggestionInput {
   userTags: string[]
 }
 
+interface TagSuggestionResult {
+  categories: string[]
+  detailTags: string[]
+  summary: string | null
+}
+
+export interface TagSuggestionBatchOptions {
+  maxBatchBlocks?: number
+  responseReserveTokens?: number
+}
+
+export interface CalendarSuggestionExtractionInput {
+  content: string
+  referenceDate: string
+  timezone: string
+  maxSuggestions?: number
+}
+
+export interface CalendarSuggestionExtractionResult {
+  title: string
+  notes: string | null
+  date: string
+  startTime: string | null
+  allDay: boolean
+  confidence: number
+  evidenceText: string | null
+}
+
 interface ChatMessage {
   role: 'system' | 'user' | 'assistant'
   content: string
@@ -80,6 +108,7 @@ interface LLMCompletionOptions {
 }
 
 export interface TokenUsageSink {
+  recordRequest(kind: 'llm' | 'embedding'): void
   add(promptTokens: number, completionTokens: number): void
 }
 
@@ -93,8 +122,14 @@ export interface EmbeddingProvider {
 }
 
 export interface LLMProvider {
-  streamDocument(topic: string, blocks: Block[], context?: { writingGuide?: string | null }): AsyncGenerator<string>
-  suggestTags(input: TagSuggestionInput): Promise<{ categories: string[]; detailTags: string[]; summary: string | null }>
+  streamDocument(
+    topic: string,
+    blocks: Block[],
+    context?: { writingGuide?: string | null; temperature?: number; maxTokens?: number },
+  ): AsyncGenerator<string>
+  suggestTags(input: TagSuggestionInput): Promise<TagSuggestionResult>
+  suggestTagsBatch(inputs: TagSuggestionInput[], options?: TagSuggestionBatchOptions): Promise<TagSuggestionResult[]>
+  extractCalendarSuggestions(input: CalendarSuggestionExtractionInput): Promise<CalendarSuggestionExtractionResult[]>
 }
 
 function textToVector(text: string, dimension: number): number[] {
@@ -300,6 +335,8 @@ async function requestProbeModelLists(
 }
 
 async function requestEmbeddings(config: AIEndpointConfig & { resolvedBaseUrl: string }, texts: string[], sink?: TokenUsageSink): Promise<number[][]> {
+  sink?.recordRequest('embedding')
+
   const response = await fetchWithTimeout(
     buildEndpoint(config.resolvedBaseUrl, 'embeddings'),
     {
@@ -335,7 +372,10 @@ async function requestChatCompletion(
   config: AIEndpointConfig & { resolvedBaseUrl: string },
   messages: ChatMessage[],
   options: LLMCompletionOptions = {},
+  sink?: TokenUsageSink,
 ): Promise<Response> {
+  sink?.recordRequest('llm')
+
   return fetchWithTimeout(
     buildEndpoint(config.resolvedBaseUrl, 'chat/completions'),
     {
@@ -362,7 +402,7 @@ async function completeText(
   const response = await requestChatCompletion(config, messages, {
     ...options,
     stream: false,
-  })
+  }, sink)
 
   if (!response.ok) {
     throw formatProviderError('LLM 请求失败', await readErrorMessage(response))
@@ -391,7 +431,7 @@ async function* streamChatCompletion(
   const response = await requestChatCompletion(config, messages, {
     ...options,
     stream: true,
-  })
+  }, sink)
 
   if (!response.ok) {
     throw formatProviderError('LLM 流式请求失败', await readErrorMessage(response))
@@ -594,7 +634,7 @@ function sanitizeStructuredTags(
   categoryCandidates: string[],
   detailCandidates: string[],
   userTags: string[],
-): { categories: string[]; detailTags: string[]; summary: string | null } {
+): TagSuggestionResult {
   const data = payload as { categories?: unknown; detail_tags?: unknown; detailTags?: unknown; summary?: unknown }
   const categorySet = new Set(categoryCandidates.map((tag) => tag.toLowerCase()))
   const detailMemorySet = new Set([...detailCandidates, ...userTags].map((tag) => tag.toLowerCase()))
@@ -642,23 +682,60 @@ function sanitizeStructuredTags(
   }
 }
 
+function sanitizeStructuredTagBatch(
+  payload: unknown,
+  inputs: TagSuggestionInput[],
+): TagSuggestionResult[] {
+  const data = payload as { items?: unknown }
+  const fallback: TagSuggestionResult[] = inputs.map(() => ({
+    categories: [],
+    detailTags: [],
+    summary: null,
+  }))
+
+  if (!Array.isArray(data?.items)) {
+    return fallback
+  }
+
+  for (const item of data.items) {
+    const structuredItem = item as { index?: unknown }
+    const rawIndex = structuredItem.index
+    const index = typeof rawIndex === 'number' ? Math.trunc(rawIndex) : Number.NaN
+
+    if (!Number.isInteger(index) || index < 0 || index >= inputs.length) {
+      continue
+    }
+
+    const input = inputs[index]
+    fallback[index] = sanitizeStructuredTags(item, input.categoryCandidates, input.detailCandidates, input.userTags)
+  }
+
+  return fallback
+}
+
+function buildTagSuggestionInstructions(formatDescription: string): string {
+  return [
+    '你是长布的标签分配助手。',
+    formatDescription,
+    '分类标签用于大类归档，数量 1 到 3 个。',
+    '细标签用于体现块里具体在说什么，数量 1 到 5 个，必须具体，优先名词性内容标签。',
+    'summary 是这个块的一句简短总结，用于连接图和块预览，尽量控制在 12 到 30 个汉字之间。',
+    '细标签要尽量体现设备、产品、考试、方法、概念、项目对象、资料主题等具体内容。',
+    '不要用空泛标签替代具体内容，例如不要只写“学习”“生活”“工具”来代替块里真正的对象。',
+    '分类标签允许更概括，但细标签必须具体。',
+    '优先复用给定的分类候选、细标签记忆和用户标签。',
+    '不要把用户标签原样机械复制进输出，只有内容确实匹配时才复用。',
+    '不要输出解释、不要输出 Markdown、不要输出额外字段。',
+  ].join('\n')
+}
+
 function buildTagSuggestionMessages(input: TagSuggestionInput): ChatMessage[] {
   return [
     {
       role: 'system',
-      content: [
-        '你是长布的标签分配助手。',
+      content: buildTagSuggestionInstructions(
         '请基于用户输入内容输出严格 JSON，格式为 {"categories":["分类1"],"detail_tags":["细标签1","细标签2"],"summary":"简短总结"}。',
-        '分类标签用于大类归档，数量 1 到 3 个。',
-        '细标签用于体现块里具体在说什么，数量 1 到 5 个，必须具体，优先名词性内容标签。',
-        'summary 是这个块的一句简短总结，用于连接图和块预览，尽量控制在 12 到 30 个汉字之间。',
-        '细标签要尽量体现设备、产品、考试、方法、概念、项目对象、资料主题等具体内容。',
-        '不要用空泛标签替代具体内容，例如不要只写“学习”“生活”“工具”来代替块里真正的对象。',
-        '分类标签允许更概括，但细标签必须具体。',
-        '优先复用给定的分类候选、细标签记忆和用户标签。',
-        '不要把用户标签原样机械复制进输出，只有内容确实匹配时才复用。',
-        '不要输出解释、不要输出 Markdown、不要输出额外字段。',
-      ].join('\n'),
+      ),
     },
     {
       role: 'user',
@@ -672,6 +749,223 @@ function buildTagSuggestionMessages(input: TagSuggestionInput): ChatMessage[] {
       ].join('\n'),
     },
   ]
+}
+
+function buildBatchTagSuggestionMessages(inputs: TagSuggestionInput[]): ChatMessage[] {
+  return [
+    {
+      role: 'system',
+      content: buildTagSuggestionInstructions(
+        '请基于用户输入内容输出严格 JSON，格式为 {"items":[{"index":0,"categories":["分类1"],"detail_tags":["细标签1"],"summary":"简短总结"}]}。',
+      ),
+    },
+    {
+      role: 'user',
+      content: inputs.map((input, index) => [
+        `块索引：${index}`,
+        `分类候选：${input.categoryCandidates.join('、') || '无'}`,
+        `细标签记忆：${input.detailCandidates.join('、') || '无'}`,
+        `用户标签记忆：${input.userTags.join('、') || '无'}`,
+        '',
+        '内容如下：',
+        input.content,
+      ].join('\n')).join('\n\n---\n\n'),
+    },
+  ]
+}
+
+function buildCalendarSuggestionMessages(input: CalendarSuggestionExtractionInput): ChatMessage[] {
+  return [
+    {
+      role: 'system',
+      content: [
+        '你是长布的日历计划提取助手。',
+        '你的任务是从用户笔记中提取明确的未来安排，只输出严格 JSON。',
+        '输出格式必须为 {"items":[{"title":"安排标题","date":"YYYY-MM-DD","start_time":"HH:mm或null","all_day":true,"notes":"补充说明或null","confidence":0.9,"evidence_text":"原文证据"}]}。',
+        '只提取明确面向未来、且日期可确定的安排。',
+        '如果没有明确日期，不要输出任何条目。',
+        '允许解析“今天/明天/后天/本周X/下周X/M月D日/YYYY-MM-DD”等相对或显式日期，但必须换算成 YYYY-MM-DD。',
+        '如果原文没有明确时间，start_time 设为 null，all_day 设为 true。',
+        '如果原文有明确时间，start_time 用 24 小时制 HH:mm，all_day 设为 false。',
+        '不要猜测含糊意图；例如“改天”“之后”“有空再说”都不能提取。',
+        'title 保持简洁明确，notes 用于补充上下文，evidence_text 引用原文中的关键信息片段。',
+        '不要输出解释、不要输出 Markdown、不要输出 JSON 以外的内容。',
+      ].join('\n'),
+    },
+    {
+      role: 'user',
+      content: [
+        `参考日期：${input.referenceDate}`,
+        `时区：${input.timezone}`,
+        `最多输出：${Math.max(0, Math.round(input.maxSuggestions ?? 3))} 条`,
+        '',
+        '内容如下：',
+        input.content,
+      ].join('\n'),
+    },
+  ]
+}
+
+function sanitizeCalendarSuggestionTitle(value: unknown): string {
+  return typeof value === 'string' ? value.trim().replace(/\s+/g, ' ').slice(0, 80) : ''
+}
+
+function sanitizeCalendarSuggestionDate(value: unknown): string | null {
+  if (typeof value !== 'string') {
+    return null
+  }
+
+  const trimmed = value.trim()
+  return /^\d{4}-\d{2}-\d{2}$/.test(trimmed) ? trimmed : null
+}
+
+function sanitizeCalendarSuggestionTime(value: unknown): string | null {
+  if (typeof value !== 'string') {
+    return null
+  }
+
+  const trimmed = value.trim()
+  return /^(?:[01]\d|2[0-3]):[0-5]\d$/.test(trimmed) ? trimmed : null
+}
+
+function sanitizeStructuredCalendarSuggestions(
+  payload: unknown,
+  maxSuggestions: number,
+): CalendarSuggestionExtractionResult[] {
+  const data = payload as { items?: unknown }
+
+  if (!Array.isArray(data?.items) || maxSuggestions <= 0) {
+    return []
+  }
+
+  const results: CalendarSuggestionExtractionResult[] = []
+  const seen = new Set<string>()
+
+  for (const item of data.items) {
+    const structuredItem = item as {
+      title?: unknown
+      notes?: unknown
+      date?: unknown
+      start_time?: unknown
+      startTime?: unknown
+      all_day?: unknown
+      allDay?: unknown
+      confidence?: unknown
+      evidence_text?: unknown
+      evidenceText?: unknown
+    }
+    const title = sanitizeCalendarSuggestionTitle(structuredItem.title)
+    const date = sanitizeCalendarSuggestionDate(structuredItem.date)
+    const startTime = sanitizeCalendarSuggestionTime(structuredItem.start_time ?? structuredItem.startTime)
+
+    if (!title || !date) {
+      continue
+    }
+
+    const key = `${date}::${startTime ?? ''}::${title.toLowerCase()}`
+
+    if (seen.has(key)) {
+      continue
+    }
+
+    seen.add(key)
+    results.push({
+      title,
+      notes:
+        typeof structuredItem.notes === 'string'
+          ? structuredItem.notes.trim().replace(/\s+/g, ' ').slice(0, 160) || null
+          : null,
+      date,
+      startTime,
+      allDay: typeof (structuredItem.all_day ?? structuredItem.allDay) === 'boolean'
+        ? Boolean(structuredItem.all_day ?? structuredItem.allDay)
+        : startTime == null,
+      confidence: typeof structuredItem.confidence === 'number'
+        ? Math.max(0, Math.min(1, Number(structuredItem.confidence.toFixed(3))))
+        : 0.5,
+      evidenceText:
+        typeof (structuredItem.evidence_text ?? structuredItem.evidenceText) === 'string'
+          ? String(structuredItem.evidence_text ?? structuredItem.evidenceText).trim().replace(/\s+/g, ' ').slice(0, 160) || null
+          : null,
+    })
+
+    if (results.length >= maxSuggestions) {
+      break
+    }
+  }
+
+  return results
+}
+
+function estimateTokenCount(text: string): number {
+  if (!text.trim()) {
+    return 0
+  }
+
+  const cjkChars = (text.match(/[\u3400-\u9FFF\uF900-\uFAFF]/g) ?? []).length
+  const latinWords = text.match(/[A-Za-z0-9_/-]+/g)?.length ?? 0
+  const punctuationChars = text.match(/[^\sA-Za-z0-9\u3400-\u9FFF\uF900-\uFAFF]/g)?.length ?? 0
+  const otherChars = Math.max(0, text.length - cjkChars - punctuationChars)
+
+  return Math.max(
+    1,
+    Math.ceil(cjkChars * 1.1 + latinWords * 1.3 + punctuationChars * 0.4 + otherChars * 0.3),
+  )
+}
+
+function estimateMessageTokens(messages: ChatMessage[]): number {
+  return messages.reduce((total, message) => total + estimateTokenCount(message.content) + 16, 0)
+}
+
+function resolveApproxContextWindow(model: string): number {
+  const normalized = model.trim().toLowerCase()
+
+  if (!normalized) {
+    return 32_000
+  }
+
+  if (/gpt-3\.5|deepseek-chat/.test(normalized)) {
+    return 16_000
+  }
+
+  if (/gpt-4o|gpt-4\.1|gpt-4\.5|gpt-5|o1|o3|claude|gemini|qwen|max|sonnet|haiku|deepseek/.test(normalized)) {
+    return 128_000
+  }
+
+  return 32_000
+}
+
+function splitTagSuggestionInputsIntoBatches(
+  inputs: TagSuggestionInput[],
+  model: string,
+  options: TagSuggestionBatchOptions = {},
+): TagSuggestionInput[][] {
+  const contextWindow = resolveApproxContextWindow(model)
+  const responseReserveTokens = Math.max(256, Math.round(options.responseReserveTokens ?? 1_600))
+  const maxBatchBlocks = Math.max(1, Math.round(options.maxBatchBlocks ?? 5))
+  const maxPromptTokens = Math.max(2_000, contextWindow - responseReserveTokens)
+  const batches: TagSuggestionInput[][] = []
+  let currentBatch: TagSuggestionInput[] = []
+
+  for (const input of inputs) {
+    const candidateBatch = [...currentBatch, input]
+    const candidateMessages = buildBatchTagSuggestionMessages(candidateBatch)
+    const candidatePromptTokens = estimateMessageTokens(candidateMessages)
+
+    if (currentBatch.length > 0 && (candidateBatch.length > maxBatchBlocks || candidatePromptTokens > maxPromptTokens)) {
+      batches.push(currentBatch)
+      currentBatch = [input]
+      continue
+    }
+
+    currentBatch = candidateBatch
+  }
+
+  if (currentBatch.length > 0) {
+    batches.push(currentBatch)
+  }
+
+  return batches
 }
 
 export function createMockEmbeddingProvider(dimension = DEFAULT_MOCK_EMBEDDING_DIMENSION): EmbeddingProvider {
@@ -711,32 +1005,83 @@ export function createMockLLMProvider(mode: AIExecutionMode): LLMProvider {
         summary: input.content.replace(/\s+/g, ' ').trim().slice(0, 32) || null,
       }
     },
+
+    async suggestTagsBatch(inputs) {
+      return inputs.map((input) => ({
+        categories: [],
+        detailTags: input.detailCandidates.slice(0, 3),
+        summary: input.content.replace(/\s+/g, ' ').trim().slice(0, 32) || null,
+      }))
+    },
+
+    async extractCalendarSuggestions() {
+      return []
+    },
   }
 }
 
 export function createLiveLLMProvider(config: AIConfig, sink?: TokenUsageSink): LLMProvider {
   const resolved = buildResolvedConfig(config)
+  const suggestSingleTags = async (input: TagSuggestionInput): Promise<TagSuggestionResult> => {
+    const messages = buildTagSuggestionMessages(input)
+    const text = await completeText(resolved.llm, messages, {
+      temperature: 0,
+      maxTokens: 260,
+    }, sink)
+    const parsed = extractJsonObject(text)
+    return sanitizeStructuredTags(parsed, input.categoryCandidates, input.detailCandidates, input.userTags)
+  }
 
   return {
     async *streamDocument(topic, blocks, context) {
       const messages = buildDocumentMessages(topic, blocks, context?.writingGuide)
 
       for await (const chunk of streamChatCompletion(resolved.llm, messages, {
-        temperature: 0.1,
-        maxTokens: 1_200,
+        temperature: context?.temperature ?? 0.1,
+        maxTokens: context?.maxTokens ?? 1_200,
       }, sink)) {
         yield chunk
       }
     },
 
     async suggestTags(input) {
-      const messages = buildTagSuggestionMessages(input)
+      return suggestSingleTags(input)
+    },
+
+    async suggestTagsBatch(inputs, options) {
+      if (inputs.length === 0) {
+        return []
+      }
+
+      const batches = splitTagSuggestionInputsIntoBatches(inputs, resolved.llm.model, options)
+      const results: TagSuggestionResult[] = []
+
+      for (const batch of batches) {
+        if (batch.length === 1) {
+          results.push(await suggestSingleTags(batch[0]))
+          continue
+        }
+
+        const messages = buildBatchTagSuggestionMessages(batch)
+        const text = await completeText(resolved.llm, messages, {
+          temperature: 0,
+          maxTokens: Math.min(1_200, Math.max(360, batch.length * 220)),
+        }, sink)
+        const parsed = extractJsonObject(text)
+        results.push(...sanitizeStructuredTagBatch(parsed, batch))
+      }
+
+      return results
+    },
+
+    async extractCalendarSuggestions(input) {
+      const messages = buildCalendarSuggestionMessages(input)
       const text = await completeText(resolved.llm, messages, {
         temperature: 0,
-        maxTokens: 260,
+        maxTokens: Math.min(800, Math.max(220, Math.round((input.maxSuggestions ?? 3) * 180))),
       }, sink)
       const parsed = extractJsonObject(text)
-      return sanitizeStructuredTags(parsed, input.categoryCandidates, input.detailCandidates, input.userTags)
+      return sanitizeStructuredCalendarSuggestions(parsed, Math.max(0, Math.round(input.maxSuggestions ?? 3)))
     },
   }
 }

@@ -253,6 +253,46 @@ export function getBlocksByIds(db: Database.Database, ids: string[]): Block[] {
   return hydrateBlocks(db, ids)
 }
 
+function formatLocalDate(value: string): string {
+  const date = new Date(value)
+
+  return [
+    date.getFullYear(),
+    String(date.getMonth() + 1).padStart(2, '0'),
+    String(date.getDate()).padStart(2, '0'),
+  ].join('-')
+}
+
+export function listBlocksByDate(db: Database.Database, date: string): Block[] {
+  const localStart = new Date(`${date}T00:00:00`)
+  const localEnd = new Date(localStart)
+  localEnd.setDate(localEnd.getDate() + 1)
+
+  const queryStart = new Date(localStart)
+  queryStart.setHours(queryStart.getHours() - 18)
+
+  const queryEnd = new Date(localEnd)
+  queryEnd.setHours(queryEnd.getHours() + 18)
+
+  const rows = db
+    .prepare(
+      `
+        SELECT id
+        FROM blocks
+        WHERE created_at >= ? AND created_at < ?
+        ORDER BY created_at DESC
+      `,
+    )
+    .all(queryStart.toISOString(), queryEnd.toISOString()) as Array<{ id: string }>
+
+  return hydrateBlocks(
+    db,
+    rows
+      .map((row) => row.id)
+      .filter((id, index, ids) => ids.indexOf(id) === index),
+  ).filter((block) => formatLocalDate(block.createdAt) === date)
+}
+
 export function listRecentBlockContents(db: Database.Database, limit: number, excludeBlockId?: string): string[] {
   if (limit <= 0) {
     return []

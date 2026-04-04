@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url'
 import { app, BrowserWindow, dialog, protocol, shell } from 'electron'
 
 import { IPC_CHANNELS } from '../shared/ipc'
-import type { BlockChangedEvent, DocGenerationChunk, MetaChangedEvent, NotebookChangedEvent } from '../shared/types'
+import type { BlockChangedEvent, CalendarChangedEvent, DocGenerationChunk, MetaChangedEvent, NotebookChangedEvent } from '../shared/types'
 import { createAppContext, type AppContext } from './appContext'
 import { registerIpcHandlers } from './ipc/register'
 
@@ -29,7 +29,10 @@ protocol.registerSchemesAsPrivileged([
   },
 ])
 
-function sendEvent(channel: string, payload: BlockChangedEvent | NotebookChangedEvent | MetaChangedEvent | DocGenerationChunk): void {
+function sendEvent(
+  channel: string,
+  payload: BlockChangedEvent | NotebookChangedEvent | MetaChangedEvent | CalendarChangedEvent | DocGenerationChunk,
+): void {
   if (!mainWindow || mainWindow.isDestroyed()) {
     return
   }
@@ -185,6 +188,7 @@ async function bootstrap(): Promise<void> {
     onBlockChanged: (event) => sendEvent(IPC_CHANNELS.events.blockChanged, event),
     onNotebooksChanged: (event) => sendEvent(IPC_CHANNELS.events.notebooksChanged, event),
     onMetaChanged: (event) => sendEvent(IPC_CHANNELS.events.metaChanged, event),
+    onCalendarChanged: (event) => sendEvent(IPC_CHANNELS.events.calendarChanged, event),
     onDocGenerationChunk: (chunk) => sendEvent(IPC_CHANNELS.events.docGenerationChunk, chunk),
   })
 

@@ -76,6 +76,40 @@ CREATE TABLE IF NOT EXISTS snapshots (
 
 CREATE INDEX IF NOT EXISTS idx_snapshots_created_at ON snapshots (created_at);
 
+CREATE TABLE IF NOT EXISTS calendar_entries (
+  id TEXT PRIMARY KEY,
+  title TEXT NOT NULL,
+  notes TEXT,
+  date TEXT NOT NULL,
+  start_time TEXT,
+  all_day INTEGER NOT NULL DEFAULT 1,
+  status TEXT NOT NULL DEFAULT 'planned',
+  source TEXT NOT NULL DEFAULT 'manual',
+  linked_block_id TEXT REFERENCES blocks(id) ON DELETE SET NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_calendar_entries_date ON calendar_entries (date, start_time);
+CREATE INDEX IF NOT EXISTS idx_calendar_entries_linked_block_id ON calendar_entries (linked_block_id);
+
+CREATE TABLE IF NOT EXISTS calendar_suggestions (
+  id TEXT PRIMARY KEY,
+  source_block_id TEXT NOT NULL REFERENCES blocks(id) ON DELETE CASCADE,
+  title TEXT NOT NULL,
+  notes TEXT,
+  date TEXT NOT NULL,
+  start_time TEXT,
+  all_day INTEGER NOT NULL DEFAULT 1,
+  confidence REAL NOT NULL DEFAULT 0,
+  evidence_text TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_calendar_suggestions_date ON calendar_suggestions (date, start_time);
+CREATE INDEX IF NOT EXISTS idx_calendar_suggestions_source_block_id ON calendar_suggestions (source_block_id);
+
 CREATE TABLE IF NOT EXISTS notebooks (
   id TEXT PRIMARY KEY,
   title TEXT NOT NULL,

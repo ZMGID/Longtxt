@@ -4,14 +4,32 @@ import { dirname, join } from 'node:path'
 import Database from 'better-sqlite3'
 import { v4 as uuid } from 'uuid'
 
-import { DEFAULT_PAGE_SIZE, DOC_GENERATION_SETTINGS_KEY, UI_SETTINGS_KEY, parseDocGenerationSettings } from '../shared/config'
+import {
+  BLOCK_ENRICH_SETTINGS_KEY,
+  CALENDAR_SETTINGS_KEY,
+  DEFAULT_PAGE_SIZE,
+  DOC_GENERATION_SETTINGS_KEY,
+  UI_SETTINGS_KEY,
+  parseBlockEnrichSettings,
+  parseCalendarSettings,
+  parseDocGenerationSettings,
+} from '../shared/config'
 import type {
   AIConfig,
   AIExecutionMode,
   ApiTestResult,
   AppMeta,
+  BlockEnrichSettings,
   Block,
   BlockChangedEvent,
+  CalendarChangedEvent,
+  CalendarDayDetail,
+  CalendarEntry,
+  CalendarEntryInput,
+  CalendarEntryPatch,
+  CalendarHeatmap,
+  CalendarSettings,
+  CalendarSuggestionAcceptInput,
   DocGenerationChunk,
   DocGenerationSettings,
   DocGenerationStart,
@@ -51,6 +69,19 @@ import {
   updateBlockContent,
   updateBlockState,
 } from './db/blocks'
+import {
+  acceptCalendarSuggestion,
+  clearCalendarSuggestionsForBlock,
+  createCalendarEntry,
+  dismissCalendarSuggestion,
+  getCalendarDayDetail,
+  getCalendarHeatmap,
+  listCalendarYears,
+  listUpcomingCalendarEntries,
+  removeCalendarEntry,
+  replaceCalendarSuggestionsForBlock,
+  updateCalendarEntry,
+} from './db/calendar'
 import { initializeDatabase } from './db'
 import { getGraphData as loadGraphData } from './db/graph'
 import {
@@ -122,6 +153,8 @@ const VECTOR_INDEX_STATE_KEY = 'vector_index_state'
 const FILE_BACKED_SETTING_KEYS = new Set([
   'ai_config',
   AI_LAST_TEST_RESULT_KEY,
+  BLOCK_ENRICH_SETTINGS_KEY,
+  CALENDAR_SETTINGS_KEY,
   DOC_GENERATION_SETTINGS_KEY,
   UI_SETTINGS_KEY,
 ])
@@ -129,6 +162,12 @@ const MAX_ENRICH_RETRIES = 1
 const ENRICH_RETRY_DELAY_MS = 500
 const TAGGER_CORPUS_LIMIT = 50
 const VECTOR_REINDEX_BATCH_SIZE = 12
+
+interface QueuedEnrichRequest {
+  blockId: string
+  content: string
+  generation: number
+}
 
 interface VectorIndexState {
   mode: AIExecutionMode
@@ -141,6 +180,7 @@ export interface AppContextOptions {
   onBlockChanged?: (event: BlockChangedEvent) => void
   onNotebooksChanged?: (event: NotebookChangedEvent) => void
   onMetaChanged?: (event: MetaChangedEvent) => void
+  onCalendarChanged?: (event: CalendarChangedEvent) => void
   onDocGenerationChunk?: (chunk: DocGenerationChunk) => void
   openPath?: (path: string) => Promise<string>
   chooseOpenPaths?: (options: {
@@ -175,6 +215,15 @@ export interface AppContext {
   listSnapshots(query?: string, notebookId?: string | null): Promise<Snapshot[]>
   getSnapshot(id: string): Promise<Snapshot>
   removeSnapshot(id: string): Promise<void>
+  listCalendarYears(): Promise<number[]>
+  getCalendarHeatmap(year: number): Promise<CalendarHeatmap>
+  getCalendarDayDetail(date: string): Promise<CalendarDayDetail>
+  listUpcomingCalendarEntries(limitDays?: number): Promise<CalendarEntry[]>
+  createCalendarEntry(input: CalendarEntryInput): Promise<CalendarEntry>
+  updateCalendarEntry(id: string, patch: CalendarEntryPatch): Promise<CalendarEntry>
+  removeCalendarEntry(id: string): Promise<void>
+  acceptCalendarSuggestion(id: string, overrides?: CalendarSuggestionAcceptInput): Promise<CalendarEntry>
+  dismissCalendarSuggestion(id: string): Promise<void>
   listNotebooks(): Promise<NotebookSummary[]>
   getNotebook(id: string): Promise<Notebook>
   createNotebook(title?: string): Promise<Notebook>
@@ -218,6 +267,157 @@ function validateContent(content: string): string {
   }
 
   return trimmed
+}
+
+function normalizeCalendarDate(value: string): string {
+  const trimmed = value.trim()
+
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) {
+    throw new Error('日期格式无效，应为 YYYY-MM-DD。')
+  }
+
+  const date = new Date(`${trimmed}T00:00:00`)
+
+  if (Number.isNaN(date.getTime())) {
+    throw new Error('日期无效。')
+  }
+
+  return trimmed
+}
+
+function normalizeCalendarTime(value: string | null | undefined): string | null {
+  if (value == null) {
+    return null
+  }
+
+  const trimmed = value.trim()
+
+  if (!trimmed) {
+    return null
+  }
+
+  if (!/^(?:[01]\d|2[0-3]):[0-5]\d$/.test(trimmed)) {
+    throw new Error('时间格式无效，应为 HH:mm。')
+  }
+
+  return trimmed
+}
+
+function normalizeCalendarTitle(title: string): string {
+  const trimmed = title.trim()
+
+  if (!trimmed) {
+    throw new Error('日历标题不能为空。')
+  }
+
+  return trimmed
+}
+
+function normalizeCalendarNotes(notes: string | null | undefined): string | null {
+  const trimmed = notes?.trim()
+  return trimmed ? trimmed : null
+}
+
+function normalizeCalendarEntryInput(input: CalendarEntryInput): CalendarEntryInput {
+  const allDay = input.allDay ?? !input.startTime
+
+  return {
+    title: normalizeCalendarTitle(input.title),
+    date: normalizeCalendarDate(input.date),
+    notes: normalizeCalendarNotes(input.notes),
+    startTime: allDay ? null : normalizeCalendarTime(input.startTime),
+    allDay,
+    linkedBlockId: input.linkedBlockId ?? null,
+  }
+}
+
+function normalizeCalendarEntryPatch(input: CalendarEntryPatch): CalendarEntryPatch {
+  const nextPatch: CalendarEntryPatch = {}
+
+  if (input.title !== undefined) {
+    nextPatch.title = normalizeCalendarTitle(input.title)
+  }
+
+  if (input.date !== undefined) {
+    nextPatch.date = normalizeCalendarDate(input.date)
+  }
+
+  if (input.notes !== undefined) {
+    nextPatch.notes = normalizeCalendarNotes(input.notes)
+  }
+
+  if (input.startTime !== undefined) {
+    nextPatch.startTime = normalizeCalendarTime(input.startTime)
+  }
+
+  if (input.allDay !== undefined) {
+    nextPatch.allDay = input.allDay
+    if (input.allDay) {
+      nextPatch.startTime = null
+    }
+  }
+
+  if (input.status !== undefined) {
+    nextPatch.status = input.status
+  }
+
+  return nextPatch
+}
+
+function normalizeCalendarSuggestionAcceptInput(input?: CalendarSuggestionAcceptInput): CalendarSuggestionAcceptInput | undefined {
+  if (!input) {
+    return undefined
+  }
+
+  const nextInput: CalendarSuggestionAcceptInput = {}
+
+  if (input.title !== undefined) {
+    nextInput.title = normalizeCalendarTitle(input.title)
+  }
+
+  if (input.date !== undefined) {
+    nextInput.date = normalizeCalendarDate(input.date)
+  }
+
+  if (input.notes !== undefined) {
+    nextInput.notes = normalizeCalendarNotes(input.notes)
+  }
+
+  if (input.startTime !== undefined) {
+    nextInput.startTime = normalizeCalendarTime(input.startTime)
+  }
+
+  if (input.allDay !== undefined) {
+    nextInput.allDay = input.allDay
+    if (input.allDay) {
+      nextInput.startTime = null
+    }
+  }
+
+  if (input.linkedBlockId !== undefined) {
+    nextInput.linkedBlockId = input.linkedBlockId
+  }
+
+  return nextInput
+}
+
+function todayDateKey(): string {
+  const now = new Date()
+
+  return [
+    now.getFullYear(),
+    String(now.getMonth() + 1).padStart(2, '0'),
+    String(now.getDate()).padStart(2, '0'),
+  ].join('-')
+}
+
+function shouldProbeCalendarSuggestions(content: string): boolean {
+  return [
+    /\b\d{4}-\d{1,2}-\d{1,2}\b/,
+    /\b\d{1,2}\/\d{1,2}\b/,
+    /\d{1,2}月\d{1,2}日/,
+    /(今天|明天|后天|今晚|今早|今天下午|今天晚上|本周|下周|周[一二三四五六日天]|星期[一二三四五六日天]|月底|月初|号前)/,
+  ].some((pattern) => pattern.test(content))
 }
 
 function normalizeNotebookTitle(title: string | undefined): string {
@@ -365,6 +565,9 @@ export function createAppContext(options: AppContextOptions): AppContext {
   const tagger = createTaggerEngine()
   const pendingTasks = new Set<Promise<unknown>>()
   const blockEnrichGenerations = new Map<string, number>()
+  let queuedEnrichRequests: QueuedEnrichRequest[] = []
+  let queuedEnrichTimer: ReturnType<typeof setTimeout> | null = null
+  let queuedEnrichFlushTask: Promise<void> | null = null
   let reindexTask: Promise<void> | null = null
   let reindexRequested = false
   let reindexNeedsFullRebuild = false
@@ -377,15 +580,36 @@ export function createAppContext(options: AppContextOptions): AppContext {
   const importJobs = new Map<string, Awaited<ReturnType<typeof previewMarkdownImport>>['job']>()
 
   // 累计 token 用量（自程序启动后）
+  let modelCallCounts = { llm: 0, embedding: 0 }
   let tokenUsageAccum = { promptTokens: 0, completionTokens: 0, totalTokens: 0, requestCount: 0 }
   const tokenSink: TokenUsageSink = {
+    recordRequest(kind) {
+      modelCallCounts = {
+        llm: modelCallCounts.llm + Number(kind === 'llm'),
+        embedding: modelCallCounts.embedding + Number(kind === 'embedding'),
+      }
+      tokenUsageAccum = {
+        ...tokenUsageAccum,
+        requestCount: tokenUsageAccum.requestCount + 1,
+      }
+      emitMetaChanged({
+        reason: 'usage',
+      })
+    },
     add(promptTokens, completionTokens) {
+      if (promptTokens === 0 && completionTokens === 0) {
+        return
+      }
+
       tokenUsageAccum = {
         promptTokens: tokenUsageAccum.promptTokens + promptTokens,
         completionTokens: tokenUsageAccum.completionTokens + completionTokens,
         totalTokens: tokenUsageAccum.totalTokens + promptTokens + completionTokens,
-        requestCount: tokenUsageAccum.requestCount + 1,
+        requestCount: tokenUsageAccum.requestCount,
       }
+      emitMetaChanged({
+        reason: 'usage',
+      })
     },
   }
 
@@ -401,6 +625,10 @@ export function createAppContext(options: AppContextOptions): AppContext {
 
   function emitMetaChanged(event: MetaChangedEvent): void {
     options.onMetaChanged?.(event)
+  }
+
+  function emitCalendarChanged(event: CalendarChangedEvent): void {
+    options.onCalendarChanged?.(event)
   }
 
   function emitDocGenerationChunk(chunk: DocGenerationChunk): void {
@@ -440,6 +668,14 @@ export function createAppContext(options: AppContextOptions): AppContext {
 
   function getDocGenerationSettings(): DocGenerationSettings {
     return parseDocGenerationSettings(settingsStore.get(DOC_GENERATION_SETTINGS_KEY))
+  }
+
+  function getBlockEnrichSettings(): BlockEnrichSettings {
+    return parseBlockEnrichSettings(settingsStore.get(BLOCK_ENRICH_SETTINGS_KEY))
+  }
+
+  function getCalendarSettings(): CalendarSettings {
+    return parseCalendarSettings(settingsStore.get(CALENDAR_SETTINGS_KEY))
   }
 
   function getSavedConfigFingerprint(): string | null {
@@ -566,6 +802,86 @@ export function createAppContext(options: AppContextOptions): AppContext {
     }
   }
 
+  async function syncCalendarSuggestionsForBlock(
+    blockId: string,
+    generation: number,
+    llmProvider: LLMProvider,
+    mode: AIExecutionMode,
+  ): Promise<void> {
+    const currentBlock = getFreshBlockForEnrich(blockId, generation)
+
+    if (!currentBlock) {
+      return
+    }
+
+    const calendarSettings = getCalendarSettings()
+
+    if (!calendarSettings.aiSuggestionsEnabled || calendarSettings.maxSuggestionsPerBlock <= 0 || mode !== 'live') {
+      clearCalendarSuggestionsForBlock(db, blockId)
+      emitCalendarChanged({
+        reason: 'suggestion-updated',
+        sourceBlockId: blockId,
+      })
+      return
+    }
+
+    if (!shouldProbeCalendarSuggestions(currentBlock.content)) {
+      clearCalendarSuggestionsForBlock(db, blockId)
+      emitCalendarChanged({
+        reason: 'suggestion-updated',
+        sourceBlockId: blockId,
+      })
+      return
+    }
+
+    try {
+      const suggestions = await llmProvider.extractCalendarSuggestions({
+        content: currentBlock.content,
+        referenceDate: currentBlock.createdAt,
+        timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'Asia/Shanghai',
+        maxSuggestions: calendarSettings.maxSuggestionsPerBlock,
+      })
+      const latestBlock = getFreshBlockForEnrich(blockId, generation)
+
+      if (!latestBlock) {
+        return
+      }
+
+      replaceCalendarSuggestionsForBlock(
+        db,
+        blockId,
+        suggestions.map((suggestion) => ({
+          title: suggestion.title,
+          notes: suggestion.notes,
+          date: suggestion.date,
+          startTime: suggestion.startTime,
+          allDay: suggestion.allDay,
+          confidence: suggestion.confidence,
+          evidenceText: suggestion.evidenceText,
+        })),
+        new Date().toISOString(),
+      )
+
+      if (mode === 'live' && clearRuntimeAiError()) {
+        emitMetaChanged({
+          reason: 'calendar-suggestion',
+        })
+      }
+
+      emitCalendarChanged({
+        reason: 'suggestion-updated',
+        sourceBlockId: blockId,
+      })
+    } catch (error) {
+      if (mode === 'live') {
+        rememberRuntimeAiError(error)
+        emitMetaChanged({
+          reason: 'calendar-suggestion',
+        })
+      }
+    }
+  }
+
   function enqueueBlocksForVectorReindex(blocks: Array<Pick<Block, 'id' | 'updatedAt'>>): void {
     if (blocks.length === 0) {
       return
@@ -638,7 +954,7 @@ export function createAppContext(options: AppContextOptions): AppContext {
       embeddingProvider: EmbeddingProvider
     },
   ): Promise<NotebookReferencePreview> {
-    const { maxReferenceBlocks } = getDocGenerationSettings()
+    const { maxReferenceBlocks, retrievalLimit } = getDocGenerationSettings()
     const blockEntries = listNotebookBlockEntries(db, notebook.id)
 
     if (blockEntries.length === 0) {
@@ -655,7 +971,7 @@ export function createAppContext(options: AppContextOptions): AppContext {
     const providers = providerState ?? getProviders()
     const queryEmbedding = await getQueryEmbedding(topic, providers.mode, providers.embeddingProvider)
     const results = searchBlocksInDatabase(db, topic, {
-      limit: Math.max(blockEntries.length, maxReferenceBlocks * 2, 20),
+      limit: Math.max(blockEntries.length, maxReferenceBlocks * 2, retrievalLimit),
       queryEmbedding,
       vectorEnabled: canUseVectorSearch() && Boolean(queryEmbedding),
       allowedBlockIds: blockEntries.map((entry) => entry.blockId),
@@ -973,6 +1289,8 @@ export function createAppContext(options: AppContextOptions): AppContext {
       reason: 'enriched',
     })
 
+    void trackTask(syncCalendarSuggestionsForBlock(blockId, generation, llmProvider, mode))
+
     return true
   }
 
@@ -1044,6 +1362,229 @@ export function createAppContext(options: AppContextOptions): AppContext {
     return false
   }
 
+  function shouldUseQueuedEnrich(): boolean {
+    return getExecutionMode() === 'live' && getBlockEnrichSettings().queueEnabled
+  }
+
+  function getQueuedEnrichBatchOptions(): {
+    maxBatchBlocks: number
+    queueDebounceMs: number
+    responseReserveTokens: number
+  } {
+    const settings = getBlockEnrichSettings()
+
+    return {
+      maxBatchBlocks: settings.maxBatchBlocks,
+      queueDebounceMs: settings.queueDebounceMs,
+      responseReserveTokens: settings.responseReserveTokens,
+    }
+  }
+
+  function clearQueuedEnrichTimer(): void {
+    if (queuedEnrichTimer) {
+      clearTimeout(queuedEnrichTimer)
+      queuedEnrichTimer = null
+    }
+  }
+
+  function getActiveQueuedEnrichRequests(requests: QueuedEnrichRequest[]): QueuedEnrichRequest[] {
+    return requests.filter((request) => getFreshBlockForEnrich(request.blockId, request.generation))
+  }
+
+  async function runQueuedEnrichBatchWithRetry(requests: QueuedEnrichRequest[]): Promise<void> {
+    if (requests.length === 0) {
+      return
+    }
+
+    if (!shouldUseQueuedEnrich()) {
+      for (const request of requests) {
+        await runEnrichWithRetry(request.blockId, request.content, request.generation)
+      }
+      return
+    }
+
+    const { llmProvider } = getProviders()
+    const batchOptions = getQueuedEnrichBatchOptions()
+
+    for (let attempt = 0; attempt <= MAX_ENRICH_RETRIES; attempt += 1) {
+      const currentRequests = getActiveQueuedEnrichRequests(requests)
+
+      if (currentRequests.length === 0) {
+        return
+      }
+
+      try {
+        const assignments = await tagger.assignBatch(
+          currentRequests.map((request) => ({
+            content: request.content,
+            options: {
+              corpusContents: [request.content, ...listRecentBlockContents(db, TAGGER_CORPUS_LIMIT, request.blockId)],
+              liveLlmProvider: llmProvider,
+              batchOptions: {
+                maxBatchBlocks: batchOptions.maxBatchBlocks,
+                responseReserveTokens: batchOptions.responseReserveTokens,
+              },
+              tagMemory: getTagMemory(db),
+            },
+          })),
+        )
+
+        clearRuntimeAiError()
+
+        for (const [index, request] of currentRequests.entries()) {
+          const currentBlock = getFreshBlockForEnrich(request.blockId, request.generation)
+
+          if (!currentBlock) {
+            continue
+          }
+
+          const assignment = assignments[index]
+          const tags = [
+            ...assignment.categories.map((tagName) => getOrCreateTag(db, tagName, 'category')),
+            ...assignment.detailTags.map((tagName) => getOrCreateTag(db, tagName, 'detail')),
+          ]
+
+          syncAutoBlockTags(db, request.blockId, tags)
+
+          const block = updateBlockState(db, {
+            id: request.blockId,
+            status: 'ready',
+            aiMode: 'live',
+            summary: assignment.summary,
+            updatedAt: currentBlock.updatedAt,
+          })
+
+          emitBlockChanged({
+            block,
+            reason: 'enriched',
+          })
+
+          void trackTask(syncCalendarSuggestionsForBlock(request.blockId, request.generation, llmProvider, 'live'))
+        }
+
+        return
+      } catch (error) {
+        const retryableRequests = getActiveQueuedEnrichRequests(requests)
+
+        if (retryableRequests.length === 0) {
+          return
+        }
+
+        const isLastAttempt = attempt === MAX_ENRICH_RETRIES
+        const shouldRetry = isTransientEnrichError(error) && !isLastAttempt
+
+        if (shouldRetry) {
+          for (const request of retryableRequests) {
+            const currentBlock = getFreshBlockForEnrich(request.blockId, request.generation)
+
+            if (!currentBlock) {
+              continue
+            }
+
+            const block = updateBlockState(db, {
+              id: request.blockId,
+              status: 'pending',
+              aiMode: 'live',
+              updatedAt: currentBlock.updatedAt,
+              errorMessage: error instanceof Error ? `自动重试中：${error.message}` : '自动重试中。',
+            })
+
+            emitBlockChanged({
+              block,
+              reason: 'enriched',
+            })
+          }
+
+          await sleep(ENRICH_RETRY_DELAY_MS)
+          continue
+        }
+
+        rememberRuntimeAiError(error)
+
+        for (const request of retryableRequests) {
+          const currentBlock = getFreshBlockForEnrich(request.blockId, request.generation)
+
+          if (!currentBlock) {
+            continue
+          }
+
+          const block = updateBlockState(db, {
+            id: request.blockId,
+            status: 'error',
+            aiMode: 'live',
+            updatedAt: currentBlock.updatedAt,
+            errorMessage: error instanceof Error ? error.message : '后台处理失败。',
+          })
+
+          emitBlockChanged({
+            block,
+            reason: 'enriched',
+          })
+        }
+
+        return
+      }
+    }
+  }
+
+  async function flushQueuedEnrichRequests(): Promise<void> {
+    clearQueuedEnrichTimer()
+
+    while (queuedEnrichRequests.length > 0) {
+      const requests = queuedEnrichRequests
+      queuedEnrichRequests = []
+      await runQueuedEnrichBatchWithRetry(requests)
+    }
+  }
+
+  function startQueuedEnrichFlush(): void {
+    clearQueuedEnrichTimer()
+
+    if (queuedEnrichFlushTask) {
+      return
+    }
+
+    const task = (async () => {
+      try {
+        await flushQueuedEnrichRequests()
+      } finally {
+        queuedEnrichFlushTask = null
+      }
+    })()
+
+    queuedEnrichFlushTask = trackTask(task)
+  }
+
+  function scheduleEnrich(blockId: string, content: string, generation: number): void {
+    if (!shouldUseQueuedEnrich()) {
+      void trackTask(runEnrichWithRetry(blockId, content, generation))
+      return
+    }
+
+    queuedEnrichRequests = [
+      ...queuedEnrichRequests.filter((request) => request.blockId !== blockId),
+      {
+        blockId,
+        content,
+        generation,
+      },
+    ]
+
+    const settings = getQueuedEnrichBatchOptions()
+
+    if (queuedEnrichRequests.length >= settings.maxBatchBlocks) {
+      startQueuedEnrichFlush()
+      return
+    }
+
+    if (!queuedEnrichTimer) {
+      queuedEnrichTimer = setTimeout(() => {
+        queuedEnrichTimer = null
+        startQueuedEnrichFlush()
+      }, settings.queueDebounceMs)
+    }
+  }
+
   function createBlockWithAttachments(content: string, now: string, aiMode: AIExecutionMode): Block {
     const transaction = db.transaction(() => {
       const block = createBlockRecord(db, {
@@ -1075,6 +1616,7 @@ export function createAppContext(options: AppContextOptions): AppContext {
 
       syncBlockAttachmentRecords(db, options.dataDirectory, id, content)
       clearAutoBlockTags(db, id)
+      clearCalendarSuggestionsForBlock(db, id)
 
       if (vectorReady) {
         deleteBlockVector(db, id)
@@ -1099,7 +1641,7 @@ export function createAppContext(options: AppContextOptions): AppContext {
       reason: 'created',
     })
 
-    void trackTask(runEnrichWithRetry(block.id, safeContent, enrichGeneration))
+    scheduleEnrich(block.id, safeContent, enrichGeneration)
     enqueueBlocksForVectorReindex([block])
     scheduleCurrentVectorReindex()
 
@@ -1137,7 +1679,7 @@ export function createAppContext(options: AppContextOptions): AppContext {
         reason: 'updated',
       })
 
-      void trackTask(runEnrichWithRetry(id, safeContent, enrichGeneration))
+      scheduleEnrich(id, safeContent, enrichGeneration)
       enqueueBlocksForVectorReindex([block])
       scheduleCurrentVectorReindex()
       void trackTask(cleanupOrphanAttachments(db, options.dataDirectory))
@@ -1244,11 +1786,11 @@ export function createAppContext(options: AppContextOptions): AppContext {
       const safeTopic = validateContent(topic)
       const requestId = uuid()
       const { mode, embeddingProvider, llmProvider } = getProviders()
-      const { maxReferenceBlocks } = getDocGenerationSettings()
+      const { maxReferenceBlocks, retrievalLimit, temperature, maxOutputTokens } = getDocGenerationSettings()
       const queryEmbedding = await getQueryEmbedding(safeTopic, mode, embeddingProvider)
 
       const results = searchBlocksInDatabase(db, safeTopic, {
-        limit: 30,
+        limit: retrievalLimit,
         queryEmbedding,
         vectorEnabled: canUseVectorSearch() && Boolean(queryEmbedding),
       })
@@ -1257,7 +1799,10 @@ export function createAppContext(options: AppContextOptions): AppContext {
       void trackTask(
         (async () => {
           try {
-            for await (const chunk of streamDocumentGeneration(requestId, safeTopic, blocks, llmProvider, mode)) {
+            for await (const chunk of streamDocumentGeneration(requestId, safeTopic, blocks, llmProvider, mode, {
+              temperature,
+              maxTokens: maxOutputTokens,
+            })) {
               if (mode === 'live' && chunk.delta) {
                 clearRuntimeAiError()
               }
@@ -1310,6 +1855,75 @@ export function createAppContext(options: AppContextOptions): AppContext {
 
     async removeSnapshot(id) {
       removeSnapshot(db, id)
+    },
+
+    async listCalendarYears() {
+      return listCalendarYears(db)
+    },
+
+    async getCalendarHeatmap(year) {
+      return getCalendarHeatmap(db, year)
+    },
+
+    async getCalendarDayDetail(date) {
+      return getCalendarDayDetail(db, normalizeCalendarDate(date))
+    },
+
+    async listUpcomingCalendarEntries(limitDays) {
+      const settings = getCalendarSettings()
+      const days = Math.max(1, Math.round(limitDays ?? settings.upcomingDays))
+      const startDate = todayDateKey()
+      const endDateValue = new Date(`${startDate}T00:00:00`)
+      endDateValue.setDate(endDateValue.getDate() + Math.max(0, days - 1))
+      const endDate = [
+        endDateValue.getFullYear(),
+        String(endDateValue.getMonth() + 1).padStart(2, '0'),
+        String(endDateValue.getDate()).padStart(2, '0'),
+      ].join('-')
+
+      return listUpcomingCalendarEntries(db, startDate, endDate)
+    },
+
+    async createCalendarEntry(input) {
+      const entry = createCalendarEntry(db, normalizeCalendarEntryInput(input), new Date().toISOString())
+      emitCalendarChanged({
+        reason: 'entry-created',
+        date: entry.date,
+      })
+      return entry
+    },
+
+    async updateCalendarEntry(id, patch) {
+      const entry = updateCalendarEntry(db, id, normalizeCalendarEntryPatch(patch), new Date().toISOString())
+      emitCalendarChanged({
+        reason: 'entry-updated',
+        date: entry.date,
+      })
+      return entry
+    },
+
+    async removeCalendarEntry(id) {
+      removeCalendarEntry(db, id)
+      emitCalendarChanged({
+        reason: 'entry-deleted',
+      })
+    },
+
+    async acceptCalendarSuggestion(id, overrides) {
+      const entry = acceptCalendarSuggestion(db, id, normalizeCalendarSuggestionAcceptInput(overrides), new Date().toISOString())
+      emitCalendarChanged({
+        reason: 'suggestion-updated',
+        date: entry.date,
+        sourceBlockId: entry.linkedBlockId ?? undefined,
+      })
+      return entry
+    },
+
+    async dismissCalendarSuggestion(id) {
+      dismissCalendarSuggestion(db, id)
+      emitCalendarChanged({
+        reason: 'suggestion-updated',
+      })
     },
 
     async listNotebooks() {
@@ -1417,7 +2031,7 @@ export function createAppContext(options: AppContextOptions): AppContext {
         reason: 'items-changed',
       })
 
-      void trackTask(runEnrichWithRetry(block.id, safeContent, enrichGeneration))
+      scheduleEnrich(block.id, safeContent, enrichGeneration)
       enqueueBlocksForVectorReindex([block])
       scheduleCurrentVectorReindex()
 
@@ -1464,6 +2078,7 @@ export function createAppContext(options: AppContextOptions): AppContext {
       const safeTopic = validateContent(normalizeNotebookTopic(notebook, topic))
       const requestId = uuid()
       const { mode, embeddingProvider, llmProvider } = getProviders()
+      const { temperature, maxOutputTokens } = getDocGenerationSettings()
       const preview = await buildNotebookReferencePreview(notebook, safeTopic, {
         mode,
         embeddingProvider,
@@ -1482,7 +2097,7 @@ export function createAppContext(options: AppContextOptions): AppContext {
               selectedBlocks,
               llmProvider,
               mode,
-              { writingGuide },
+              { writingGuide, temperature, maxTokens: maxOutputTokens },
             )) {
               if (mode === 'live' && chunk.delta) {
                 clearRuntimeAiError()
@@ -1638,7 +2253,7 @@ export function createAppContext(options: AppContextOptions): AppContext {
           (async () => {
             for (const block of importedBlocks) {
               const enrichGeneration = advanceBlockEnrichGeneration(block.id)
-              await runEnrichWithRetry(block.id, block.content, enrichGeneration)
+              scheduleEnrich(block.id, block.content, enrichGeneration)
             }
           })(),
         )
@@ -1677,6 +2292,21 @@ export function createAppContext(options: AppContextOptions): AppContext {
 
         if (!isAIConfigured(savedConfig)) {
           ensureVectorSchemaForCurrentState(true)
+        }
+      }
+
+      if ((key === 'ai_config' || key === BLOCK_ENRICH_SETTINGS_KEY) && queuedEnrichRequests.length > 0) {
+        startQueuedEnrichFlush()
+      }
+
+      if (key === CALENDAR_SETTINGS_KEY) {
+        const calendarSettings = getCalendarSettings()
+
+        if (!calendarSettings.aiSuggestionsEnabled) {
+          db.prepare(`DELETE FROM calendar_suggestions`).run()
+          emitCalendarChanged({
+            reason: 'suggestion-updated',
+          })
         }
       }
 
@@ -1726,6 +2356,7 @@ export function createAppContext(options: AppContextOptions): AppContext {
         activeAiMode,
         lastAiError,
         lastAiTestResult,
+        modelCallCounts: { ...modelCallCounts },
         tokenUsage: tokenUsageAccum.requestCount > 0 ? { ...tokenUsageAccum } : null,
         failedVectorCount: countFailedBlockVectors(db),
       }
@@ -1783,12 +2414,21 @@ export function createAppContext(options: AppContextOptions): AppContext {
     },
 
     async whenIdle() {
-      while (pendingTasks.size > 0) {
+      if (queuedEnrichRequests.length > 0 || queuedEnrichTimer) {
+        startQueuedEnrichFlush()
+      }
+
+      while (pendingTasks.size > 0 || queuedEnrichRequests.length > 0 || queuedEnrichFlushTask) {
+        if (!queuedEnrichFlushTask && queuedEnrichRequests.length > 0) {
+          startQueuedEnrichFlush()
+        }
+
         await Promise.allSettled(Array.from(pendingTasks))
       }
     },
 
     dispose() {
+      clearQueuedEnrichTimer()
       db.close()
     },
   }

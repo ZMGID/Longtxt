@@ -4,7 +4,7 @@ import { describe, expect, it, vi } from 'vitest'
 
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 
-import type { BlockChangedEvent, ChangbuApi, MetaChangedEvent, Notebook, NotebookChangedEvent, NotebookSummary } from '../../shared/types'
+import type { BlockChangedEvent, CalendarChangedEvent, ChangbuApi, MetaChangedEvent, Notebook, NotebookChangedEvent, NotebookSummary } from '../../shared/types'
 import { ChangbuEventBridge } from '../components/ChangbuEventBridge'
 import { useNotebooks } from './useNotebooks'
 
@@ -12,6 +12,7 @@ function createNotebookApiMock() {
   const blockListeners = new Set<(event: BlockChangedEvent) => void>()
   const notebookListeners = new Set<(event: NotebookChangedEvent) => void>()
   const metaListeners = new Set<(event: MetaChangedEvent) => void>()
+  const calendarListeners = new Set<(event: CalendarChangedEvent) => void>()
   let notebooks: NotebookSummary[] = [
     {
       id: 'notebook-1',
@@ -101,6 +102,64 @@ function createNotebookApiMock() {
       }),
       remove: async () => undefined,
     },
+    calendar: {
+      listYears: async () => [2026],
+      getYearHeatmap: async () => ({
+        year: 2026,
+        totalContributions: 1,
+        maxBlockCount: 1,
+        days: [],
+      }),
+      getDayDetail: async () => ({
+        date: '2026-04-01',
+        blockCount: 0,
+        blocks: [],
+        entries: [],
+        suggestions: [],
+      }),
+      listUpcoming: async () => [],
+      createEntry: async () => ({
+        id: 'entry-1',
+        title: 'mock',
+        notes: null,
+        date: '2026-04-01',
+        startTime: null,
+        allDay: true,
+        status: 'planned',
+        source: 'manual',
+        linkedBlockId: null,
+        createdAt: '2026-04-01T09:00:00.000Z',
+        updatedAt: '2026-04-01T09:00:00.000Z',
+      }),
+      updateEntry: async () => ({
+        id: 'entry-1',
+        title: 'mock',
+        notes: null,
+        date: '2026-04-01',
+        startTime: null,
+        allDay: true,
+        status: 'planned',
+        source: 'manual',
+        linkedBlockId: null,
+        createdAt: '2026-04-01T09:00:00.000Z',
+        updatedAt: '2026-04-01T09:00:00.000Z',
+      }),
+      removeEntry: async () => undefined,
+      acceptSuggestion: async () => ({
+        id: 'entry-1',
+        title: 'mock',
+        notes: null,
+        date: '2026-04-01',
+        startTime: null,
+        allDay: true,
+        status: 'planned',
+        source: 'ai-accepted',
+        linkedBlockId: 'block-1',
+        createdAt: '2026-04-01T09:00:00.000Z',
+        updatedAt: '2026-04-01T09:00:00.000Z',
+      }),
+      dismissSuggestion: async () => undefined,
+    },
     notebooks: {
       list: vi.fn(async () => notebooks),
       get: vi.fn(async () => notebook),
@@ -179,6 +238,10 @@ function createNotebookApiMock() {
         activeAiMode: 'mock',
         lastAiError: null,
         lastAiTestResult: null,
+        modelCallCounts: {
+          llm: 0,
+          embedding: 0,
+        },
         tokenUsage: null,
         failedVectorCount: 0,
       }),
@@ -203,6 +266,12 @@ function createNotebookApiMock() {
         metaListeners.add(listener)
         return () => {
           metaListeners.delete(listener)
+        }
+      },
+      onCalendarChanged(listener) {
+        calendarListeners.add(listener)
+        return () => {
+          calendarListeners.delete(listener)
         }
       },
       onDocGenerationChunk(_listener) {

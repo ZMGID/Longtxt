@@ -8,5 +8,10 @@ export const queryKeys = {
   graph: (activeTagFilters: string[]) => ['graph', activeTagFilters] as const,
   snapshotsRoot: () => ['snapshots'] as const,
   snapshots: (snapshotQuery: string, notebookIdOrNull: string | null = null) => ['snapshots', snapshotQuery, notebookIdOrNull] as const,
+  calendarRoot: () => ['calendar'] as const,
+  calendarYears: () => ['calendar', 'years'] as const,
+  calendarHeatmap: (year: number) => ['calendar', 'heatmap', year] as const,
+  calendarDay: (date: string) => ['calendar', 'day', date] as const,
+  calendarUpcoming: (limitDays: number) => ['calendar', 'upcoming', limitDays] as const,
   meta: () => ['meta'] as const,
 }
