@@ -139,4 +139,13 @@ CREATE TRIGGER IF NOT EXISTS blocks_au AFTER UPDATE OF content ON blocks BEGIN
   INSERT INTO blocks_fts(blocks_fts, rowid, content) VALUES ('delete', old.rowid, old.content);
   INSERT INTO blocks_fts(rowid, content) VALUES (new.rowid, new.content);
 END;
+
+CREATE TABLE IF NOT EXISTS failed_block_vectors (
+  block_id TEXT PRIMARY KEY,
+  content TEXT NOT NULL,
+  error_message TEXT,
+  failed_at INTEGER NOT NULL,
+  retry_count INTEGER NOT NULL DEFAULT 0,
+  FOREIGN KEY (block_id) REFERENCES blocks(id) ON DELETE CASCADE
+);
 `

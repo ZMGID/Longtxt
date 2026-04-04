@@ -8,7 +8,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## 技术栈
 
-Electron · React 19 · TypeScript · Vite 8 · Tailwind CSS v4（零配置） · better-sqlite3 · SQLite FTS5 + sqlite-vec（可选） · react-virtuoso · react-markdown · @node-rs/jieba（中文分词） · CodeMirror（Markdown 编辑）
+Electron · React 19 · TypeScript · Vite 8 · Tailwind CSS v4（零配置） · better-sqlite3 · SQLite FTS5 + sqlite-vec（可选） · react-virtuoso · react-markdown · @node-rs/jieba（中文分词） · react-force-graph-2d（知识图谱） · CodeMirror（Markdown 编辑）
 
 ## 常用命令
 
@@ -126,6 +126,15 @@ AI 只在“配置存在 + 探测成功 + 当前配置指纹与上次探测一�
 - `src/App.tsx` 是前端状态编排中心：管理 timeline / search / graph / snapshots / settings / notebook workspace 等视图，并监听文档流式事件。
 - `src/hooks/` 承担数据访问和 UI 同步，尤其是 `useBlocks.ts`、`useTags.ts`、`useNotebooks.ts`。
 - `src/lib/changbu.ts` 是渲染层对 `window.changbu` 的薄封装。渲染层新能力优先从这里进入，不要到处直接访问全局对象。
+- `src/components/GraphView.tsx` 是知识图谱可视化组件，使用 `react-force-graph-2d` 渲染块节点和共现关系边。
+
+### 知识图谱
+
+图谱以块为节点、标签共现为边，由 `electron/db/graph.ts` 从 `block_tags` 表聚合生成：
+- 节点大小和颜色由分类标签决定，高频默认标签（如"技术""生活"）会被降权以避免噪声。
+- 边权重基于两标签在同一块上的共现频率，低于阈值的边不显示。
+- 图谱数据由 `AppContext.getGraphData()` 按需查询，不做增量更新。
+- 渲染层 `App.tsx` 管理 tag filter 和节点选中状态，选中节点后在侧边展示对应块。
 
 ## 数据与存储
 

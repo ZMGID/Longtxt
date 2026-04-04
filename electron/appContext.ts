@@ -29,6 +29,7 @@ import type {
   NotebookStructureItemPatch,
   NotebookSummary,
   PaginationInput,
+  RelatedBlockResult,
   SearchResult,
   Snapshot,
   TagSuggestion,
@@ -75,16 +76,22 @@ import { getOrCreateTag, getTagMemory, listAvailableTags } from './db/tags'
 import {
   countBlockVectors,
   countPendingBlockVectors,
+  countFailedBlockVectors,
+  clearFailedBlockVectors,
   deleteBlockVector,
   enqueueBlockVector,
   ensureVectorSchema,
+  insertFailedBlockVector,
   getPendingBlockVectorsByIds,
   getVectorSchemaDimension,
+  listFailedBlockVectors,
   listPendingBlockVectors,
+  removeFailedBlockVector,
   removePendingBlockVectors,
   resetPendingBlockVectors,
   upsertBlockVector,
 } from './db/vectors'
+import { findRelatedBlockIds } from './db/connections'
 import {
   DEFAULT_MOCK_EMBEDDING_DIMENSION,
   createConfigFingerprint,
@@ -137,6 +144,7 @@ export interface AppContext {
   listBlocks(params?: PaginationInput): Promise<Block[]>
   updateBlock(id: string, content: string): Promise<Block>
   removeBlock(id: string): Promise<void>
+  findRelatedBlocks(blockId: string, limit?: number): Promise<RelatedBlockResult[]>
   addTag(blockId: string, tagName: string): Promise<Block>
   removeTag(blockId: string, tagId: string): Promise<Block>
   listTags(query?: string): Promise<TagSuggestion[]>
@@ -178,6 +186,7 @@ export interface AppContext {
   testApi(config: AIConfig): Promise<ApiTestResult>
   getMeta(): Promise<AppMeta>
   openDataDirectory(): Promise<void>
+  retryFailedVectors(): Promise<number>
   whenIdle(): Promise<void>
   dispose(): void
 }
@@ -590,6 +599,11 @@ export function createAppContext(options: AppContextOptions): AppContext {
         }
 
         removePendingBlockVectors(db, completedIds)
+
+        // 成功的块如果之前在失败记录中，移除之
+        for (const id of completedIds) {
+          removeFailedBlockVector(db, id)
+        }
       }
 
       if (currentVectorDimension !== null && countPendingBlockVectors(db) === 0) {
@@ -600,6 +614,16 @@ export function createAppContext(options: AppContextOptions): AppContext {
         clearRuntimeAiError()
       }
     } catch (error) {
+      // 将当前 pending batch 中尚未完成的块记录到失败表
+      const remainingJobs = listPendingBlockVectors(db, VECTOR_REINDEX_BATCH_SIZE)
+      for (const job of remainingJobs) {
+        const block = getBlockById(db, job.blockId)
+        if (block) {
+          insertFailedBlockVector(db, block.id, block.content, error instanceof Error ? error.message : String(error))
+        }
+      }
+      removePendingBlockVectors(db, remainingJobs.map((j) => j.blockId))
+
       if (mode === 'live') {
         rememberRuntimeAiError(error)
       }
@@ -906,6 +930,25 @@ export function createAppContext(options: AppContextOptions): AppContext {
       })
 
       void trackTask(cleanupOrphanAttachments(db, options.dataDirectory))
+    },
+
+    async findRelatedBlocks(blockId, limit = 10): Promise<RelatedBlockResult[]> {
+      const matches = findRelatedBlockIds(db, blockId, limit)
+
+      if (matches.length === 0) {
+        return []
+      }
+
+      const blockIds = matches.map((m) => m.id)
+      const blocks = getBlocksByIds(db, blockIds)
+      const blockMap = new Map(blocks.map((b) => [b.id, b]))
+
+      return matches
+        .map((m) => {
+          const block = blockMap.get(m.id)
+          return block ? { block, score: m.score } : null
+        })
+        .filter((r): r is RelatedBlockResult => r !== null)
     },
 
     async addTag(blockId, tagName) {
@@ -1345,6 +1388,7 @@ export function createAppContext(options: AppContextOptions): AppContext {
 
       return {
         dataDirectory: options.dataDirectory,
+        totalBlockCount: countBlocks(db),
         vectorReady,
         aiConfigured: isAIConfigured(config),
         resolvedBaseUrl: isAIConfigured(config) ? resolveBaseUrl(config.llm.endpoint || config.embedding.endpoint) : null,
@@ -1354,7 +1398,28 @@ export function createAppContext(options: AppContextOptions): AppContext {
         lastAiError,
         lastAiTestResult,
         tokenUsage: tokenUsageAccum.requestCount > 0 ? { ...tokenUsageAccum } : null,
+        failedVectorCount: countFailedBlockVectors(db),
       }
+    },
+
+    async retryFailedVectors(): Promise<number> {
+      const failed = listFailedBlockVectors(db)
+
+      if (failed.length === 0) {
+        return 0
+      }
+
+      const now = new Date().toISOString()
+      for (const record of failed) {
+        enqueueBlockVector(db, record.blockId, now, now)
+      }
+
+      clearFailedBlockVectors(db)
+
+      const { mode, embeddingProvider } = getProviders()
+      scheduleReindex(embeddingProvider, mode)
+
+      return failed.length
     },
 
     async openDataDirectory() {

@@ -224,6 +224,23 @@ describe('app context', () => {
     expect(tagNames).toContain('项目')
   })
 
+  it('lists newest blocks first across paginated timeline reads', async () => {
+    const context = makeContext()
+
+    const first = await context.createBlock('第一条较早的记录。')
+    await new Promise((resolve) => setTimeout(resolve, 5))
+    const second = await context.createBlock('第二条中间的记录。')
+    await new Promise((resolve) => setTimeout(resolve, 5))
+    const third = await context.createBlock('第三条最新的记录。')
+    await context.whenIdle()
+
+    const firstPage = await context.listBlocks({ offset: 0, limit: 2 })
+    const secondPage = await context.listBlocks({ offset: 2, limit: 2 })
+
+    expect(firstPage.map((block) => block.id)).toEqual([third.id, second.id])
+    expect(secondPage.map((block) => block.id)).toEqual([first.id])
+  })
+
   it('supports notebook creation, collection, ordering, and notebook-local block creation', async () => {
     const context = makeContext()
     const first = await context.createBlock('第一段内容，适合做提纲。')

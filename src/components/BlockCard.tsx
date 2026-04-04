@@ -18,6 +18,7 @@ interface BlockCardProps {
   onAddTag?: (blockId: string, tagName: string) => Promise<void>
   onRemoveTag?: (blockId: string, tagId: string) => Promise<void>
   onTagClick?: (tagName: string) => void
+  onFindRelated?: (blockId: string) => void
 }
 
 const COLLAPSIBLE_CONTENT_LENGTH = 420
@@ -51,6 +52,7 @@ export function BlockCard({
   onAddTag,
   onRemoveTag,
   onTagClick,
+  onFindRelated,
 }: BlockCardProps) {
   const [isEditing, setIsEditing] = useState(false)
   const [draft, setDraft] = useState(block.content)
@@ -271,6 +273,15 @@ export function BlockCard({
                   >
                     编辑
                   </button>
+                  {onFindRelated && block.status === 'ready' && (
+                    <button
+                      type="button"
+                      onClick={() => onFindRelated(block.id)}
+                      className="text-xs text-stone-500 transition hover:text-stone-700"
+                    >
+                      相关块
+                    </button>
+                  )}
                   {onDelete && (
                     <button
                       type="button"

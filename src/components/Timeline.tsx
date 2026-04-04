@@ -24,6 +24,7 @@ interface TimelineProps {
   onLoadMore: () => Promise<void>
   onAddToNotebook?: (notebookId: string, blockId: string) => Promise<void>
   onCreateNotebookWithBlock?: (blockId: string) => Promise<void>
+  onFindRelated?: (blockId: string) => void
   focusedBlockId?: string | null
   onFocusedBlockHandled?: () => void
 }
@@ -45,6 +46,7 @@ export function Timeline({
   onLoadMore,
   onAddToNotebook,
   onCreateNotebookWithBlock,
+  onFindRelated,
   focusedBlockId,
   onFocusedBlockHandled,
 }: TimelineProps) {
@@ -171,6 +173,7 @@ export function Timeline({
                 onAddTag={onAddTag}
                 onRemoveTag={onRemoveTag}
                 onTagClick={onTagClick}
+                onFindRelated={onFindRelated}
               />
             </div>
           )}

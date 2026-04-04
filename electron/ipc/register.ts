@@ -10,6 +10,7 @@ export function createIpcHandlers(context: AppContext) {
     [IPC_CHANNELS.blocks.list]: (_event: unknown, params?: { offset?: number; limit?: number }) => context.listBlocks(params),
     [IPC_CHANNELS.blocks.update]: (_event: unknown, id: string, content: string) => context.updateBlock(id, content),
     [IPC_CHANNELS.blocks.remove]: (_event: unknown, id: string) => context.removeBlock(id),
+    [IPC_CHANNELS.blocks.findRelated]: (_event: unknown, blockId: string, limit?: number) => context.findRelatedBlocks(blockId, limit),
     [IPC_CHANNELS.search.blocks]: (_event: unknown, query: string, limit?: number) => context.searchBlocks(query, limit),
     [IPC_CHANNELS.search.byTag]: (_event: unknown, tagName: string, limit?: number) => context.searchByTag(tagName, limit),
     [IPC_CHANNELS.search.generate]: (_event: unknown, topic: string) => context.generateDocument(topic),
@@ -62,6 +63,7 @@ export function createIpcHandlers(context: AppContext) {
     [IPC_CHANNELS.settings.testApi]: (_event: unknown, config: Parameters<AppContext['testApi']>[0]) => context.testApi(config),
     [IPC_CHANNELS.settings.openDataDirectory]: () => context.openDataDirectory(),
     [IPC_CHANNELS.settings.getMeta]: () => context.getMeta(),
+    [IPC_CHANNELS.vectors.retryFailed]: () => context.retryFailedVectors(),
   }
 }
 

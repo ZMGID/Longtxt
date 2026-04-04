@@ -9,6 +9,7 @@ interface SettingsPanelProps {
   saving: boolean
   testing: boolean
   testResult: ApiTestResult | null
+  onRetryFailedVectors?: () => Promise<void>
   onChange: (nextConfig: AIConfig) => void
   onDocGenerationSettingsChange: (nextSettings: DocGenerationSettings) => void
   onUISettingsChange: (nextSettings: UISettings) => void
@@ -99,6 +100,7 @@ export function SettingsPanel({
   saving,
   testing,
   testResult,
+  onRetryFailedVectors,
   onChange,
   onDocGenerationSettingsChange,
   onUISettingsChange,
@@ -252,6 +254,23 @@ export function SettingsPanel({
             <div className="mt-0.5 break-all text-sm font-medium text-stone-900">{item.value}</div>
           </div>
         ))}
+
+        {meta && meta.failedVectorCount > 0 && (
+          <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3">
+            <div className="text-xs text-amber-400">失败向量</div>
+            <div className="mt-0.5 text-sm font-medium text-amber-900">
+              {meta.failedVectorCount} 个块的向量补齐失败
+            </div>
+            <button
+              type="button"
+              onClick={() => { void onRetryFailedVectors?.() }}
+              disabled={!onRetryFailedVectors}
+              className="mt-2 rounded bg-amber-600 px-3 py-1.5 text-xs font-medium text-white transition duration-150 hover:bg-amber-500 active:scale-[0.97] disabled:opacity-50"
+            >
+              重试失败向量
+            </button>
+          </div>
+        )}
 
         {meta?.lastAiTestResult ? (
           <div className="rounded-lg border border-stone-200 bg-white/70 px-4 py-3">

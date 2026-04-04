@@ -19,11 +19,13 @@ import type {
   Block,
   DocGenerationChunk,
   DocGenerationSettings,
+  RelatedBlockResult,
   SearchResult,
   Snapshot,
   UISettings,
 } from '../shared/types'
 import { AppSidebar, type AppView } from './components/AppSidebar'
+import { BlockCard } from './components/BlockCard'
 import { GraphView } from './components/GraphView'
 import { InputBar } from './components/InputBar'
 import { NotebookWorkspace } from './components/NotebookWorkspace'
@@ -132,6 +134,7 @@ function AppInner() {
     edges: [],
   })
   const [graphTagFilters, setGraphTagFilters] = useState<string[]>([])
+  const [graphRefreshVersion, setGraphRefreshVersion] = useState(0)
   const [selectedGraphBlockId, setSelectedGraphBlockId] = useState<string | null>(null)
   const [selectedGraphBlockFallback, setSelectedGraphBlockFallback] = useState<Block | null>(null)
   const [focusedBlockId, setFocusedBlockId] = useState<string | null>(null)
@@ -139,7 +142,14 @@ function AppInner() {
   const [snapshotQuery, setSnapshotQuery] = useState('')
   const [selectedSnapshotId, setSelectedSnapshotId] = useState<string | null>(null)
   const [importPreview, setImportPreview] = useState<import('../shared/types').ImportPreview | null>(null)
+  const [relatedBlocks, setRelatedBlocks] = useState<RelatedBlockResult[] | null>(null)
+  const [relatedLoading, setRelatedLoading] = useState(false)
   const graphSelectionRequestRef = useRef<string | null>(null)
+  const activeViewRef = useRef<AppView>('timeline')
+
+  useEffect(() => {
+    activeViewRef.current = activeView
+  }, [activeView])
 
   useEffect(() => {
     let active = true
@@ -248,7 +258,33 @@ function AppInner() {
     return () => {
       active = false
     }
-  }, [activeView, graphTagFilters])
+  }, [activeView, graphTagFilters, graphRefreshVersion])
+
+  useEffect(() => {
+    let timer: ReturnType<typeof setTimeout> | null = null
+
+    const unsubscribe = changbu.events.onBlockChanged(() => {
+      if (activeViewRef.current !== 'graph') {
+        return
+      }
+
+      if (timer) {
+        clearTimeout(timer)
+      }
+
+      timer = setTimeout(() => {
+        setGraphRefreshVersion((current) => current + 1)
+      }, 160)
+    })
+
+    return () => {
+      if (timer) {
+        clearTimeout(timer)
+      }
+
+      unsubscribe()
+    }
+  }, [])
 
   useEffect(() => {
     if (activeView !== 'snapshots') {
@@ -553,6 +589,28 @@ function AppInner() {
     setActiveView('notebooks')
   }
 
+  async function handleFindRelated(blockId: string): Promise<void> {
+    setRelatedLoading(true)
+    try {
+      const results = await changbu.blocks.findRelated(blockId)
+      setRelatedBlocks(results)
+    } catch {
+      toast('error', '查找相关块失败。')
+    } finally {
+      setRelatedLoading(false)
+    }
+  }
+
+  async function handleRetryFailedVectors(): Promise<void> {
+    try {
+      const count = await changbu.vectors.retryFailed()
+      await refreshMeta()
+      toast('success', `已重新入队 ${count} 个失败向量。`)
+    } catch (reason) {
+      toast('error', reason instanceof Error ? reason.message : '重试失败。')
+    }
+  }
+
   const selectedGraphBlock = selectedGraphBlockId ? blocks.find((block) => block.id === selectedGraphBlockId) ?? selectedGraphBlockFallback : null
   const recentResults: SearchResult[] = blocks.slice(0, 5).map((block) => ({
     block,
@@ -626,6 +684,7 @@ function AppInner() {
               onLoadMore={loadMore}
               onAddToNotebook={handleAddBlockToNotebook}
               onCreateNotebookWithBlock={handleCreateNotebookWithBlock}
+              onFindRelated={(blockId) => { void handleFindRelated(blockId) }}
               focusedBlockId={focusedBlockId}
               onFocusedBlockHandled={() => {
                 setFocusedBlockId(null)
@@ -894,6 +953,7 @@ function AppInner() {
             onUISettingsChange={setUiSettings}
             onSave={handleSaveSettings}
             onTest={handleTestSettings}
+            onRetryFailedVectors={handleRetryFailedVectors}
             onOpenDataDirectory={async () => {
               await changbu.settings.openDataDirectory()
             }}
@@ -907,7 +967,7 @@ function AppInner() {
     <div className="flex h-screen overflow-hidden bg-stone-100 text-stone-900">
       <AppSidebar
         activeView={activeView}
-        blockCount={blocks.length}
+        blockCount={meta?.totalBlockCount ?? blocks.length}
         aiStatusLabel={aiStatusLabel}
         meta={meta}
         onSelectView={setActiveView}
@@ -919,10 +979,48 @@ function AppInner() {
           <h2 className="text-[13px] font-semibold text-stone-900">{activeViewTitle}</h2>
         </div>
 
-        <div className="flex flex-1 flex-col overflow-hidden px-5 py-3">
-          <div key={activeView} className="flex flex-1 flex-col overflow-hidden animate-[fadeIn_200ms_ease-out]">
+        <div className="flex flex-1 overflow-hidden px-5 py-3">
+          <div key={activeView} className="flex min-w-0 flex-1 flex-col overflow-hidden animate-[fadeIn_200ms_ease-out]">
             {renderActiveView()}
           </div>
+
+          {relatedBlocks !== null && (
+            <aside className="ml-4 w-80 shrink-0 overflow-y-auto rounded-lg border border-stone-200 bg-stone-50/80 p-4">
+              <div className="mb-3 flex items-center justify-between">
+                <h3 className="text-xs font-medium uppercase tracking-wider text-stone-400">相关块</h3>
+                <button
+                  type="button"
+                  onClick={() => setRelatedBlocks(null)}
+                  className="text-xs text-stone-400 transition hover:text-stone-600"
+                >
+                  关闭
+                </button>
+              </div>
+              {relatedLoading ? (
+                <p className="py-8 text-center text-sm text-stone-400">查找中…</p>
+              ) : relatedBlocks.length === 0 ? (
+                <p className="py-8 text-center text-sm text-stone-400">未找到相关块。</p>
+              ) : (
+                <div className="space-y-2">
+                  {relatedBlocks.map(({ block: related, score }) => (
+                    <div key={related.id}>
+                      <BlockCard
+                        block={related}
+                        compact
+                        editable={false}
+                        headerActions={
+                          <span className="text-[11px] font-medium text-stone-400">
+                            {Math.round(score * 100)}%
+                          </span>
+                        }
+                        onTagClick={(tagName) => { void handleBrowseTag(tagName) }}
+                      />
+                    </div>
+                  ))}
+                </div>
+              )}
+            </aside>
+          )}
         </div>
       </main>
     </div>

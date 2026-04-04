@@ -35,6 +35,11 @@ export interface Block {
   errorMessage?: string | null
 }
 
+export interface RelatedBlockResult {
+  block: Block
+  score: number
+}
+
 export interface SearchResult {
   block: Block
   score: number
@@ -245,6 +250,7 @@ export interface TokenUsage {
 
 export interface AppMeta {
   dataDirectory: string
+  totalBlockCount: number
   vectorReady: boolean
   aiConfigured: boolean
   resolvedBaseUrl: string | null
@@ -254,6 +260,7 @@ export interface AppMeta {
   lastAiError: string | null
   lastAiTestResult: ApiTestResult | null
   tokenUsage: TokenUsage | null
+  failedVectorCount: number
 }
 
 export interface BlockChangedEvent {
@@ -286,6 +293,7 @@ export interface ChangbuApi {
     list(params?: PaginationInput): Promise<Block[]>
     update(id: string, content: string): Promise<Block>
     remove(id: string): Promise<void>
+    findRelated(blockId: string, limit?: number): Promise<RelatedBlockResult[]>
   }
   attachments: {
     saveImage(dataUrl: string, filenameHint?: string): Promise<{ fileUrl: string; markdownAlt: string }>
@@ -345,6 +353,9 @@ export interface ChangbuApi {
     testApi(config: AIConfig): Promise<ApiTestResult>
     openDataDirectory(): Promise<void>
     getMeta(): Promise<AppMeta>
+  }
+  vectors: {
+    retryFailed(): Promise<number>
   }
   events: {
     onBlockChanged(listener: (event: BlockChangedEvent) => void): () => void

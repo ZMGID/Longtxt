@@ -5,6 +5,7 @@ export const IPC_CHANNELS = {
     list: 'blocks:list',
     update: 'blocks:update',
     remove: 'blocks:remove',
+    findRelated: 'blocks:find-related',
   },
   search: {
     blocks: 'search:blocks',
@@ -59,6 +60,9 @@ export const IPC_CHANNELS = {
     testApi: 'settings:test-api',
     openDataDirectory: 'settings:open-data-directory',
     getMeta: 'settings:get-meta',
+  },
+  vectors: {
+    retryFailed: 'vectors:retry-failed',
   },
   events: {
     blockChanged: 'events:block-changed',

@@ -131,7 +131,7 @@ export function listBlocks(db: Database.Database, params: PaginationInput = {}):
       `
         SELECT id
         FROM blocks
-        ORDER BY created_at ASC
+        ORDER BY created_at DESC
         LIMIT ?
         OFFSET ?
       `,

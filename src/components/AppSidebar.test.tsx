@@ -6,6 +6,7 @@ import { AppSidebar } from './AppSidebar'
 
 const sampleMeta: AppMeta = {
   dataDirectory: '/tmp/changbu',
+  totalBlockCount: 128,
   vectorReady: true,
   aiConfigured: true,
   resolvedBaseUrl: 'https://api.example.com',
@@ -15,6 +16,7 @@ const sampleMeta: AppMeta = {
   lastAiError: null,
   lastAiTestResult: null,
   tokenUsage: null,
+  failedVectorCount: 0,
 }
 
 describe('AppSidebar', () => {

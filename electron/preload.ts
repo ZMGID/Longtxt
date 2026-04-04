@@ -25,6 +25,7 @@ const api: ChangbuApi = {
     list: (params) => ipcRenderer.invoke(IPC_CHANNELS.blocks.list, params),
     update: (id, content) => ipcRenderer.invoke(IPC_CHANNELS.blocks.update, id, content),
     remove: (id) => ipcRenderer.invoke(IPC_CHANNELS.blocks.remove, id),
+    findRelated: (blockId, limit) => ipcRenderer.invoke(IPC_CHANNELS.blocks.findRelated, blockId, limit),
   },
   search: {
     blocks: (query, limit) => ipcRenderer.invoke(IPC_CHANNELS.search.blocks, query, limit),
@@ -81,6 +82,9 @@ const api: ChangbuApi = {
     testApi: (config) => ipcRenderer.invoke(IPC_CHANNELS.settings.testApi, config),
     openDataDirectory: () => ipcRenderer.invoke(IPC_CHANNELS.settings.openDataDirectory),
     getMeta: () => ipcRenderer.invoke(IPC_CHANNELS.settings.getMeta),
+  },
+  vectors: {
+    retryFailed: () => ipcRenderer.invoke(IPC_CHANNELS.vectors.retryFailed),
   },
   events: {
     onBlockChanged(listener) {

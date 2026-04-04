@@ -16,6 +16,8 @@ interface GraphViewProps {
   onJumpToBlock: (blockId: string) => void
 }
 
+const SUPPRESSED_FILTER_TAGS = new Set(['TODO', '重要', '临时', '归档'])
+
 export function GraphView({
   nodes,
   edges,
@@ -32,6 +34,79 @@ export function GraphView({
   const [size, setSize] = useState({ width: 960, height: 620 })
   const lastClickRef = useRef<{ id: string | null; time: number }>({ id: null, time: 0 })
   const [hoveredNodeId, setHoveredNodeId] = useState<string | null>(null)
+  const tagLookup = useMemo(() => new Map(availableTags.map((tag) => [tag.name, tag])), [availableTags])
+  const activeTagSet = useMemo(() => new Set(activeTagFilters), [activeTagFilters])
+
+  const tagCounts = useMemo(() => {
+    const counts = new Map<string, number>()
+
+    for (const node of nodes) {
+      for (const tagName of new Set(node.tags)) {
+        counts.set(tagName, (counts.get(tagName) ?? 0) + 1)
+      }
+    }
+
+    return counts
+  }, [nodes])
+
+  const filterTags = useMemo(() => {
+    const merged = new Map<string, TagSuggestion & { count: number }>()
+
+    for (const [tagName, count] of tagCounts.entries()) {
+      if (count <= 1) {
+        continue
+      }
+
+      const baseTag = tagLookup.get(tagName)
+      merged.set(tagName, {
+        id: baseTag?.id ?? `graph-tag-${tagName}`,
+        name: tagName,
+        isDefault: baseTag?.isDefault ?? false,
+        kind: baseTag?.kind ?? 'detail',
+        count,
+      })
+    }
+
+    for (const tagName of activeTagFilters) {
+      if (merged.has(tagName)) {
+        continue
+      }
+
+      const baseTag = tagLookup.get(tagName)
+      merged.set(tagName, {
+        id: baseTag?.id ?? `graph-tag-${tagName}`,
+        name: tagName,
+        isDefault: baseTag?.isDefault ?? false,
+        kind: baseTag?.kind ?? 'detail',
+        count: tagCounts.get(tagName) ?? 0,
+      })
+    }
+
+    return Array.from(merged.values())
+      .filter((tag) => activeTagSet.has(tag.name) || !SUPPRESSED_FILTER_TAGS.has(tag.name))
+      .sort((left, right) => {
+        const activeDelta = Number(activeTagSet.has(right.name)) - Number(activeTagSet.has(left.name))
+        if (activeDelta !== 0) {
+          return activeDelta
+        }
+
+        if (left.isDefault !== right.isDefault) {
+          return Number(left.isDefault) - Number(right.isDefault)
+        }
+
+        const kindRank = { user: 0, detail: 1, category: 2 }
+        if (kindRank[left.kind] !== kindRank[right.kind]) {
+          return kindRank[left.kind] - kindRank[right.kind]
+        }
+
+        if (right.count !== left.count) {
+          return right.count - left.count
+        }
+
+        return left.name.localeCompare(right.name, 'zh-Hans-CN')
+      })
+      .slice(0, 24)
+  }, [activeTagFilters, activeTagSet, tagCounts, tagLookup])
 
   useEffect(() => {
     const container = containerRef.current
@@ -118,21 +193,23 @@ export function GraphView({
     <section className="grid gap-4 xl:grid-cols-[260px_minmax(0,1fr)_320px]">
       <aside className="rounded-lg border border-stone-200 bg-white/70 p-3">
         <p className="text-xs font-medium uppercase tracking-wider text-stone-400">标签筛选</p>
-        <p className="mt-1 text-xs leading-5 text-stone-500">节点代表块，边代表共享标签关系。点击节点看详情，双击跳回时间轴。</p>
+        <p className="mt-1 text-xs leading-5 text-stone-500">优先显示当前图里更有区分度的标签；高频元标签会自动淡出。点击节点看详情，双击跳回时间轴。</p>
 
         <div className="mt-3 flex flex-wrap gap-1.5">
-          {availableTags.slice(0, 24).map((tag) => {
+          {filterTags.map((tag) => {
             const active = activeTagFilters.includes(tag.name)
             return (
               <button
                 key={tag.id}
                 type="button"
                 onClick={() => onToggleTagFilter(tag.name)}
+                title={tag.count > 0 ? `${tag.name} · ${tag.count} 个节点` : tag.name}
                 className={`rounded px-2.5 py-1 text-xs font-medium transition ${
                   active ? 'bg-stone-900 text-white' : 'border border-stone-200 bg-stone-50 text-stone-700 hover:bg-stone-100'
                 }`}
               >
                 {tag.name}
+                {tag.count > 0 ? <span className="ml-1 opacity-60">{tag.count}</span> : null}
               </button>
             )
           })}
@@ -147,6 +224,7 @@ export function GraphView({
             <span className="text-xs text-stone-400">{edges.length} 条边</span>
           </div>
         </div>
+        <p className="mb-3 text-xs leading-5 text-stone-500">边只保留更具体的共享标签关系，过于泛化的默认标签不会直接把整张图连成一团。</p>
 
         <div ref={containerRef} className="h-[600px] overflow-hidden rounded-lg border border-stone-200 bg-stone-50">
           {loading ? (
@@ -164,28 +242,56 @@ export function GraphView({
               nodeRelSize={4}
               backgroundColor="#f8fafc"
               cooldownTicks={80}
+              nodeLabel={(node) => {
+                const graphNode = node as GraphNode
+                const detail = graphNode.summary?.trim() || graphNode.label
+                const tags = graphNode.tags.slice(0, 4).join('、')
+                return tags ? `${detail}\n标签：${tags}` : detail
+              }}
+              linkLabel={(link) => {
+                const edge = link as GraphEdge
+                return edge.sharedTags.length > 0 ? `共享标签：${edge.sharedTags.join('、')}` : ''
+              }}
               linkColor={(link) => ((link as GraphEdge).weight > 1 ? 'rgba(110,88,56,0.34)' : 'rgba(110,88,56,0.16)')}
-              linkWidth={(link) => Math.min(4, 1 + ((link as GraphEdge).weight ?? 1) * 0.6)}
+              linkWidth={(link) => Math.min(3.2, 0.8 + ((link as GraphEdge).weight ?? 1) * 0.42)}
               nodeCanvasObject={(node, ctx, globalScale) => {
                 const graphNode = node as GraphNode & { x?: number; y?: number }
                 const label = graphNode.label
-                const fontSize = 12 / globalScale
+                const fontSize = 11 / globalScale
                 const radius = graphNode.size
-                const showLabel = globalScale >= 0.85 || graphNode.id === hoveredNodeId || graphNode.id === selectedBlock?.id
+                const highlighted = graphNode.id === hoveredNodeId || graphNode.id === selectedBlock?.id
+                const showLabel = globalScale >= 1.45 || highlighted
 
                 ctx.beginPath()
                 ctx.fillStyle = graphNode.color
                 ctx.arc(graphNode.x ?? 0, graphNode.y ?? 0, radius, 0, 2 * Math.PI)
                 ctx.fill()
+                ctx.lineWidth = highlighted ? Math.max(1.6, 2.4 / globalScale) : Math.max(0.7, 1.1 / globalScale)
+                ctx.strokeStyle = highlighted ? '#1f2937' : 'rgba(255,255,255,0.9)'
+                ctx.stroke()
 
                 if (!showLabel) {
                   return
                 }
 
                 ctx.font = `${fontSize}px sans-serif`
-                ctx.fillStyle = '#2c1f15'
                 ctx.textAlign = 'center'
-                ctx.fillText(label, graphNode.x ?? 0, (graphNode.y ?? 0) - radius - 8)
+                const textWidth = ctx.measureText(label).width
+                const textX = graphNode.x ?? 0
+                const textY = (graphNode.y ?? 0) - radius - 10
+                const horizontalPadding = 5 / globalScale
+                const verticalPadding = 3 / globalScale
+
+                ctx.fillStyle = 'rgba(248,250,252,0.94)'
+                ctx.fillRect(
+                  textX - textWidth / 2 - horizontalPadding,
+                  textY - fontSize - verticalPadding,
+                  textWidth + horizontalPadding * 2,
+                  fontSize + verticalPadding * 2,
+                )
+
+                ctx.fillStyle = '#2c1f15'
+                ctx.fillText(label, textX, textY)
               }}
               onNodeHover={(node) => {
                 const graphNode = node as GraphNode | null

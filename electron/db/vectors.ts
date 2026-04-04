@@ -171,3 +171,57 @@ export function countBlockVectors(db: Database.Database): number {
   const row = db.prepare(`SELECT COUNT(*) AS total FROM blocks_vec`).get() as { total: number }
   return row.total
 }
+
+export interface FailedBlockVector {
+  blockId: string
+  content: string
+  errorMessage: string | null
+  failedAt: number
+  retryCount: number
+}
+
+export function insertFailedBlockVector(
+  db: Database.Database,
+  blockId: string,
+  content: string,
+  errorMessage: string,
+): void {
+  const now = Date.now()
+  db.prepare(
+    `
+      INSERT INTO failed_block_vectors (block_id, content, error_message, failed_at, retry_count)
+      VALUES (?, ?, ?, ?, 1)
+      ON CONFLICT(block_id) DO UPDATE SET
+        content = excluded.content,
+        error_message = excluded.error_message,
+        failed_at = excluded.failed_at,
+        retry_count = retry_count + 1
+    `,
+  ).run(blockId, content, errorMessage, now)
+}
+
+export function listFailedBlockVectors(db: Database.Database): FailedBlockVector[] {
+  return db
+    .prepare(
+      `
+        SELECT block_id AS blockId, content, error_message AS errorMessage,
+               failed_at AS failedAt, retry_count AS retryCount
+        FROM failed_block_vectors
+        ORDER BY failed_at ASC
+      `,
+    )
+    .all() as FailedBlockVector[]
+}
+
+export function countFailedBlockVectors(db: Database.Database): number {
+  const row = db.prepare(`SELECT COUNT(*) AS total FROM failed_block_vectors`).get() as { total: number }
+  return row.total
+}
+
+export function removeFailedBlockVector(db: Database.Database, blockId: string): void {
+  db.prepare(`DELETE FROM failed_block_vectors WHERE block_id = ?`).run(blockId)
+}
+
+export function clearFailedBlockVectors(db: Database.Database): void {
+  db.exec(`DELETE FROM failed_block_vectors`)
+}
