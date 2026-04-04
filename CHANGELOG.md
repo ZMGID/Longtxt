@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+## 1.3.1
+
+- 修复时间轴输入框图片粘贴与拖拽失效，兼容 clipboard `items`、`files` 和 Finder 拖入场景
+- 修复编辑态图片 Markdown 仅显示链接的问题，输入框现在会以内嵌图片方式预览
+- 为本地附件引入受控的 `changbu-attachment://` 协议，避免渲染层直接加载 `file://` 图片失败
+- 补充本地附件 URL、Markdown 图片解析与图片传输提取相关测试
+
 ## 1.3.0
 
 - 向量补齐改为持久化队列 + 后台批处理 drain，reindex 运行期间新入队任务也会继续处理到队列清空

@@ -2,6 +2,8 @@ import ReactMarkdown from 'react-markdown'
 import remarkBreaks from 'remark-breaks'
 import remarkGfm from 'remark-gfm'
 
+import { toRenderableAttachmentUrl } from '../lib/attachmentUrl'
+
 interface MarkdownContentProps {
   content: string
   compact?: boolean
@@ -12,6 +14,7 @@ export function MarkdownContent({ content, compact = false }: MarkdownContentPro
     <div className={`markdown-content text-stone-800 ${compact ? 'text-sm leading-6' : 'text-sm leading-6'}`}>
       <ReactMarkdown
         remarkPlugins={[remarkGfm, remarkBreaks]}
+        urlTransform={(url) => toRenderableAttachmentUrl(url)}
         components={{
           p: ({ children }) => <p className="my-2 first:mt-0 last:mb-0">{children}</p>,
           a: ({ children, href }) => (
@@ -20,12 +23,22 @@ export function MarkdownContent({ content, compact = false }: MarkdownContentPro
             </a>
           ),
           img: ({ src, alt }) => (
-            <img
-              src={src ?? ''}
-              alt={alt ?? ''}
-              loading="lazy"
-              className="my-3 max-h-[320px] w-full rounded-lg border border-stone-200 object-contain bg-stone-50"
-            />
+            (() => {
+              const resolvedSrc = toRenderableAttachmentUrl(src)
+
+              if (!resolvedSrc) {
+                return null
+              }
+
+              return (
+                <img
+                  src={resolvedSrc}
+                  alt={alt ?? ''}
+                  loading="lazy"
+                  className="my-3 max-h-[320px] w-full rounded-lg border border-stone-200 object-contain bg-stone-50"
+                />
+              )
+            })()
           ),
           code: ({ children, className }) => {
             const isBlock = Boolean(className)

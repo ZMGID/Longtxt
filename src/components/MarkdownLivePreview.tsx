@@ -1,4 +1,4 @@
-import { useMemo } from 'react'
+import { useMemo, useRef } from 'react'
 import CodeMirror from '@uiw/react-codemirror'
 import { markdown, markdownLanguage } from '@codemirror/lang-markdown'
 import { languages } from '@codemirror/language-data'
@@ -20,6 +20,9 @@ import {
 import { syntaxTree } from '@codemirror/language'
 
 import { changbu } from '../lib/changbu'
+import { toRenderableAttachmentUrl } from '../lib/attachmentUrl'
+import { extractImageFiles } from '../lib/imageTransfer'
+import { parseMarkdownImage } from '../lib/markdownImage'
 
 /* ------------------------------------------------------------------ */
 /*  Props                                                              */
@@ -127,6 +130,33 @@ const livePreviewTheme = CMEditorView.theme({
   '.cm-link-text': {
     color: '#2563eb',
     textDecoration: 'underline',
+  },
+  '.cm-image-widget': {
+    display: 'inline-flex',
+    flexDirection: 'column',
+    width: '100%',
+    maxWidth: '100%',
+    margin: '10px 0',
+    overflow: 'hidden',
+    borderRadius: '12px',
+    border: '1px solid #e7e5e4',
+    backgroundColor: '#fafaf9',
+    verticalAlign: 'top',
+  },
+  '.cm-image-widget img': {
+    display: 'block',
+    width: '100%',
+    maxHeight: '320px',
+    objectFit: 'contain',
+    backgroundColor: '#f5f5f4',
+  },
+  '.cm-image-widget-caption': {
+    padding: '8px 10px',
+    fontSize: '11px',
+    lineHeight: '1.4',
+    color: '#78716c',
+    borderTop: '1px solid #e7e5e4',
+    backgroundColor: '#fcfcfb',
   },
   /* 标题：字号递减，仅标题用衬线字体 */
   '.cm-heading-1': {
@@ -269,6 +299,22 @@ class LivePreviewPlugin implements PluginValue {
         if (isOnCursorLine(node.from, node.to)) return
 
         switch (node.name) {
+          /* ---------- 图片 ---------- */
+          case 'Image': {
+            const parsed = parseMarkdownImage(doc.sliceString(node.from, node.to))
+
+            if (!parsed) {
+              break
+            }
+
+            ranges.push(
+              Decoration.replace({
+                widget: new MarkdownImageWidget(parsed.src, parsed.alt),
+              }).range(node.from, node.to),
+            )
+            break
+          }
+
           /* ---------- 标题标记 ---------- */
           case 'HeaderMark': {
             ranges.push(Decoration.replace({}).range(node.from, node.to))
@@ -407,6 +453,46 @@ class HorizontalRuleWidget extends WidgetType {
   }
 }
 
+class MarkdownImageWidget extends WidgetType {
+  private readonly src: string
+  private readonly alt: string
+
+  constructor(src: string, alt: string) {
+    super()
+    this.src = src
+    this.alt = alt
+  }
+
+  eq(other: MarkdownImageWidget): boolean {
+    return other.src === this.src && other.alt === this.alt
+  }
+
+  ignoreEvent(): boolean {
+    return false
+  }
+
+  toDOM(): HTMLElement {
+    const wrapper = document.createElement('span')
+    wrapper.className = 'cm-image-widget'
+
+    const image = document.createElement('img')
+    image.src = toRenderableAttachmentUrl(this.src)
+    image.alt = this.alt
+    image.loading = 'lazy'
+    image.draggable = false
+    wrapper.appendChild(image)
+
+    if (this.alt) {
+      const caption = document.createElement('span')
+      caption.className = 'cm-image-widget-caption'
+      caption.textContent = this.alt
+      wrapper.appendChild(caption)
+    }
+
+    return wrapper
+  }
+}
+
 const livePreviewPlugin = ViewPlugin.fromClass(LivePreviewPlugin, {
   decorations: (v) => v.decorations,
 })
@@ -415,26 +501,63 @@ const livePreviewPlugin = ViewPlugin.fromClass(LivePreviewPlugin, {
 /*  图片粘贴扩展                                                       */
 /* ------------------------------------------------------------------ */
 
-function imagePasteExtension(onImageInsert: (markdown: string) => void): Extension {
-  return CMEditorView.domEventHandlers({
-    paste(event) {
-      const items = Array.from(event.clipboardData?.items ?? [])
-      const imageFiles = items
-        .filter((item) => item.type.startsWith('image/'))
-        .map((item) => item.getAsFile())
-        .filter((file): file is File => Boolean(file))
+async function saveAndInsertImages(
+  view: EditorView,
+  imageFiles: File[],
+  position: number,
+): Promise<void> {
+  let insertPosition = position
 
-      if (imageFiles.length === 0) return
+  for (const imageFile of imageFiles) {
+    const dataUrl = await readFileAsDataUrl(imageFile)
+    const saved = await changbu.attachments.saveImage(dataUrl, imageFile.name)
+    const snippet = `${insertPosition > 0 ? '\n\n' : ''}![${saved.markdownAlt}](${saved.fileUrl})\n\n`
+
+    view.dispatch({
+      changes: { from: insertPosition, insert: snippet },
+      selection: { anchor: insertPosition + snippet.length },
+    })
+
+    insertPosition += snippet.length
+  }
+
+  view.focus()
+}
+
+function imageTransferExtension(): Extension {
+  return CMEditorView.domEventHandlers({
+    paste(event, view) {
+      const imageFiles = extractImageFiles(event.clipboardData)
+
+      if (imageFiles.length === 0) {
+        return false
+      }
 
       event.preventDefault()
+      void saveAndInsertImages(view, imageFiles, view.state.selection.main.head)
+      return true
+    },
 
-      void (async () => {
-        for (const imageFile of imageFiles) {
-          const dataUrl = await readFileAsDataUrl(imageFile)
-          const saved = await changbu.attachments.saveImage(dataUrl, imageFile.name)
-          onImageInsert(`\n\n![${saved.markdownAlt}](${saved.fileUrl})\n\n`)
-        }
-      })()
+    dragover(event) {
+      if (extractImageFiles(event.dataTransfer).length === 0) {
+        return false
+      }
+
+      event.preventDefault()
+      return true
+    },
+
+    drop(event, view) {
+      const imageFiles = extractImageFiles(event.dataTransfer)
+
+      if (imageFiles.length === 0) {
+        return false
+      }
+
+      event.preventDefault()
+      const position = view.posAtCoords({ x: event.clientX, y: event.clientY }) ?? view.state.selection.main.head
+      void saveAndInsertImages(view, imageFiles, position)
+      return true
     },
   })
 }
@@ -482,7 +605,7 @@ export function MarkdownLivePreview({
   placeholder,
   className,
 }: MarkdownLivePreviewProps) {
-  const viewRef = { current: null as EditorView | null }
+  const viewRef = useRef<EditorView | null>(null)
 
   const extensions = useMemo(() => {
     const exts: Extension[] = [
@@ -491,15 +614,7 @@ export function MarkdownLivePreview({
       livePreviewPlugin,
       livePreviewTheme,
       CMEditorView.lineWrapping,
-      imagePasteExtension((md) => {
-        const view = viewRef.current
-        if (!view) return
-        const cursor = view.state.selection.main.head
-        view.dispatch({
-          changes: { from: cursor, insert: md },
-          selection: { anchor: cursor + md.length },
-        })
-      }),
+      imageTransferExtension(),
     ]
 
     if (placeholder) {
@@ -507,7 +622,6 @@ export function MarkdownLivePreview({
     }
 
     return exts
-  // eslint-disable-next-line react-hooks/exhaustive-deps -- viewRef 不需要作为依赖
   }, [placeholder])
 
   return (
