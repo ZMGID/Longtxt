@@ -1,5 +1,7 @@
 import { startTransition, useEffect, useRef, useState } from 'react'
 
+import { useQueryClient } from '@tanstack/react-query'
+
 import {
   DEFAULT_AI_CONFIG,
   DEFAULT_DOC_GENERATION_SETTINGS,
@@ -21,11 +23,11 @@ import type {
   DocGenerationSettings,
   RelatedBlockResult,
   SearchResult,
-  Snapshot,
   UISettings,
 } from '../shared/types'
 import { AppSidebar, type AppView } from './components/AppSidebar'
 import { BlockCard } from './components/BlockCard'
+import { ChangbuEventBridge } from './components/ChangbuEventBridge'
 import { GraphView } from './components/GraphView'
 import { InputBar } from './components/InputBar'
 import { NotebookWorkspace } from './components/NotebookWorkspace'
@@ -35,10 +37,14 @@ import { SnapshotsView } from './components/SnapshotsView'
 import { Timeline } from './components/Timeline'
 import { ToastProvider } from './components/Toast'
 import { useToast } from './components/toast-context'
+import { useAppMeta } from './hooks/useAppMeta'
 import { useBlocks } from './hooks/useBlocks'
+import { useGraphData } from './hooks/useGraphData'
 import { useNotebooks } from './hooks/useNotebooks'
+import { useSnapshots } from './hooks/useSnapshots'
 import { useTags } from './hooks/useTags'
 import { changbu } from './lib/changbu'
+import { queryKeys } from './lib/queryKeys'
 
 interface DocumentState {
   status: 'idle' | 'streaming' | 'done' | 'error'
@@ -90,8 +96,9 @@ export default function App() {
 
 function AppInner() {
   const { toast } = useToast()
+  const queryClient = useQueryClient()
   const { blocks, loading, loadingMore, hasMore, error, createBlock, updateBlock, removeBlock, addTag, removeTag, loadMore, ensureBlockLoaded } = useBlocks()
-  const { tags, refresh: refreshTags } = useTags()
+  const { tags } = useTags()
   const {
     notebooks,
     selectedNotebookId,
@@ -123,33 +130,27 @@ function AppInner() {
   const [config, setConfig] = useState<AIConfig>(DEFAULT_AI_CONFIG)
   const [docGenerationSettings, setDocGenerationSettings] = useState<DocGenerationSettings>(DEFAULT_DOC_GENERATION_SETTINGS)
   const [uiSettings, setUiSettings] = useState<UISettings>(DEFAULT_UI_SETTINGS)
-  const [meta, setMeta] = useState<AppMeta | null>(null)
   const [settingsSaving, setSettingsSaving] = useState(false)
   const [settingsTesting, setSettingsTesting] = useState(false)
   const [testResult, setTestResult] = useState<ApiTestResult | null>(null)
   const searchInputRef = useRef<HTMLTextAreaElement | null>(null)
-  const [graphLoading, setGraphLoading] = useState(false)
-  const [graphData, setGraphData] = useState<{ nodes: import('../shared/types').GraphNode[]; edges: import('../shared/types').GraphEdge[] }>({
-    nodes: [],
-    edges: [],
-  })
   const [graphTagFilters, setGraphTagFilters] = useState<string[]>([])
-  const [graphRefreshVersion, setGraphRefreshVersion] = useState(0)
   const [selectedGraphBlockId, setSelectedGraphBlockId] = useState<string | null>(null)
   const [selectedGraphBlockFallback, setSelectedGraphBlockFallback] = useState<Block | null>(null)
   const [focusedBlockId, setFocusedBlockId] = useState<string | null>(null)
-  const [snapshots, setSnapshots] = useState<Snapshot[]>([])
   const [snapshotQuery, setSnapshotQuery] = useState('')
   const [selectedSnapshotId, setSelectedSnapshotId] = useState<string | null>(null)
   const [importPreview, setImportPreview] = useState<import('../shared/types').ImportPreview | null>(null)
   const [relatedBlocks, setRelatedBlocks] = useState<RelatedBlockResult[] | null>(null)
   const [relatedLoading, setRelatedLoading] = useState(false)
   const graphSelectionRequestRef = useRef<string | null>(null)
-  const activeViewRef = useRef<AppView>('timeline')
-
-  useEffect(() => {
-    activeViewRef.current = activeView
-  }, [activeView])
+  const metaQuery = useAppMeta()
+  const meta = metaQuery.data ?? null
+  const graphQuery = useGraphData(graphTagFilters, activeView === 'graph')
+  const graphData = graphQuery.data ?? { nodes: [], edges: [] }
+  const graphLoading = graphQuery.isPending || graphQuery.isFetching
+  const snapshotsQuery = useSnapshots(snapshotQuery, null, activeView === 'snapshots')
+  const snapshots = snapshotsQuery.data ?? []
 
   useEffect(() => {
     let active = true
@@ -192,12 +193,6 @@ function AppInner() {
       setUiSettings(parseUISettings(saved))
     })
 
-    void refreshMeta().then((appMeta) => {
-      if (active) {
-        setMeta(appMeta)
-      }
-    })
-
     const unsubscribe = changbu.events.onDocGenerationChunk((chunk) => {
       if (!active) {
         return
@@ -218,14 +213,7 @@ function AppInner() {
 
       if (chunk.done && touchedSearch) {
         setGenerating(false)
-      }
-
-      if (chunk.done && touchedSearch) {
-        void refreshMeta().then((appMeta) => {
-          if (active) {
-            setMeta(appMeta)
-          }
-        })
+        void refreshMeta()
       }
     })
 
@@ -236,79 +224,18 @@ function AppInner() {
   }, [])
 
   useEffect(() => {
-    if (activeView !== 'graph') {
+    if (!snapshotsQuery.isSuccess) {
       return
     }
 
-    let active = true
-    setGraphLoading(true)
-    void changbu.graph
-      .getData(graphTagFilters)
-      .then((nextGraphData) => {
-        if (active) {
-          setGraphData(nextGraphData)
-        }
-      })
-      .finally(() => {
-        if (active) {
-          setGraphLoading(false)
-        }
-      })
-
-    return () => {
-      active = false
-    }
-  }, [activeView, graphTagFilters, graphRefreshVersion])
-
-  useEffect(() => {
-    let timer: ReturnType<typeof setTimeout> | null = null
-
-    const unsubscribe = changbu.events.onBlockChanged(() => {
-      if (activeViewRef.current !== 'graph') {
-        return
+    setSelectedSnapshotId((currentId) => {
+      if (snapshots.length === 0) {
+        return null
       }
 
-      if (timer) {
-        clearTimeout(timer)
-      }
-
-      timer = setTimeout(() => {
-        setGraphRefreshVersion((current) => current + 1)
-      }, 160)
+      return currentId && snapshots.some((snapshot) => snapshot.id === currentId) ? currentId : snapshots[0].id
     })
-
-    return () => {
-      if (timer) {
-        clearTimeout(timer)
-      }
-
-      unsubscribe()
-    }
-  }, [])
-
-  useEffect(() => {
-    if (activeView !== 'snapshots') {
-      return
-    }
-
-    let active = true
-    void changbu.snapshots.list(snapshotQuery).then((items) => {
-      if (active) {
-        setSnapshots(items)
-        setSelectedSnapshotId((currentId) => {
-          if (items.length === 0) {
-            return null
-          }
-
-          return currentId && items.some((snapshot) => snapshot.id === currentId) ? currentId : items[0].id
-        })
-      }
-    })
-
-    return () => {
-      active = false
-    }
-  }, [activeView, snapshotQuery])
+  }, [snapshots, snapshotsQuery.isSuccess])
 
   useEffect(() => {
     if (activeView !== 'search') {
@@ -347,9 +274,13 @@ function AppInner() {
   }, [activeView, graphData.nodes, selectedGraphBlockId])
 
   async function refreshMeta(): Promise<AppMeta> {
-    const nextMeta = await changbu.settings.getMeta()
-    setMeta(nextMeta)
-    return nextMeta
+    const result = await metaQuery.refetch()
+
+    if (!result.data) {
+      throw new Error('刷新应用状态失败。')
+    }
+
+    return result.data
   }
 
   function handleConfigChange(nextConfig: AIConfig): void {
@@ -509,17 +440,6 @@ function AppInner() {
     }
   }
 
-  async function refreshSnapshots(nextQuery = snapshotQuery): Promise<void> {
-    const items = await changbu.snapshots.list(nextQuery)
-    setSnapshots(items)
-    if (items.length > 0 && (!selectedSnapshotId || !items.some((snapshot) => snapshot.id === selectedSnapshotId))) {
-      setSelectedSnapshotId(items[0].id)
-    }
-    if (items.length === 0) {
-      setSelectedSnapshotId(null)
-    }
-  }
-
   async function handleSaveSettings(): Promise<void> {
     setSettingsSaving(true)
     const normalizedDocGenerationSettings = normalizeDocGenerationSettings(docGenerationSettings)
@@ -565,7 +485,7 @@ function AppInner() {
     }
 
     const snapshot = await changbu.snapshots.save(document.topic, document.content, document.blockIds)
-    await refreshSnapshots()
+    await queryClient.invalidateQueries({ queryKey: queryKeys.snapshotsRoot() })
     setSelectedSnapshotId(snapshot.id)
     setActiveView('snapshots')
     toast('success', '文档快照已保存。')
@@ -670,14 +590,8 @@ function AppInner() {
               tagSuggestions={tags}
               onSave={updateBlock}
               onDelete={removeBlock}
-              onAddTag={async (blockId, tagName) => {
-                await addTag(blockId, tagName)
-                await refreshTags()
-              }}
-              onRemoveTag={async (blockId, tagId) => {
-                await removeTag(blockId, tagId)
-                await refreshTags()
-              }}
+              onAddTag={addTag}
+              onRemoveTag={removeTag}
               onTagClick={(tagName) => {
                 void handleBrowseTag(tagName)
               }}
@@ -721,14 +635,8 @@ function AppInner() {
                 toast('success', '新块已加入当前笔记本。')
               }}
               onUpdateBlock={updateBlock}
-              onAddTag={async (blockId, tagName) => {
-                await addTag(blockId, tagName)
-                await refreshTags()
-              }}
-              onRemoveTag={async (blockId, tagId) => {
-                await removeTag(blockId, tagId)
-                await refreshTags()
-              }}
+              onAddTag={addTag}
+              onRemoveTag={removeTag}
               onTagClick={(tagName) => {
                 void handleNotebookBrowseTag(tagName)
               }}
@@ -857,7 +765,7 @@ function AppInner() {
             onSelectSnapshot={setSelectedSnapshotId}
             onRemoveSnapshot={async (snapshotId) => {
               await changbu.snapshots.remove(snapshotId)
-              await refreshSnapshots()
+              await queryClient.invalidateQueries({ queryKey: queryKeys.snapshotsRoot() })
               toast('success', '文档快照已删除。')
             }}
             onExportMarkdown={async (options) => {
@@ -964,66 +872,70 @@ function AppInner() {
   }
 
   return (
-    <div className="flex h-screen overflow-hidden bg-stone-100 text-stone-900">
-      <AppSidebar
-        activeView={activeView}
-        blockCount={meta?.totalBlockCount ?? blocks.length}
-        aiStatusLabel={aiStatusLabel}
-        meta={meta}
-        onSelectView={setActiveView}
-      />
+    <>
+      <ChangbuEventBridge />
 
-      <main className="flex min-w-0 flex-1 flex-col overflow-hidden bg-white/[0.92]">
-        {/* macOS 交通灯按钮区域 — 与侧边栏对齐 */}
-        <div className="window-drag-region h-12 shrink-0 flex items-end px-5 pb-1">
-          <h2 className="text-[13px] font-semibold text-stone-900">{activeViewTitle}</h2>
-        </div>
+      <div className="flex h-screen overflow-hidden bg-stone-100 text-stone-900">
+        <AppSidebar
+          activeView={activeView}
+          blockCount={meta?.totalBlockCount ?? blocks.length}
+          aiStatusLabel={aiStatusLabel}
+          meta={meta}
+          onSelectView={setActiveView}
+        />
 
-        <div className="flex flex-1 overflow-hidden px-5 py-3">
-          <div key={activeView} className="flex min-w-0 flex-1 flex-col overflow-hidden animate-[fadeIn_200ms_ease-out]">
-            {renderActiveView()}
+        <main className="flex min-w-0 flex-1 flex-col overflow-hidden bg-white/[0.92]">
+          {/* macOS 交通灯按钮区域 — 与侧边栏对齐 */}
+          <div className="window-drag-region h-12 shrink-0 flex items-end px-5 pb-1">
+            <h2 className="text-[13px] font-semibold text-stone-900">{activeViewTitle}</h2>
           </div>
 
-          {relatedBlocks !== null && (
-            <aside className="ml-4 w-80 shrink-0 overflow-y-auto rounded-lg border border-stone-200 bg-stone-50/80 p-4">
-              <div className="mb-3 flex items-center justify-between">
-                <h3 className="text-xs font-medium uppercase tracking-wider text-stone-400">相关块</h3>
-                <button
-                  type="button"
-                  onClick={() => setRelatedBlocks(null)}
-                  className="text-xs text-stone-400 transition hover:text-stone-600"
-                >
-                  关闭
-                </button>
-              </div>
-              {relatedLoading ? (
-                <p className="py-8 text-center text-sm text-stone-400">查找中…</p>
-              ) : relatedBlocks.length === 0 ? (
-                <p className="py-8 text-center text-sm text-stone-400">未找到相关块。</p>
-              ) : (
-                <div className="space-y-2">
-                  {relatedBlocks.map(({ block: related, score }) => (
-                    <div key={related.id}>
-                      <BlockCard
-                        block={related}
-                        compact
-                        editable={false}
-                        headerActions={
-                          <span className="text-[11px] font-medium text-stone-400">
-                            {Math.round(score * 100)}%
-                          </span>
-                        }
-                        onTagClick={(tagName) => { void handleBrowseTag(tagName) }}
-                      />
-                    </div>
-                  ))}
+          <div className="flex flex-1 overflow-hidden px-5 py-3">
+            <div key={activeView} className="flex min-w-0 flex-1 flex-col overflow-hidden animate-[fadeIn_200ms_ease-out]">
+              {renderActiveView()}
+            </div>
+
+            {relatedBlocks !== null && (
+              <aside className="ml-4 w-80 shrink-0 overflow-y-auto rounded-lg border border-stone-200 bg-stone-50/80 p-4">
+                <div className="mb-3 flex items-center justify-between">
+                  <h3 className="text-xs font-medium uppercase tracking-wider text-stone-400">相关块</h3>
+                  <button
+                    type="button"
+                    onClick={() => setRelatedBlocks(null)}
+                    className="text-xs text-stone-400 transition hover:text-stone-600"
+                  >
+                    关闭
+                  </button>
                 </div>
-              )}
-            </aside>
-          )}
-        </div>
-      </main>
-    </div>
+                {relatedLoading ? (
+                  <p className="py-8 text-center text-sm text-stone-400">查找中…</p>
+                ) : relatedBlocks.length === 0 ? (
+                  <p className="py-8 text-center text-sm text-stone-400">未找到相关块。</p>
+                ) : (
+                  <div className="space-y-2">
+                    {relatedBlocks.map(({ block: related, score }) => (
+                      <div key={related.id}>
+                        <BlockCard
+                          block={related}
+                          compact
+                          editable={false}
+                          headerActions={
+                            <span className="text-[11px] font-medium text-stone-400">
+                              {Math.round(score * 100)}%
+                            </span>
+                          }
+                          onTagClick={(tagName) => { void handleBrowseTag(tagName) }}
+                        />
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </aside>
+            )}
+          </div>
+        </main>
+      </div>
+    </>
   )
 }
 

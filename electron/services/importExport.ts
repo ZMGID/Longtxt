@@ -5,7 +5,6 @@ import Database from 'better-sqlite3'
 import { v4 as uuid } from 'uuid'
 
 import type { AIExecutionMode, BlockStatus, ExportOptions, ImportConflictStrategy, ImportPreview, TagKind } from '../../shared/types'
-import { deleteBlockRecord } from '../db/blocks'
 import { getOrCreateTag } from '../db/tags'
 import { cleanupOrphanAttachments, importLocalAttachmentFile, listBlockAttachments, saveImageDataUrl, syncBlockAttachmentRecords } from './attachments'
 
@@ -398,9 +397,11 @@ export async function confirmImportJob(
   dataDirectory: string,
   job: ImportJob,
   conflictStrategy: ImportConflictStrategy,
-): Promise<{ imported: number; importedIds: string[] }> {
+): Promise<{ imported: number; importedIds: string[]; createdIds: string[]; updatedIds: string[] }> {
   let imported = 0
   const importedIds: string[] = []
+  const createdIds: string[] = []
+  const updatedIds: string[] = []
 
   for (const block of job.blocks) {
     let content = block.content
@@ -423,10 +424,6 @@ export async function confirmImportJob(
       if (exists && conflictStrategy === 'skip_all') {
         continue
       }
-
-      if (exists && conflictStrategy === 'overwrite_all') {
-        deleteBlockRecord(db, block.id)
-      }
     }
 
     const id = block.id ?? uuid()
@@ -434,13 +431,35 @@ export async function confirmImportJob(
     const updatedAt = block.updatedAt ?? createdAt
     const status = job.format === 'json' ? sanitizeImportedStatus(block.status) : 'ready'
     const aiMode = job.format === 'json' ? sanitizeImportedAiMode(block.aiMode) : 'mock'
+    const exists = db.prepare(`SELECT 1 FROM blocks WHERE id = ?`).get(id)
 
-    db.prepare(
-      `
-        INSERT INTO blocks (id, content, summary, status, ai_mode, error_message, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-      `,
-    ).run(id, content, block.summary ?? null, status, aiMode, block.errorMessage ?? null, createdAt, updatedAt)
+    if (exists) {
+      db.prepare(
+        `
+          UPDATE blocks
+          SET
+            content = ?,
+            summary = ?,
+            status = ?,
+            ai_mode = ?,
+            error_message = ?,
+            created_at = ?,
+            updated_at = ?
+          WHERE id = ?
+        `,
+      ).run(content, block.summary ?? null, status, aiMode, block.errorMessage ?? null, createdAt, updatedAt, id)
+
+      db.prepare(`DELETE FROM block_tags WHERE block_id = ?`).run(id)
+      updatedIds.push(id)
+    } else {
+      db.prepare(
+        `
+          INSERT INTO blocks (id, content, summary, status, ai_mode, error_message, created_at, updated_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        `,
+      ).run(id, content, block.summary ?? null, status, aiMode, block.errorMessage ?? null, createdAt, updatedAt)
+      createdIds.push(id)
+    }
 
     syncBlockAttachmentRecords(db, dataDirectory, id, content)
 
@@ -461,5 +480,5 @@ export async function confirmImportJob(
 
   await cleanupOrphanAttachments(db, dataDirectory)
 
-  return { imported, importedIds }
+  return { imported, importedIds, createdIds, updatedIds }
 }

@@ -268,6 +268,15 @@ export interface BlockChangedEvent {
   reason: 'created' | 'updated' | 'enriched' | 'deleted' | 'tagged'
 }
 
+export interface NotebookChangedEvent {
+  notebookIds: string[]
+  reason: 'created' | 'updated' | 'deleted' | 'items-changed' | 'block-linked' | 'block-unlinked' | 'reference-review-updated'
+}
+
+export interface MetaChangedEvent {
+  reason: 'settings' | 'ai-test' | 'vector-queue' | 'vector-failure' | 'vector-retry' | 'doc-generation'
+}
+
 export interface DocGenerationStart {
   requestId: string
   topic: string
@@ -359,6 +368,8 @@ export interface ChangbuApi {
   }
   events: {
     onBlockChanged(listener: (event: BlockChangedEvent) => void): () => void
+    onNotebooksChanged(listener: (event: NotebookChangedEvent) => void): () => void
+    onMetaChanged(listener: (event: MetaChangedEvent) => void): () => void
     onDocGenerationChunk(listener: (chunk: DocGenerationChunk) => void): () => void
   }
 }

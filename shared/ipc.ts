@@ -66,6 +66,8 @@ export const IPC_CHANNELS = {
   },
   events: {
     blockChanged: 'events:block-changed',
+    notebooksChanged: 'events:notebooks-changed',
+    metaChanged: 'events:meta-changed',
     docGenerationChunk: 'events:doc-generation-chunk',
   },
 } as const

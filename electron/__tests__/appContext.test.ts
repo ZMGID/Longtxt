@@ -8,9 +8,12 @@ import { tmpdir } from 'node:os'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { DOC_GENERATION_SETTINGS_KEY } from '../../shared/config'
-import type { AIConfig, BlockChangedEvent, DocGenerationChunk } from '../../shared/types'
+import type { AIConfig, BlockChangedEvent, DocGenerationChunk, MetaChangedEvent, NotebookChangedEvent } from '../../shared/types'
 import { createAppContext, type AppContext, type AppContextOptions } from '../appContext'
 import { createConfigFingerprint } from '../services/ai'
+
+const ONE_PIXEL_PNG_DATA_URL =
+  'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO0pS0YAAAAASUVORK5CYII='
 
 const createdContexts: AppContext[] = []
 const createdDirectories: string[] = []
@@ -312,6 +315,44 @@ describe('app context', () => {
     expect(await context.listBlocks()).toEqual([])
   })
 
+  it('emits notebook change events for notebook CRUD, item changes, reviews, and linked block updates', async () => {
+    const notebookEvents: NotebookChangedEvent[] = []
+    const context = makeContext({
+      onNotebooksChanged: (event) => {
+        notebookEvents.push(event)
+      },
+    })
+
+    const block = await context.createBlock('需要在笔记本里持续维护的一条记录。')
+    await context.whenIdle()
+
+    const notebook = await context.createNotebook('发布工作台')
+    await context.addBlockToNotebook(notebook.id, block.id)
+    const notebookWithHeading = await context.createNotebookStructureItem(notebook.id, { type: 'heading', content: '大纲' })
+    const heading = notebookWithHeading.items.find((item) => item.type === 'heading')
+
+    if (!heading || heading.type !== 'heading') {
+      throw new Error('Expected heading item to exist.')
+    }
+
+    await context.updateNotebookStructureItem(notebook.id, heading.id, { content: '正式大纲' })
+    await context.updateNotebookReferenceReview(notebook.id, block.id, { pinned: true }, '发布总结')
+    await context.updateBlock(block.id, '需要在笔记本里持续维护的一条正式记录。')
+    await context.whenIdle()
+    await context.removeBlock(block.id)
+    await context.removeNotebook(notebook.id)
+
+    expect(notebookEvents).toEqual(expect.arrayContaining([
+      { notebookIds: [notebook.id], reason: 'created' },
+      { notebookIds: [notebook.id], reason: 'block-linked' },
+      { notebookIds: [notebook.id], reason: 'items-changed' },
+      { notebookIds: [notebook.id], reason: 'reference-review-updated' },
+      { notebookIds: [notebook.id], reason: 'updated' },
+      { notebookIds: [notebook.id], reason: 'block-unlinked' },
+      { notebookIds: [notebook.id], reason: 'deleted' },
+    ]))
+  })
+
   it('persists settings and reports runtime meta', async () => {
     const context = makeContext()
     const config = {
@@ -358,6 +399,61 @@ describe('app context', () => {
     expect(meta.lastAiTestResult?.success).toBe(true)
     expect(meta.resolvedBaseUrl).toBe('https://api.example.com')
     expect(typeof meta.vectorSchemaReady).toBe('boolean')
+  })
+
+  it('emits meta change events for settings, api tests, and doc generation', async () => {
+    const originalFetch = global.fetch
+    const metaEvents: MetaChangedEvent[] = []
+    const context = makeContext({
+      onMetaChanged: (event) => {
+        metaEvents.push(event)
+      },
+    })
+    const encoder = new TextEncoder()
+    const stream = new ReadableStream({
+      start(controller) {
+        controller.enqueue(encoder.encode('data: {"choices":[{"delta":{"content":"OK"}}]}\n\n'))
+        controller.enqueue(encoder.encode('data: [DONE]\n\n'))
+        controller.close()
+      },
+    })
+
+    await context.generateDocument('先走一次 mock 文档生成')
+    await context.whenIdle()
+
+    global.fetch = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            data: [{ id: 'text-embedding-3-small' }, { id: 'gpt-4o-mini' }],
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } },
+        ),
+      )
+      .mockResolvedValueOnce(makeEmbeddingResponse([[0.11, 0.12, 0.13, 0.14]]))
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            choices: [{ message: { content: '测试成功' } }],
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } },
+        ),
+      )
+      .mockResolvedValueOnce(
+        new Response(stream, {
+          status: 200,
+          headers: { 'Content-Type': 'text/event-stream' },
+        }),
+      ) as typeof global.fetch
+
+    await context.setSetting('ai_config', JSON.stringify(buildLiveConfig()))
+    const probe = await context.testApi(buildLiveConfig())
+
+    expect(probe.success).toBe(true)
+    expect(metaEvents.map((event) => event.reason)).toEqual(expect.arrayContaining(['doc-generation', 'settings', 'ai-test']))
+
+    global.fetch = originalFetch
   })
 
   it('switches to live mode after a successful probe for the saved config', async () => {
@@ -780,6 +876,79 @@ describe('app context', () => {
     global.fetch = originalFetch
   })
 
+  it('preserves notebook relations while replacing tags and attachments on json overwrite import', async () => {
+    const { context, directory } = makeContextWithDirectory()
+    const savedImage = await context.saveImage(ONE_PIXEL_PNG_DATA_URL, 'before.png')
+    const block = await context.createBlock(`导入前的原始内容。\n\n![原图](${savedImage.fileUrl})`)
+    await context.whenIdle()
+    await context.addTag(block.id, '旧标签')
+
+    const notebook = await context.createNotebook('导入工作台')
+    await context.addBlockToNotebook(notebook.id, block.id)
+    await context.updateNotebookReferenceReview(notebook.id, block.id, { pinned: true, locked: true }, '导入检查')
+
+    const overwritePath = join(directory, 'overwrite.json')
+    writeFileSync(
+      overwritePath,
+      JSON.stringify({
+        version: 2,
+        exportedAt: new Date().toISOString(),
+        blocks: [
+          {
+            id: block.id,
+            content: '导入后的新内容，不再引用任何图片。',
+            summary: '导入后的摘要',
+            createdAt: block.createdAt,
+            updatedAt: new Date().toISOString(),
+            status: 'error',
+            aiMode: 'live',
+            errorMessage: '导入后的错误信息',
+            tags: [
+              { name: '新标签', source: 'manual', kind: 'user' },
+            ],
+            attachments: [],
+          },
+        ],
+      }, null, 2),
+      'utf8',
+    )
+
+    const preview = await context.previewImportJson(overwritePath)
+    expect(preview?.conflicts).toBe(1)
+
+    const imported = await context.confirmImport(preview!.importId, 'overwrite_all')
+    expect(imported.imported).toBe(1)
+
+    const importedBlock = await context.getBlock(block.id)
+    expect(importedBlock.content).toBe('导入后的新内容，不再引用任何图片。')
+    expect(importedBlock.summary).toBe('导入后的摘要')
+    expect(importedBlock.status).toBe('error')
+    expect(importedBlock.aiMode).toBe('live')
+    expect(importedBlock.errorMessage).toBe('导入后的错误信息')
+    expect(importedBlock.tags.map((tag) => tag.name)).toEqual(['新标签'])
+
+    const notebookAfterImport = await context.getNotebook(notebook.id)
+    expect(notebookAfterImport.items.filter((item) => item.type === 'block').map((item) => item.blockId)).toContain(block.id)
+
+    const previewAfterImport = await context.getNotebookReferencePreview(notebook.id, '导入检查')
+    const importedCandidate = previewAfterImport.candidates.find((candidate) => candidate.block.id === block.id)
+    expect(importedCandidate?.review).toMatchObject({
+      pinned: true,
+      locked: true,
+      excluded: false,
+    })
+
+    const db = openDb(directory)
+    const notebookLinks = db.prepare('SELECT COUNT(*) AS total FROM notebook_items WHERE notebook_id = ? AND block_id = ?').get(notebook.id, block.id) as { total: number }
+    const reviewLinks = db.prepare('SELECT COUNT(*) AS total FROM notebook_reference_reviews WHERE notebook_id = ? AND block_id = ?').get(notebook.id, block.id) as { total: number }
+    const attachmentLinks = db.prepare('SELECT COUNT(*) AS total FROM block_attachments WHERE block_id = ?').get(block.id) as { total: number }
+    db.close()
+
+    expect(notebookLinks.total).toBe(1)
+    expect(reviewLinks.total).toBe(1)
+    expect(attachmentLinks.total).toBe(0)
+  })
+
   it('cleans pending vector jobs when a block is deleted', async () => {
     const originalFetch = global.fetch
     const deferredEmbedding = createDeferredResponse()
@@ -814,6 +983,36 @@ describe('app context', () => {
     expect(fetchMock).toHaveBeenCalledTimes(2)
 
     global.fetch = originalFetch
+  })
+
+  it('emits meta change events when failed vectors are retried', async () => {
+    const metaEvents: MetaChangedEvent[] = []
+    const { context, directory } = makeContextWithDirectory({
+      onMetaChanged: (event) => {
+        metaEvents.push(event)
+      },
+    })
+
+    const db = openDb(directory)
+    db.prepare(
+      `
+        INSERT INTO blocks (id, content, status, ai_mode, created_at, updated_at)
+        VALUES (?, ?, 'ready', 'mock', ?, ?)
+      `,
+    ).run('block-retry-1', '需要重试的块。', '2026-04-01T09:00:00.000Z', '2026-04-01T09:00:00.000Z')
+    db.prepare(
+      `
+        INSERT INTO failed_block_vectors (block_id, content, error_message, failed_at)
+        VALUES (?, ?, ?, ?)
+      `,
+    ).run('block-retry-1', '需要重试的块。', 'embedding unavailable', '2026-04-01T09:00:00.000Z')
+    db.close()
+
+    const retried = await context.retryFailedVectors()
+    await context.whenIdle()
+
+    expect(retried).toBe(1)
+    expect(metaEvents.map((event) => event.reason)).toContain('vector-retry')
   })
 
   it('returns null when import or export pickers are cancelled', async () => {

@@ -1,13 +1,27 @@
 import { contextBridge, ipcRenderer } from 'electron'
 
 import { IPC_CHANNELS } from '../shared/ipc'
-import type { BlockChangedEvent, ChangbuApi, DocGenerationChunk } from '../shared/types'
+import type { BlockChangedEvent, ChangbuApi, DocGenerationChunk, MetaChangedEvent, NotebookChangedEvent } from '../shared/types'
 
 const blockListeners = new Set<(event: BlockChangedEvent) => void>()
+const notebookListeners = new Set<(event: NotebookChangedEvent) => void>()
+const metaListeners = new Set<(event: MetaChangedEvent) => void>()
 const docListeners = new Set<(chunk: DocGenerationChunk) => void>()
 
 ipcRenderer.on(IPC_CHANNELS.events.blockChanged, (_event, payload: BlockChangedEvent) => {
   for (const listener of blockListeners) {
+    listener(payload)
+  }
+})
+
+ipcRenderer.on(IPC_CHANNELS.events.notebooksChanged, (_event, payload: NotebookChangedEvent) => {
+  for (const listener of notebookListeners) {
+    listener(payload)
+  }
+})
+
+ipcRenderer.on(IPC_CHANNELS.events.metaChanged, (_event, payload: MetaChangedEvent) => {
+  for (const listener of metaListeners) {
     listener(payload)
   }
 })
@@ -91,6 +105,18 @@ const api: ChangbuApi = {
       blockListeners.add(listener)
       return () => {
         blockListeners.delete(listener)
+      }
+    },
+    onNotebooksChanged(listener) {
+      notebookListeners.add(listener)
+      return () => {
+        notebookListeners.delete(listener)
+      }
+    },
+    onMetaChanged(listener) {
+      metaListeners.add(listener)
+      return () => {
+        metaListeners.delete(listener)
       }
     },
     onDocGenerationChunk(listener) {

@@ -1,39 +1,18 @@
-import { useEffect, useState } from 'react'
+import { useQuery } from '@tanstack/react-query'
 
-import type { TagSuggestion } from '../../shared/types'
+import { queryKeys } from '../lib/queryKeys'
 import { changbu } from '../lib/changbu'
 
 export function useTags() {
-  const [tags, setTags] = useState<TagSuggestion[]>([])
-
-  useEffect(() => {
-    let active = true
-
-    const loadTags = async () => {
-      const nextTags = await changbu.tags.list()
-
-      if (active) {
-        setTags(nextTags)
-      }
-    }
-
-    void loadTags()
-
-    const unsubscribe = changbu.events.onBlockChanged(() => {
-      void loadTags()
-    })
-
-    return () => {
-      active = false
-      unsubscribe()
-    }
-  }, [])
+  const query = useQuery({
+    queryKey: queryKeys.tags(),
+    queryFn: () => changbu.tags.list(),
+  })
 
   return {
-    tags,
-    refresh: async () => {
-      const nextTags = await changbu.tags.list()
-      setTags(nextTags)
-    },
+    tags: query.data ?? [],
+    loading: query.isPending,
+    error: query.error instanceof Error ? query.error.message : query.error ? '加载标签失败。' : null,
+    refresh: query.refetch,
   }
 }

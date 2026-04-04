@@ -1,7 +1,11 @@
-import { startTransition, useEffect, useRef, useState } from 'react'
+import { useMemo } from 'react'
+
+import { QueryClient, useInfiniteQuery, useQueryClient } from '@tanstack/react-query'
+import type { InfiniteData } from '@tanstack/react-query'
 
 import type { Block } from '../../shared/types'
 import { changbu } from '../lib/changbu'
+import { queryKeys } from '../lib/queryKeys'
 
 const PAGE_SIZE = 40
 
@@ -9,173 +13,111 @@ function sortBlocks(blocks: Block[]): Block[] {
   return [...blocks].sort((left, right) => new Date(right.createdAt).getTime() - new Date(left.createdAt).getTime())
 }
 
-function upsertBlock(blocks: Block[], block: Block): Block[] {
-  const nextBlocks = [...blocks]
-  const existingIndex = nextBlocks.findIndex((item) => item.id === block.id)
-
-  if (existingIndex === -1) {
-    nextBlocks.push(block)
-  } else {
-    nextBlocks[existingIndex] = block
+function flattenPages(data?: InfiniteData<Block[]>): Block[] {
+  if (!data) {
+    return []
   }
 
-  return sortBlocks(nextBlocks)
+  const blockMap = new Map<string, Block>()
+
+  for (const page of data.pages) {
+    for (const block of page) {
+      if (!blockMap.has(block.id)) {
+        blockMap.set(block.id, block)
+      }
+    }
+  }
+
+  return sortBlocks(Array.from(blockMap.values()))
+}
+
+async function invalidateBlockQueries(queryClient: QueryClient): Promise<void> {
+  await Promise.all([
+    queryClient.invalidateQueries({ queryKey: queryKeys.blocks() }),
+    queryClient.invalidateQueries({ queryKey: queryKeys.tags() }),
+    queryClient.invalidateQueries({ queryKey: queryKeys.graphRoot() }),
+  ])
 }
 
 export function useBlocks() {
-  const [blocks, setBlocks] = useState<Block[]>([])
-  const [loadingInitial, setLoadingInitial] = useState(true)
-  const [loadingMore, setLoadingMore] = useState(false)
-  const [hasMore, setHasMore] = useState(true)
-  const [nextOffset, setNextOffset] = useState(0)
-  const [error, setError] = useState<string | null>(null)
-  const blocksRef = useRef<Block[]>([])
-  const hasMoreRef = useRef(true)
-  const loadingMoreRef = useRef(false)
-  const nextOffsetRef = useRef(0)
+  const queryClient = useQueryClient()
+  const query = useInfiniteQuery({
+    queryKey: queryKeys.blocks(),
+    initialPageParam: 0,
+    queryFn: ({ pageParam }) => changbu.blocks.list({ offset: pageParam, limit: PAGE_SIZE }),
+    getNextPageParam: (lastPage, allPages) => (
+      lastPage.length === PAGE_SIZE
+        ? allPages.reduce((count, page) => count + page.length, 0)
+        : undefined
+    ),
+  })
+  const blocks = useMemo(() => flattenPages(query.data), [query.data])
 
-  useEffect(() => {
-    blocksRef.current = blocks
-  }, [blocks])
+  function getLoadedBlocks(): Block[] {
+    return flattenPages(queryClient.getQueryData<InfiniteData<Block[]>>(queryKeys.blocks()))
+  }
 
-  useEffect(() => {
-    hasMoreRef.current = hasMore
-  }, [hasMore])
+  function hasMorePages(): boolean {
+    const cached = queryClient.getQueryData<InfiniteData<Block[]>>(queryKeys.blocks())
+    const lastPage = cached?.pages.at(-1)
 
-  useEffect(() => {
-    loadingMoreRef.current = loadingMore
-  }, [loadingMore])
-
-  useEffect(() => {
-    nextOffsetRef.current = nextOffset
-  }, [nextOffset])
-
-  useEffect(() => {
-    let active = true
-
-    void changbu.blocks
-      .list({ offset: 0, limit: PAGE_SIZE })
-      .then((items) => {
-        if (!active) {
-          return
-        }
-
-        startTransition(() => {
-          setBlocks(sortBlocks(items))
-          setLoadingInitial(false)
-          setNextOffset(items.length)
-          setHasMore(items.length === PAGE_SIZE)
-        })
-      })
-      .catch((reason) => {
-        if (!active) {
-          return
-        }
-
-        setError(reason instanceof Error ? reason.message : '加载块列表失败。')
-        setLoadingInitial(false)
-      })
-
-    const unsubscribe = changbu.events.onBlockChanged((event) => {
-      if (!active) {
-        return
-      }
-
-      startTransition(() => {
-        setBlocks((currentBlocks) => {
-          if (event.reason === 'deleted') {
-            return currentBlocks.filter((block) => block.id !== event.block.id)
-          }
-
-          return upsertBlock(currentBlocks, event.block)
-        })
-      })
-    })
-
-    return () => {
-      active = false
-      unsubscribe()
+    if (!lastPage) {
+      return true
     }
-  }, [])
+
+    return lastPage.length === PAGE_SIZE
+  }
 
   async function loadMore(): Promise<void> {
-    if (loadingMoreRef.current || !hasMoreRef.current) {
+    if (!query.hasNextPage || query.isFetchingNextPage) {
       return
     }
 
-    setLoadingMore(true)
-    setError(null)
-
-    try {
-      const items = await changbu.blocks.list({ offset: nextOffset, limit: PAGE_SIZE })
-      startTransition(() => {
-        setBlocks((currentBlocks) => {
-          /* 新数据优先，但本地已有（可能已被 enrichment 更新）的保留本地版本 */
-          const existingIds = new Set(currentBlocks.map((b) => b.id))
-          const newBlocks = items.filter((b) => !existingIds.has(b.id))
-          return sortBlocks([...currentBlocks, ...newBlocks])
-        })
-        setNextOffset((currentOffset) => currentOffset + items.length)
-        setHasMore(items.length === PAGE_SIZE)
-      })
-    } finally {
-      setLoadingMore(false)
-    }
+    await query.fetchNextPage()
   }
 
   async function ensureBlockLoaded(blockId: string): Promise<void> {
-    while (!blocksRef.current.some((block) => block.id === blockId) && hasMoreRef.current && !loadingMoreRef.current) {
-      await loadMore()
+    if (!query.data && !query.isPending) {
+      await query.refetch()
+    }
+
+    while (!getLoadedBlocks().some((block) => block.id === blockId) && hasMorePages()) {
+      await query.fetchNextPage()
     }
   }
 
   async function createBlock(content: string): Promise<void> {
-    setError(null)
-    const block = await changbu.blocks.create(content)
-    startTransition(() => {
-      setBlocks((currentBlocks) => upsertBlock(currentBlocks, block))
-    })
+    await changbu.blocks.create(content)
+    await invalidateBlockQueries(queryClient)
   }
 
   async function updateBlock(id: string, content: string): Promise<void> {
-    setError(null)
-    const block = await changbu.blocks.update(id, content)
-    startTransition(() => {
-      setBlocks((currentBlocks) => upsertBlock(currentBlocks, block))
-    })
+    await changbu.blocks.update(id, content)
+    await invalidateBlockQueries(queryClient)
   }
 
   async function removeBlock(id: string): Promise<void> {
-    setError(null)
     await changbu.blocks.remove(id)
-    startTransition(() => {
-      setBlocks((currentBlocks) => currentBlocks.filter((block) => block.id !== id))
-    })
+    await invalidateBlockQueries(queryClient)
   }
 
   async function addTag(blockId: string, tagName: string): Promise<void> {
-    setError(null)
-    const block = await changbu.tags.add(blockId, tagName)
-    startTransition(() => {
-      setBlocks((currentBlocks) => upsertBlock(currentBlocks, block))
-    })
+    await changbu.tags.add(blockId, tagName)
+    await invalidateBlockQueries(queryClient)
   }
 
   async function removeTag(blockId: string, tagId: string): Promise<void> {
-    setError(null)
-    const block = await changbu.tags.remove(blockId, tagId)
-    startTransition(() => {
-      setBlocks((currentBlocks) => upsertBlock(currentBlocks, block))
-    })
+    await changbu.tags.remove(blockId, tagId)
+    await invalidateBlockQueries(queryClient)
   }
 
   return {
     blocks,
-    loading: loadingInitial,
-    loadingInitial,
-    loadingMore,
-    hasMore,
-    error,
+    loading: query.isPending,
+    loadingInitial: query.isPending,
+    loadingMore: query.isFetchingNextPage,
+    hasMore: Boolean(query.hasNextPage),
+    error: query.error instanceof Error ? query.error.message : query.error ? '加载块列表失败。' : null,
     createBlock,
     updateBlock,
     removeBlock,

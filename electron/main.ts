@@ -3,7 +3,7 @@ import { join } from 'node:path'
 import { app, BrowserWindow, dialog, shell } from 'electron'
 
 import { IPC_CHANNELS } from '../shared/ipc'
-import type { BlockChangedEvent, DocGenerationChunk } from '../shared/types'
+import type { BlockChangedEvent, DocGenerationChunk, MetaChangedEvent, NotebookChangedEvent } from '../shared/types'
 import { createAppContext, type AppContext } from './appContext'
 import { registerIpcHandlers } from './ipc/register'
 
@@ -13,7 +13,7 @@ let mainWindow: BrowserWindow | null = null
 let appContext: AppContext | null = null
 let unregisterHandlers: (() => void) | null = null
 
-function sendEvent(channel: string, payload: BlockChangedEvent | DocGenerationChunk): void {
+function sendEvent(channel: string, payload: BlockChangedEvent | NotebookChangedEvent | MetaChangedEvent | DocGenerationChunk): void {
   if (!mainWindow || mainWindow.isDestroyed()) {
     return
   }
@@ -92,6 +92,8 @@ async function bootstrap(): Promise<void> {
       return result.canceled ? null : result.filePaths[0] ?? null
     },
     onBlockChanged: (event) => sendEvent(IPC_CHANNELS.events.blockChanged, event),
+    onNotebooksChanged: (event) => sendEvent(IPC_CHANNELS.events.notebooksChanged, event),
+    onMetaChanged: (event) => sendEvent(IPC_CHANNELS.events.metaChanged, event),
     onDocGenerationChunk: (chunk) => sendEvent(IPC_CHANNELS.events.docGenerationChunk, chunk),
   })
 

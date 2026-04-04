@@ -114,9 +114,15 @@ pnpm dev
 
 ```bash
 pnpm test
+pnpm test:manual-live
 pnpm typecheck
 pnpm build
 ```
+
+说明：
+
+- `pnpm test` 只运行默认自动化测试，适合本地日常开发和 CI
+- `pnpm test:manual-live` 会执行显式标记的 live/manual 临时测试，可能访问真实配置和真实数据，只应在确认环境后手动运行
 
 ### 打包命令
 

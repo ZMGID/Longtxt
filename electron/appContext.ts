@@ -23,6 +23,8 @@ import type {
   Notebook,
   NotebookItem,
   NotebookMutationResult,
+  NotebookChangedEvent,
+  MetaChangedEvent,
   NotebookReferencePreview,
   NotebookReferenceReviewState,
   NotebookStructureItemInput,
@@ -123,6 +125,8 @@ const VECTOR_REINDEX_BATCH_SIZE = 12
 export interface AppContextOptions {
   dataDirectory: string
   onBlockChanged?: (event: BlockChangedEvent) => void
+  onNotebooksChanged?: (event: NotebookChangedEvent) => void
+  onMetaChanged?: (event: MetaChangedEvent) => void
   onDocGenerationChunk?: (chunk: DocGenerationChunk) => void
   openPath?: (path: string) => Promise<string>
   chooseOpenPaths?: (options: {
@@ -323,13 +327,36 @@ export function createAppContext(options: AppContextOptions): AppContext {
     options.onBlockChanged?.(event)
   }
 
+  function emitNotebooksChanged(event: NotebookChangedEvent): void {
+    options.onNotebooksChanged?.(event)
+  }
+
+  function emitMetaChanged(event: MetaChangedEvent): void {
+    options.onMetaChanged?.(event)
+  }
+
   function emitDocGenerationChunk(chunk: DocGenerationChunk): void {
     options.onDocGenerationChunk?.(chunk)
   }
 
+  function emitTouchedNotebooks(
+    notebookIds: string[],
+    reason: NotebookChangedEvent['reason'],
+  ): void {
+    if (notebookIds.length === 0) {
+      return
+    }
+
+    emitNotebooksChanged({
+      notebookIds,
+      reason,
+    })
+  }
+
   function trackTask<T>(task: Promise<T>): Promise<T> {
     pendingTasks.add(task)
-    task.finally(() => {
+    void task.catch(() => undefined)
+    void task.finally(() => {
       pendingTasks.delete(task)
     })
     return task
@@ -429,6 +456,10 @@ export function createAppContext(options: AppContextOptions): AppContext {
     for (const block of blocks) {
       enqueueBlockVector(db, block.id, block.updatedAt, queuedAt)
     }
+
+    emitMetaChanged({
+      reason: 'vector-queue',
+    })
   }
 
   async function getQueryEmbedding(query: string, mode: AIExecutionMode, embeddingProvider: EmbeddingProvider): Promise<number[] | null> {
@@ -613,6 +644,10 @@ export function createAppContext(options: AppContextOptions): AppContext {
       if (mode === 'live') {
         clearRuntimeAiError()
       }
+
+      emitMetaChanged({
+        reason: 'vector-queue',
+      })
     } catch (error) {
       // 将当前 pending batch 中尚未完成的块记录到失败表
       const remainingJobs = listPendingBlockVectors(db, VECTOR_REINDEX_BATCH_SIZE)
@@ -627,6 +662,10 @@ export function createAppContext(options: AppContextOptions): AppContext {
       if (mode === 'live') {
         rememberRuntimeAiError(error)
       }
+
+      emitMetaChanged({
+        reason: 'vector-failure',
+      })
 
       throw error
     }
@@ -894,7 +933,7 @@ export function createAppContext(options: AppContextOptions): AppContext {
       })
 
       syncBlockAttachmentRecords(db, options.dataDirectory, id, safeContent)
-      touchNotebooksForBlock(db, id, updatedAt)
+      emitTouchedNotebooks(touchNotebooksForBlock(db, id, updatedAt), 'updated')
 
       clearAutoBlockTags(db, id)
 
@@ -915,7 +954,7 @@ export function createAppContext(options: AppContextOptions): AppContext {
 
     async removeBlock(id) {
       advanceBlockEnrichGeneration(id)
-      touchNotebooksForBlock(db, id, new Date().toISOString())
+      emitTouchedNotebooks(touchNotebooksForBlock(db, id, new Date().toISOString()), 'block-unlinked')
       const deletedBlock = deleteBlockRecord(db, id)
 
       if (vectorReady) {
@@ -923,6 +962,9 @@ export function createAppContext(options: AppContextOptions): AppContext {
       }
 
       removePendingBlockVectors(db, [id])
+      emitMetaChanged({
+        reason: 'vector-queue',
+      })
 
       emitBlockChanged({
         block: deletedBlock,
@@ -954,7 +996,7 @@ export function createAppContext(options: AppContextOptions): AppContext {
     async addTag(blockId, tagName) {
       const tag = getOrCreateTag(db, tagName, 'user')
       const block = addManualTagToBlock(db, blockId, tag)
-      touchNotebooksForBlock(db, blockId, new Date().toISOString())
+      emitTouchedNotebooks(touchNotebooksForBlock(db, blockId, new Date().toISOString()), 'updated')
 
       emitBlockChanged({
         block,
@@ -966,7 +1008,7 @@ export function createAppContext(options: AppContextOptions): AppContext {
 
     async removeTag(blockId, tagId) {
       const block = removeTagFromBlock(db, blockId, tagId)
-      touchNotebooksForBlock(db, blockId, new Date().toISOString())
+      emitTouchedNotebooks(touchNotebooksForBlock(db, blockId, new Date().toISOString()), 'updated')
 
       emitBlockChanged({
         block,
@@ -1028,6 +1070,10 @@ export function createAppContext(options: AppContextOptions): AppContext {
 
               emitDocGenerationChunk(chunk)
             }
+
+            emitMetaChanged({
+              reason: 'doc-generation',
+            })
           } catch (error) {
             if (mode === 'live') {
               rememberRuntimeAiError(error)
@@ -1040,6 +1086,9 @@ export function createAppContext(options: AppContextOptions): AppContext {
               done: true,
               mode,
               error: error instanceof Error ? error.message : '文档生成失败。',
+            })
+            emitMetaChanged({
+              reason: 'doc-generation',
             })
           }
         })(),
@@ -1079,32 +1128,65 @@ export function createAppContext(options: AppContextOptions): AppContext {
 
     async createNotebook(title) {
       const now = new Date().toISOString()
-      return createNotebookRecord(db, {
+      const notebook = createNotebookRecord(db, {
         id: uuid(),
         title: normalizeNotebookTitle(title),
         createdAt: now,
         updatedAt: now,
       })
+      emitNotebooksChanged({
+        notebookIds: [notebook.id],
+        reason: 'created',
+      })
+      return notebook
     },
 
     async updateNotebook(id, title) {
-      return updateNotebookTitle(db, id, normalizeNotebookTitle(title), new Date().toISOString())
+      const notebook = updateNotebookTitle(db, id, normalizeNotebookTitle(title), new Date().toISOString())
+      emitNotebooksChanged({
+        notebookIds: [id],
+        reason: 'updated',
+      })
+      return notebook
     },
 
     async removeNotebook(id) {
       deleteNotebookRecord(db, id)
+      emitNotebooksChanged({
+        notebookIds: [id],
+        reason: 'deleted',
+      })
     },
 
     async addBlockToNotebook(notebookId, blockId) {
-      return addBlockToNotebook(db, notebookId, blockId, new Date().toISOString())
+      const result = addBlockToNotebook(db, notebookId, blockId, new Date().toISOString())
+
+      if (result.added) {
+        emitNotebooksChanged({
+          notebookIds: [notebookId],
+          reason: 'block-linked',
+        })
+      }
+
+      return result
     },
 
     async removeNotebookItem(notebookId, itemId) {
-      return removeItemFromNotebook(db, notebookId, itemId, new Date().toISOString())
+      const notebook = removeItemFromNotebook(db, notebookId, itemId, new Date().toISOString())
+      emitNotebooksChanged({
+        notebookIds: [notebookId],
+        reason: 'items-changed',
+      })
+      return notebook
     },
 
     async reorderNotebookItems(notebookId, itemIds) {
-      return reorderNotebookItems(db, notebookId, itemIds, new Date().toISOString())
+      const notebook = reorderNotebookItems(db, notebookId, itemIds, new Date().toISOString())
+      emitNotebooksChanged({
+        notebookIds: [notebookId],
+        reason: 'items-changed',
+      })
+      return notebook
     },
 
     async createNotebookBlock(notebookId, content) {
@@ -1135,6 +1217,10 @@ export function createAppContext(options: AppContextOptions): AppContext {
         block,
         reason: 'created',
       })
+      emitNotebooksChanged({
+        notebookIds: [notebookId],
+        reason: 'items-changed',
+      })
 
       void trackTask(runEnrichWithRetry(block.id, safeContent, enrichGeneration))
 
@@ -1142,11 +1228,21 @@ export function createAppContext(options: AppContextOptions): AppContext {
     },
 
     async createNotebookStructureItem(notebookId, input) {
-      return createNotebookStructureItem(db, notebookId, input, new Date().toISOString())
+      const notebook = createNotebookStructureItem(db, notebookId, input, new Date().toISOString())
+      emitNotebooksChanged({
+        notebookIds: [notebookId],
+        reason: 'items-changed',
+      })
+      return notebook
     },
 
     async updateNotebookStructureItem(notebookId, itemId, patch) {
-      return updateNotebookStructureItem(db, notebookId, itemId, patch, new Date().toISOString())
+      const notebook = updateNotebookStructureItem(db, notebookId, itemId, patch, new Date().toISOString())
+      emitNotebooksChanged({
+        notebookIds: [notebookId],
+        reason: 'items-changed',
+      })
+      return notebook
     },
 
     async getNotebookReferencePreview(notebookId, topic) {
@@ -1157,6 +1253,10 @@ export function createAppContext(options: AppContextOptions): AppContext {
 
     async updateNotebookReferenceReview(notebookId, blockId, patch, topic) {
       updateNotebookReferenceReview(db, notebookId, blockId, patch, new Date().toISOString())
+      emitNotebooksChanged({
+        notebookIds: [notebookId],
+        reason: 'reference-review-updated',
+      })
       const notebook = getNotebookById(db, notebookId)
       const safeTopic = validateContent(normalizeNotebookTopic(notebook, topic))
       return buildNotebookReferencePreview(notebook, safeTopic)
@@ -1193,6 +1293,10 @@ export function createAppContext(options: AppContextOptions): AppContext {
 
               emitDocGenerationChunk(chunk)
             }
+
+            emitMetaChanged({
+              reason: 'doc-generation',
+            })
           } catch (error) {
             if (mode === 'live') {
               rememberRuntimeAiError(error)
@@ -1205,6 +1309,9 @@ export function createAppContext(options: AppContextOptions): AppContext {
               done: true,
               mode,
               error: error instanceof Error ? error.message : '文档生成失败。',
+            })
+            emitMetaChanged({
+              reason: 'doc-generation',
             })
           }
         })(),
@@ -1303,13 +1410,31 @@ export function createAppContext(options: AppContextOptions): AppContext {
       const result = await confirmImportJob(db, options.dataDirectory, job, conflictStrategy)
       importJobs.delete(importId)
       const importedBlocks = getBlocksByIds(db, result.importedIds)
+      const createdBlocks = getBlocksByIds(db, result.createdIds)
+      const updatedBlocks = getBlocksByIds(db, result.updatedIds)
+      const touchedNotebookIds = new Set<string>()
 
-      for (const block of importedBlocks) {
+      for (const block of updatedBlocks) {
+        for (const notebookId of touchNotebooksForBlock(db, block.id, new Date().toISOString())) {
+          touchedNotebookIds.add(notebookId)
+        }
+      }
+
+      for (const block of createdBlocks) {
         emitBlockChanged({
           block,
           reason: 'created',
         })
       }
+
+      for (const block of updatedBlocks) {
+        emitBlockChanged({
+          block,
+          reason: 'updated',
+        })
+      }
+
+      emitTouchedNotebooks(Array.from(touchedNotebookIds), 'updated')
 
       if (job.format === 'markdown') {
         void trackTask(
@@ -1362,6 +1487,10 @@ export function createAppContext(options: AppContextOptions): AppContext {
         clearRuntimeAiError()
         ensureVectorSchemaForCurrentState(true)
       }
+
+      emitMetaChanged({
+        reason: 'settings',
+      })
     },
 
     async testApi(config) {
@@ -1373,6 +1502,10 @@ export function createAppContext(options: AppContextOptions): AppContext {
         const embeddingProvider = createLiveEmbeddingProvider(config, tokenSink)
         scheduleReindex(embeddingProvider, 'live', { fullRebuild: schemaChanged })
       }
+
+      emitMetaChanged({
+        reason: 'ai-test',
+      })
 
       return result
     },
@@ -1411,13 +1544,17 @@ export function createAppContext(options: AppContextOptions): AppContext {
 
       const now = new Date().toISOString()
       for (const record of failed) {
-        enqueueBlockVector(db, record.blockId, now, now)
+        const block = getBlockById(db, record.blockId)
+        enqueueBlockVector(db, record.blockId, block.updatedAt, now)
       }
 
       clearFailedBlockVectors(db)
 
       const { mode, embeddingProvider } = getProviders()
       scheduleReindex(embeddingProvider, mode)
+      emitMetaChanged({
+        reason: 'vector-retry',
+      })
 
       return failed.length
     },
