@@ -4,19 +4,20 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## 项目定位
 
-**长布（Changbu）**：本地优先的 Electron 桌面笔记应用。核心链路是：时间轴记录块 → 标签/摘要即时补全 + 向量后台批处理补齐 → 混合检索 → AI 流式生成文档。
+**长布（Changbu）**：本地优先的 Electron 桌面笔记应用。核心链路是：时间轴记录块 → 标签/摘要补全 → 向量后台批处理 → 混合检索 → AI 流式生成文档。
 
 ## 技术栈
 
-Electron · React 19 · TypeScript · Vite 8 · Tailwind CSS v4（零配置） · better-sqlite3 · SQLite FTS5 + sqlite-vec（可选） · react-virtuoso · react-markdown · @node-rs/jieba（中文分词） · react-force-graph-2d（知识图谱） · CodeMirror（Markdown 编辑）
+Electron · React 19 · TypeScript · Vite 8 · Tailwind CSS v4（零配置） · TanStack Query · better-sqlite3 · SQLite FTS5 + sqlite-vec（可选） · @node-rs/jieba（中文分词） · react-force-graph-2d（知识图谱） · CodeMirror（Markdown 编辑）
 
 ## 常用命令
 
 ```bash
 pnpm install          # 安装依赖，并重建 better-sqlite3 等 Electron 原生模块
 pnpm dev              # 启动完整开发环境（Vite + tsup watch + Electron）
-pnpm test             # 在 Electron 进程内运行全部 Vitest
+pnpm test             # 在 Electron 进程内运行默认 Vitest 套件
 pnpm test:watch       # 监听模式运行 Vitest
+pnpm test:manual-live # 运行显式标记的 live/manual 测试
 pnpm typecheck        # TypeScript 项目构建检查（tsc -b）
 pnpm lint             # ESLint
 pnpm build            # typecheck + Vite 构建 + tsup 打包主进程/预加载
@@ -33,26 +34,35 @@ cross-env ELECTRON_RUN_AS_NODE=1 electron ./node_modules/vitest/vitest.mjs run s
 cross-env ELECTRON_RUN_AS_NODE=1 electron ./node_modules/vitest/vitest.mjs run electron/__tests__/ipc.test.ts -t "registers notebook handlers"
 ```
 
-测试环境配置在 `vite.config.ts`，使用 `jsdom` 环境，setup 文件是 `src/test/setup.ts`（仅引入 `@testing-library/jest-dom/vitest`）。测试不是在标准 Node 环境里跑，而是通过 `ELECTRON_RUN_AS_NODE=1 electron ...vitest.mjs` 执行；排查测试差异时要按这个前提理解。
+测试环境配置在 `vite.config.ts`：
 
-## 路径别名
+- 使用 `jsdom`
+- setup 文件是 `src/test/setup.ts`
+- `**/*.temp.test.ts(x)` 默认从主测试套件排除
+- 排查测试差异时要记住：这里不是标准 Node 进程，而是 `ELECTRON_RUN_AS_NODE=1 electron ...vitest.mjs`
 
-TypeScript 和 Vite 配置了统一的路径别名：
+## 路径别名与构建边界
+
+TypeScript 和 Vite 共享以下别名：
 
 - `@/*` → `src/`
 - `@shared/*` → `shared/`
 - `@electron/*` → `electron/`
 
-tsup 构建主进程时不经过 Vite，所以主进程代码中的别名需要使用相对路径或确保 tsup 不需要解析它们。
+主进程和预加载由 `tsup` 单独打包到 `dist-electron/*.cjs`，不经过 Vite。因此主进程代码改动时，要额外注意：
+
+- `electron/main.ts` / `electron/preload.ts` 的构建语义以 `tsup.config.ts` 为准
+- 主进程里使用路径别名时，要确认 tsup 能正确解析；不确定时优先相对路径
+- `pnpm dev` 实际会并行启动 Vite、tsup watch、electronmon，Electron 会等待 `dist-electron/main.cjs` 和 `preload.cjs` 就绪后再启动
 
 ## 架构总览
 
 ### 进程边界
 
-- **渲染进程**（`src/`）：React UI，只能通过 `window.changbu` 调主进程能力，禁止直接引入 Electron API。使用 Tailwind CSS v4（零配置，无 tailwind.config 文件）。
-- **预加载层**（`electron/preload.ts`）：唯一的桥接层，把 `ChangbuApi` 暴露给渲染进程，并转发主进程事件。
-- **主进程**（`electron/`）：负责数据库、AI、文件系统、导入导出、附件处理。通过 tsup 打包为 CJS 格式输出到 `dist-electron/`。
-- **共享层**（`shared/`）：`types.ts` 定义跨进程类型（含完整的 `ChangbuApi` 接口），`ipc.ts` 定义 channel 常量，`config.ts` 定义共享默认值和设置解析。
+- **渲染进程**（`src/`）：React UI，只能通过 `window.changbu` 调主进程能力，禁止直接引入 Electron API。
+- **预加载层**（`electron/preload.ts`）：唯一桥接层，暴露 `ChangbuApi`，并把主进程事件转发给渲染层。
+- **主进程**（`electron/`）：负责数据库、AI、文件系统、附件、导入导出、后台任务与应用生命周期。
+- **共享层**（`shared/`）：跨进程类型、IPC channel、默认设置与解析逻辑。
 
 ### 跨进程 API 改动链路
 
@@ -65,88 +75,63 @@ tsup 构建主进程时不经过 Vite，所以主进程代码中的别名需要�
 5. `electron/preload.ts`
 6. `src/lib/changbu.ts`
 
-### 主进程组织方式
+### 主进程核心组织
 
-- `electron/main.ts`：Electron 生命周期入口，创建窗口、组装 `AppContext`、注册 IPC，并把块变化/文档流式输出推送回渲染层。
-- `electron/appContext.ts`：主进程业务总入口。这里把 DB 层、AI provider、标签、文档生成、附件、导入导出全部编排成一组高层方法，并维护后台任务队列（如块补全、向量重建、流式生成）。
-- `electron/db/`：SQLite 访问层，按领域拆分模块：
-  - `index.ts`：初始化连接、运行迁移、加载 sqlite-vec。
-  - `migrations.ts`：全部 DDL（建表、FTS5 虚拟表、sqlite-vec 虚拟表）。
-  - `blocks.ts` / `tags.ts` / `notebooks.ts` / `snapshots.ts` / `settings.ts` / `graph.ts`：对应领域的 CRUD。
-  - `search.ts`：混合检索入口（标签 + FTS5 trigram + 向量），使用 `@node-rs/jieba` 做中文分词，结果以 reciprocal-rank 融合排序。
-  - `vectors.ts`：向量写入与最近邻查询，维度动态适配。
-- `electron/services/`：跨表/跨模块业务逻辑，重点包括：
-  - `ai.ts`：OpenAI 兼容接口适配，维护 live/mock provider、配置指纹、探测与 token 统计。
-  - `tagger.ts`：规则优先，LLM 兜底的标签与摘要生成。
-  - `docgen.ts`：参考块筛选与流式文档生成。
-  - `attachments.ts`：图片落盘、块附件索引同步、孤儿附件清理。
-  - `importExport.ts`：Markdown / JSON 导入导出。
+- `electron/main.ts`：Electron 生命周期入口，创建窗口、注册 IPC、注册 `changbu-attachment://` 协议，并在退出前等待 `appContext.whenIdle()`，避免后台任务半途终止。
+- `electron/appContext.ts`：主进程总编排层。数据库访问、AI provider、文档生成、标签补全、日历建议、附件、导入导出、向量队列都在这里汇合。
+- `electron/db/`：按领域拆表和查询，重点是 `blocks.ts`、`search.ts`、`vectors.ts`、`notebooks.ts`、`snapshots.ts`、`calendar.ts`、`graph.ts`。
+- `electron/services/`：承载跨表逻辑，主要包括 `ai.ts`、`tagger.ts`、`docgen.ts`、`attachments.ts`、`importExport.ts`。
 
-### 事件推送
+### 渲染层状态模型
 
-主进程通过 `BrowserWindow.webContents.send()` 向渲染层推送实时事件，预加载层转发，渲染层在 `App.tsx` 中统一监听：
+- `src/App.tsx` 是前端状态编排中心：切换 timeline / search / graph / snapshots / settings / notebook / calendar 等视图，并处理文档流式生成状态。
+- 渲染层数据访问主要放在 `src/hooks/`，底层依赖 TanStack Query。
+- `src/lib/queryKeys.ts` 定义统一查询 key；`src/lib/changbu.ts` 是渲染层访问 `window.changbu` 的唯一薄封装。
+- 实时刷新不是到处手动同步本地 state：主进程发送事件 → preload 转发 → `src/components/ChangbuEventBridge.tsx` 统一失效 query cache。文档流式 token 是例外，直接在 `App.tsx` 中消费。
 
-- `events:block-changed`：块补全（标签/向量/摘要）完成后推送
-- `events:doc-stream`：文档流式生成的增量 token
-- `events:doc-stream-end`：文档流式生成结束
-- `events:task-queue-status`：后台任务队列状态变化
+### 搜索、AI 与后台任务主链路
 
-### 搜索与 AI 主链路
+块被创建或编辑后，不会同步完成全部 AI 工作，而是分阶段推进：
 
-块被创建或编辑后，不会一次性同步完成全部 AI 处理，而是先落库为 `pending`，再由后台任务分阶段补全：
-
-1. `blocks` 记录先写入数据库。
+1. `blocks` 记录先落库。
 2. `tagger` 生成分类标签、细节标签和摘要，并优先把块状态推进到 `ready`。
 3. 向量任务写入 `pending_block_vectors` 持久化队列。
-4. `scheduleReindex()` 以单飞方式驱动批量 drain，embedding provider 再把向量写入 `sqlite-vec` 表。
-5. 完成后通过 `events:block-changed` 推送块状态变化到渲染层；检索会先依赖标签 + FTS，随后被向量召回增强。
+4. `scheduleReindex()` 以单飞方式批量 drain，embedding provider 再把向量写入 `sqlite-vec`。
+5. 完成后通过事件回推渲染层，搜索结果再由标签 + FTS + 向量三路融合增强。
 
-异步写回必须同时防止两类竞争：同一块的旧 enrich 任务覆盖新内容，以及块删除后晚到任务继续写标签、状态或向量。
+这里有几个容易漏掉的约束：
 
-检索不是单一路径：`electron/db/search.ts` 融合 **标签匹配 + FTS5 trigram + 向量召回**，再用 reciprocal-rank 方式合并排序。改搜索相关逻辑时，要把这三路一起看，不要只改某一层。
+- 异步写回必须防止旧任务覆盖新内容，也要防止块删除后晚到任务继续写状态/标签/向量。
+- 检索不是单一路径，`electron/db/search.ts` 会融合 **标签匹配 + FTS5 trigram + 向量召回**，不要只改其中一层。
+- AI 只有在“配置存在 + 探测成功 + 当前配置指纹与上次探测一致”时才进入 `live`；否则统一退回 `mock`。
+- 向量维度不是写死的，会根据 embedding 探测结果或真实返回值动态调整 schema，并可能触发全量重建。
 
-### AI 模式切换
+### Notebook / Snapshot / Calendar / 导入导出
 
-AI 只在“配置存在 + 探测成功 + 当前配置指纹与上次探测一致”时进入 `live`；否则统一退回 `mock`。这个门控逻辑在 `electron/appContext.ts`，不要只改设置页而忽略运行时判定。
+这是第二条最容易低估复杂度的主线：
 
-另外，向量维度不是写死的：会根据 embedding 探测结果或实际返回值动态调整 schema，并触发全量重建。
+- `notebook_items` 是 notebook 的真实内容模型，支持 `block`、`heading`、`divider`、`note`、`todo` 混排。
+- `notebook_reference_reviews` 保存引用块的 `excluded` / `locked` / `pinned` 审核状态；生成 notebook 文档时，这部分状态会参与引用块筛选。
+- `snapshots` 可以挂到 notebook 上。
+- 导入导出和附件读写都走主进程，不是前端直接读写文件；Markdown 导入还会把图片引用重写进本地附件体系。
+- 日历不是孤立模块：`calendar.ts` 同时处理手动条目、AI 建议，以及与 block 时间轴联动的热力图/日详情。
 
-### Notebook / Snapshot / 导入导出
+### 图谱与附件
 
-这是当前代码库里最容易漏看的第二条主线：
+- 知识图谱由 `electron/db/graph.ts` 基于 `block_tags` 按需聚合，不做增量缓存。
+- 本地图片通过 `changbu-attachment://` 自定义协议暴露；主进程会校验路径必须落在附件目录内，不能把任意本地路径直接暴露给渲染层。
 
-- `notebook_items` 是笔记本的真实内容模型，既能放 `block`，也能放 `heading` / `divider` / `note` / `todo` 等结构项。
-- `notebook_reference_reviews` 保存引用块的 `excluded` / `locked` / `pinned` 审核状态。
-- 笔记本生成文档时，不只是搜索已有块，还会把结构项整理成 `writingGuide` 一并送进 `docgen`。
-- `snapshots` 可挂到 notebook 上。
-- 导入导出走主进程服务，不是前端直接读写文件；Markdown 导入还会重写图片引用并接入本地附件体系。
-
-### 渲染层组织方式
-
-- `src/App.tsx` 是前端状态编排中心：管理 timeline / search / graph / snapshots / settings / notebook workspace 等视图，并监听文档流式事件。
-- `src/hooks/` 承担数据访问和 UI 同步，尤其是 `useBlocks.ts`、`useTags.ts`、`useNotebooks.ts`。
-- `src/lib/changbu.ts` 是渲染层对 `window.changbu` 的薄封装。渲染层新能力优先从这里进入，不要到处直接访问全局对象。
-- `src/components/GraphView.tsx` 是知识图谱可视化组件，使用 `react-force-graph-2d` 渲染块节点和共现关系边。
-
-### 知识图谱
-
-图谱以块为节点、标签共现为边，由 `electron/db/graph.ts` 从 `block_tags` 表聚合生成：
-- 节点大小和颜色由分类标签决定，高频默认标签（如"技术""生活"）会被降权以避免噪声。
-- 边权重基于两标签在同一块上的共现频率，低于阈值的边不显示。
-- 图谱数据由 `AppContext.getGraphData()` 按需查询，不做增量更新。
-- 渲染层 `App.tsx` 管理 tag filter 和节点选中状态，选中节点后在侧边展示对应块。
-
-## 数据与存储
+## 设置与存储
 
 - 数据默认放在 Electron `userData/data` 目录下，主库文件是 `changbu.sqlite3`。
-- 本地图片附件由主进程统一管理，并通过数据库维护块到附件的显式关联。
+- `shared/config.ts` 维护默认设置、边界值和解析逻辑；改设置项时，通常要同时检查设置页 UI、shared parser/normalizer、主进程读写链路。
+- `ai_config`、AI 探测结果、block/doc/calendar/ui 设置会额外落到 `changbu-settings.json`（`electron/settingsFile.ts`），不是只存数据库。
 - `sqlite-vec` 加载失败时应用仍可运行，只是向量检索降级；不要把“向量不可用”当成“应用不可启动”。
 
 ## 关键约束
 
 - `src/` 中禁止直接使用 Electron API。
-- 修改 IPC 或 preload 暴露面时，必须同时检查共享类型、channel 常量、主进程 handler、preload 桥接和渲染层封装是否一致。
-- `notebook_items` 已经取代旧的 `notebook_blocks` 作为笔记本内容源；涉及 notebook 数据结构时要保留迁移语义。
-- 涉及 AI 配置、向量 schema、附件路径、数据库迁移的改动都属于高风险区域，先理解 `appContext.ts` 的完整链路再动手。
+- 修改 IPC 或 preload 暴露面时，必须完整检查共享类型、channel 常量、主进程 handler、preload 桥接和渲染层封装。
+- `notebook_items` 已取代旧的 `notebook_blocks` 作为 notebook 内容源；涉及 notebook 结构时要保留迁移语义。
+- 涉及 AI 配置门控、向量 schema、附件路径、数据库迁移、设置持久化的改动都属于高风险区域，先读完整链路再动手。
 - 注释使用简体中文，UTF-8（无 BOM）。
-- `dev` 命令通过 `concurrently` 并行启动三个进程：Vite 渲染器、tsup watch（主进程/预加载热重编译）、`electronmon`（Electron 进程自动重启）。

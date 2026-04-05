@@ -32,58 +32,62 @@ export function AppSidebar({ activeView, blockCount, aiStatusLabel, meta, onSele
   return (
     <aside
       data-testid="app-sidebar"
-      className="flex w-[68px] shrink-0 flex-col border-r border-black/5 bg-stone-100/80"
+      className="flex w-[60px] shrink-0 flex-col bg-white/[0.94] lg:w-[68px]"
     >
-      <div className="window-drag-region h-12 shrink-0" />
+      <div className="window-drag-region h-12 shrink-0 bg-[linear-gradient(180deg,rgba(255,255,255,0.88),rgba(248,244,237,0.58))] lg:h-14" />
 
-      <nav className="flex flex-col items-center gap-2 px-2 pt-3">
-        {items.map((item) => {
-          const active = item.id === activeView
+      <div className="flex min-h-0 flex-1 px-1.5 pb-1.5 lg:px-2 lg:pb-2">
+        <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-t-[24px] border border-black/[0.06] bg-[linear-gradient(180deg,rgba(250,247,242,0.97),rgba(244,240,233,0.92))] shadow-[0_18px_48px_rgba(68,48,22,0.08)]">
+          <nav className="flex flex-col items-center gap-2 px-1.5 pt-3 lg:px-2 lg:pt-4">
+            {items.map((item) => {
+              const active = item.id === activeView
 
-          return (
-            <button
-              key={item.id}
-              type="button"
-              onClick={() => onSelectView(item.id)}
-              aria-label={item.label}
-              title={item.label}
-              className={`flex h-10 w-10 items-center justify-center rounded-xl transition duration-200 active:scale-[0.97] ${
-                active
-                  ? 'bg-black/[0.08] text-stone-900'
-                  : 'text-stone-600 hover:bg-black/[0.04]'
-              }`}
-            >
-              {item.icon({ active })}
-            </button>
-          )
-        })}
-      </nav>
+              return (
+                <button
+                  key={item.id}
+                  type="button"
+                  onClick={() => onSelectView(item.id)}
+                  aria-label={item.label}
+                  title={item.label}
+                  className={`flex h-9 w-9 items-center justify-center rounded-2xl transition duration-200 active:scale-[0.97] lg:h-10 lg:w-10 ${
+                    active
+                      ? 'bg-stone-900/[0.08] text-stone-900 shadow-[inset_0_1px_0_rgba(255,255,255,0.45)]'
+                      : 'text-stone-500 hover:bg-black/[0.04] hover:text-stone-700'
+                  }`}
+                >
+                  {item.icon({ active })}
+                </button>
+              )
+            })}
+          </nav>
 
-      <div className="mt-auto flex flex-col items-center gap-2 px-2 pb-3">
-        <SidebarSplitStat
-          topValue={formatCompactNumber(meta?.modelCallCounts.llm ?? 0)}
-          topLabel="LLM"
-          bottomValue={formatCompactNumber(meta?.modelCallCounts.embedding ?? 0)}
-          bottomLabel="向量"
-          title={`模型调用 · LLM ${meta?.modelCallCounts.llm ?? 0} 次 / 向量 ${meta?.modelCallCounts.embedding ?? 0} 次`}
-        />
-        <SidebarStat
-          value={formatCompactNumber(blockCount)}
-          label="块"
-          title={`${blockCount} 个块`}
-        />
-        <SidebarStat
-          value={getCompactAiStatus(meta)}
-          label="AI"
-          title={`AI · ${aiStatusLabel}`}
-        />
-        {meta?.vectorReady ? (
-          <SidebarStat
-            value={formatCompactNumber(meta.vectorDimension)}
-            label="维"
-            title={`向量 · ${meta.vectorDimension ?? '?'} 维`}
-          />
-        ) : null}
+          <div className="mt-auto flex flex-col items-center gap-2 px-1.5 pb-3 lg:px-2">
+            <SidebarSplitStat
+              topValue={formatCompactNumber(meta?.modelCallCounts.llm ?? 0)}
+              topLabel="LLM"
+              bottomValue={formatCompactNumber(meta?.modelCallCounts.embedding ?? 0)}
+              bottomLabel="向量"
+              title={`模型调用 · LLM ${meta?.modelCallCounts.llm ?? 0} 次 / 向量 ${meta?.modelCallCounts.embedding ?? 0} 次`}
+            />
+            <SidebarStat
+              value={formatCompactNumber(blockCount)}
+              label="块"
+              title={`${blockCount} 个块`}
+            />
+            <SidebarStat
+              value={getCompactAiStatus(meta)}
+              label="AI"
+              title={`AI · ${aiStatusLabel}`}
+            />
+            {meta?.vectorReady ? (
+              <SidebarStat
+                value={formatCompactNumber(meta.vectorDimension)}
+                label="维"
+                title={`向量 · ${meta.vectorDimension ?? '?'} 维`}
+              />
+            ) : null}
+          </div>
+        </div>
       </div>
     </aside>
   )
@@ -105,7 +109,7 @@ function SidebarSplitStat({
   return (
     <div
       title={title}
-      className="flex w-11 flex-col overflow-hidden rounded-xl bg-black/[0.04] text-center text-stone-500"
+      className="flex w-10 flex-col overflow-hidden rounded-xl bg-black/[0.04] text-center text-stone-500 lg:w-11"
     >
       <div className="px-1 py-1.5">
         <span className="text-[11px] font-semibold leading-none text-stone-800">{topValue}</span>
@@ -123,7 +127,7 @@ function SidebarStat({ value, label, title }: { value: string; label: string; ti
   return (
     <div
       title={title}
-      className="flex w-11 flex-col items-center rounded-xl bg-black/[0.04] px-1 py-1.5 text-center text-stone-500"
+      className="flex w-10 flex-col items-center rounded-xl bg-black/[0.04] px-1 py-1.5 text-center text-stone-500 lg:w-11"
     >
       <span className="text-[11px] font-semibold leading-none text-stone-800">{value}</span>
       <span className="mt-1 text-[9px] uppercase tracking-[0.12em]">{label}</span>

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 
 import { useQueryClient } from '@tanstack/react-query'
 
@@ -70,12 +70,16 @@ function formatBlockTime(value: string): string {
 export function CalendarView({ settings, onJumpToBlock }: CalendarViewProps) {
   const { toast } = useToast()
   const queryClient = useQueryClient()
+  const heatmapContainerRef = useRef<HTMLDivElement | null>(null)
   const today = todayDateKey()
   const currentYear = Number(today.slice(0, 4))
   const [activeYear, setActiveYear] = useState(currentYear)
   const [selectedDate, setSelectedDate] = useState(today)
   const [draft, setDraft] = useState<CalendarEntryDraft>(() => buildEntryDraft(today))
   const [creating, setCreating] = useState(false)
+  const [heatmapCellSize, setHeatmapCellSize] = useState(16)
+  const [heatmapGapSize, setHeatmapGapSize] = useState(4)
+  const [showWeekLabels, setShowWeekLabels] = useState(true)
   const yearsQuery = useCalendarYears()
   const availableYears = yearsQuery.data ?? [currentYear]
   const heatmapQuery = useCalendarHeatmap(activeYear)
@@ -112,6 +116,63 @@ export function CalendarView({ settings, onJumpToBlock }: CalendarViewProps) {
     }))
   }, [selectedDate])
 
+  useEffect(() => {
+    const container = heatmapContainerRef.current
+
+    if (!container || columns.length === 0) {
+      return
+    }
+
+    function syncHeatmapLayout(width: number): void {
+      const maxCellSize = width >= 1280 ? 16 : width >= 1024 ? 15 : 14
+      const preferredGap = width >= 1280 ? 4 : width >= 1024 ? 3 : width >= 720 ? 2 : 1
+      const hardMinCellSize = width >= 720 ? 6 : 4
+
+      const computeMetrics = (withWeekLabels: boolean) => {
+        const weekLabelWidth = withWeekLabels ? 28 : 0
+        const sectionGap = withWeekLabels ? 12 : 0
+        const availableGridWidth = Math.max(240, width - weekLabelWidth - sectionGap)
+        const gap = preferredGap
+        const exactCellSize = (availableGridWidth - gap * (columns.length - 1)) / columns.length
+
+        return {
+          cellSize: Math.min(maxCellSize, Math.max(hardMinCellSize, exactCellSize)),
+          gapSize: gap,
+        }
+      }
+
+      let nextShowWeekLabels = width >= 980
+      let metrics = computeMetrics(nextShowWeekLabels)
+
+      if (nextShowWeekLabels && metrics.cellSize <= hardMinCellSize + 0.5) {
+        nextShowWeekLabels = false
+        metrics = computeMetrics(false)
+      }
+
+      setShowWeekLabels(nextShowWeekLabels)
+      setHeatmapCellSize(metrics.cellSize)
+      setHeatmapGapSize(metrics.gapSize)
+    }
+
+    syncHeatmapLayout(container.clientWidth)
+
+    const observer = new ResizeObserver((entries) => {
+      const entry = entries[0]
+
+      if (!entry) {
+        return
+      }
+
+      syncHeatmapLayout(entry.contentRect.width)
+    })
+
+    observer.observe(container)
+
+    return () => {
+      observer.disconnect()
+    }
+  }, [columns.length])
+
   async function refreshCalendar(): Promise<void> {
     await queryClient.invalidateQueries({ queryKey: queryKeys.calendarRoot() })
   }
@@ -131,9 +192,18 @@ export function CalendarView({ settings, onJumpToBlock }: CalendarViewProps) {
     }
   }
 
+  const heatmapStyles = useMemo(
+    () =>
+      ({
+        '--calendar-cell-size': `${heatmapCellSize}px`,
+        '--calendar-cell-gap': `${heatmapGapSize}px`,
+      }) as CSSProperties,
+    [heatmapCellSize, heatmapGapSize],
+  )
+
   return (
-    <section className="flex min-h-0 flex-1 flex-col gap-4">
-      <div className="rounded-[28px] border border-stone-200 bg-white/80 p-5 shadow-[0_20px_60px_rgba(68,48,22,0.06)]">
+    <section className="flex min-h-0 flex-1 flex-col gap-4 overflow-x-hidden overflow-y-auto pr-1">
+      <div className="overflow-hidden rounded-[28px] border border-stone-200 bg-white/80 p-5 shadow-[0_20px_60px_rgba(68,48,22,0.06)]">
         <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
           <div>
             <p className="text-xs font-semibold uppercase tracking-[0.28em] text-stone-400">Calendar</p>
@@ -161,31 +231,47 @@ export function CalendarView({ settings, onJumpToBlock }: CalendarViewProps) {
           </div>
         </div>
 
-        <div className="mt-5 overflow-x-auto">
-          <div className="inline-flex min-w-full gap-3">
-            <div className="flex flex-col pt-8 text-sm text-stone-500">
-              {['Mon', '', 'Wed', '', 'Fri', '', ''].map((label, index) => (
-                <div key={`${label}-${index}`} className="flex h-4 items-center pr-2">
-                  {label}
-                </div>
-              ))}
-            </div>
+        <div ref={heatmapContainerRef} className="mt-5 overflow-hidden" style={heatmapStyles}>
+          <div className="flex min-w-0 items-start gap-3">
+            {showWeekLabels ? (
+              <div className="flex shrink-0 flex-col pt-8 text-[11px] text-stone-500">
+                {['Mon', '', 'Wed', '', 'Fri', '', ''].map((label, index) => (
+                  <div
+                    key={`${label}-${index}`}
+                    className="flex items-center pr-2 leading-none"
+                    style={{ height: `${heatmapCellSize}px` }}
+                  >
+                    {label}
+                  </div>
+                ))}
+              </div>
+            ) : null}
 
-            <div className="min-w-[820px]">
-              <div className="mb-2 flex gap-1">
+            <div className="min-w-0 flex-1">
+              <div className="mb-2 flex" style={{ gap: `${heatmapGapSize}px` }}>
                 {columns.map((column) => (
-                  <div key={`${column.key}-label`} className="w-4 text-[11px] text-stone-400">
+                  <div
+                    key={`${column.key}-label`}
+                    className="overflow-hidden text-[11px] leading-none text-stone-400"
+                    style={{ width: `${heatmapCellSize}px` }}
+                  >
                     {column.monthLabel}
                   </div>
                 ))}
               </div>
 
-              <div className="flex gap-1">
+              <div className="flex" style={{ gap: `${heatmapGapSize}px` }}>
                 {columns.map((column) => (
-                  <div key={column.key} className="flex flex-col gap-1">
+                  <div key={column.key} className="flex flex-col" style={{ gap: `${heatmapGapSize}px` }}>
                     {column.days.map((day, index) => {
                       if (!day) {
-                        return <div key={`${column.key}-empty-${index}`} className="h-4 w-4 rounded-[4px] bg-transparent" />
+                        return (
+                          <div
+                            key={`${column.key}-empty-${index}`}
+                            className="rounded-[4px] bg-transparent"
+                            style={{ height: `${heatmapCellSize}px`, width: `${heatmapCellSize}px` }}
+                          />
+                        )
                       }
 
                       const selected = day.date === selectedDate
@@ -196,9 +282,10 @@ export function CalendarView({ settings, onJumpToBlock }: CalendarViewProps) {
                           type="button"
                           title={`${formatCalendarDateLabel(day.date)} · ${day.blockCount} 个块`}
                           onClick={() => setSelectedDate(day.date)}
-                          className={`relative h-4 w-4 rounded-[4px] transition ${INTENSITY_CLASSES[day.intensityLevel]} ${
+                          className={`relative rounded-[4px] transition ${INTENSITY_CLASSES[day.intensityLevel]} ${
                             selected ? 'ring-2 ring-stone-900 ring-offset-1 ring-offset-white' : ''
                           } ${day.hasEntries ? 'border border-stone-400/60' : 'border border-black/5'}`}
+                          style={{ height: `${heatmapCellSize}px`, width: `${heatmapCellSize}px` }}
                         >
                           {day.hasSuggestions ? <span className="absolute -right-0.5 -top-0.5 h-1.5 w-1.5 rounded-full bg-amber-500" /> : null}
                         </button>
@@ -220,8 +307,8 @@ export function CalendarView({ settings, onJumpToBlock }: CalendarViewProps) {
         </div>
       </div>
 
-      <div className="grid min-h-0 flex-1 gap-4 xl:grid-cols-[minmax(0,1.1fr)_340px]">
-        <div className="min-h-0 space-y-4 overflow-y-auto pr-1">
+      <div className="grid min-h-0 flex-1 gap-4 overflow-x-hidden xl:grid-cols-[minmax(0,1.1fr)_minmax(18rem,22rem)]">
+        <div className="min-h-0 space-y-4 overflow-x-hidden 2xl:overflow-y-auto 2xl:pr-1">
           <section className="rounded-[24px] border border-stone-200 bg-white/80 p-5">
             <div className="flex flex-wrap items-start justify-between gap-3">
               <div>
@@ -305,7 +392,7 @@ export function CalendarView({ settings, onJumpToBlock }: CalendarViewProps) {
           </section>
         </div>
 
-        <aside className="min-h-0 space-y-4 overflow-y-auto">
+        <aside className="min-h-0 space-y-4 overflow-x-hidden 2xl:overflow-y-auto">
           <section className="rounded-[24px] border border-stone-200 bg-white/80 p-5">
             <p className="text-xs font-semibold uppercase tracking-[0.28em] text-stone-400">New Entry</p>
             <h3 className="mt-2 text-xl font-semibold text-stone-900">为 {selectedDate} 添加安排</h3>

@@ -1,4 +1,4 @@
-import { startTransition, useEffect, useRef, useState } from 'react'
+import { Suspense, lazy, startTransition, useEffect, useRef, useState } from 'react'
 
 import { useQueryClient } from '@tanstack/react-query'
 
@@ -37,14 +37,8 @@ import type {
 } from '../shared/types'
 import { AppSidebar, type AppView } from './components/AppSidebar'
 import { BlockCard } from './components/BlockCard'
-import { CalendarView } from './components/CalendarView'
 import { ChangbuEventBridge } from './components/ChangbuEventBridge'
-import { GraphView } from './components/GraphView'
 import { InputBar } from './components/InputBar'
-import { NotebookWorkspace } from './components/NotebookWorkspace'
-import { SearchPanel } from './components/SearchPanel'
-import { SettingsPanel } from './components/SettingsPanel'
-import { SnapshotsView } from './components/SnapshotsView'
 import { Timeline } from './components/Timeline'
 import { ToastProvider } from './components/Toast'
 import { useToast } from './components/toast-context'
@@ -56,6 +50,36 @@ import { useSnapshots } from './hooks/useSnapshots'
 import { useTags } from './hooks/useTags'
 import { changbu } from './lib/changbu'
 import { queryKeys } from './lib/queryKeys'
+
+const CalendarView = lazy(async () => {
+  const module = await import('./components/CalendarView')
+  return { default: module.CalendarView }
+})
+
+const GraphView = lazy(async () => {
+  const module = await import('./components/GraphView')
+  return { default: module.GraphView }
+})
+
+const NotebookWorkspace = lazy(async () => {
+  const module = await import('./components/NotebookWorkspace')
+  return { default: module.NotebookWorkspace }
+})
+
+const SearchPanel = lazy(async () => {
+  const module = await import('./components/SearchPanel')
+  return { default: module.SearchPanel }
+})
+
+const SettingsPanel = lazy(async () => {
+  const module = await import('./components/SettingsPanel')
+  return { default: module.SettingsPanel }
+})
+
+const SnapshotsView = lazy(async () => {
+  const module = await import('./components/SnapshotsView')
+  return { default: module.SnapshotsView }
+})
 
 interface DocumentState {
   status: 'idle' | 'streaming' | 'done' | 'error'
@@ -644,7 +668,7 @@ function AppInner() {
         )
       case 'calendar':
         return (
-          <div className="min-h-0 flex-1 overflow-y-auto">
+          <div className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto">
             <CalendarView
               settings={calendarSettings}
               onJumpToBlock={async (blockId) => {
@@ -657,7 +681,7 @@ function AppInner() {
         )
       case 'notebooks':
         return (
-          <div className="flex min-h-0 flex-1 overflow-y-auto xl:overflow-hidden">
+          <div className="flex min-h-0 flex-1 overflow-x-hidden overflow-y-auto">
             <NotebookWorkspace
               notebooks={notebooks}
               selectedNotebookId={selectedNotebookId}
@@ -712,7 +736,7 @@ function AppInner() {
         )
       case 'search':
         return (
-          <div className="min-h-0 flex-1 overflow-y-auto lg:overflow-hidden">
+          <div className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto">
             <SearchPanel
             query={searchQuery}
             results={displayedSearchResults}
@@ -756,7 +780,7 @@ function AppInner() {
         )
       case 'graph':
         return (
-          <div className="min-h-0 flex-1 overflow-y-auto">
+          <div className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto">
             <GraphView
             nodes={graphData.nodes}
             edges={graphData.edges}
@@ -801,7 +825,7 @@ function AppInner() {
         )
       case 'snapshots':
         return (
-          <div className="min-h-0 flex-1 overflow-y-auto">
+          <div className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto">
             <SnapshotsView
             snapshots={snapshots}
             selectedSnapshotId={selectedSnapshotId}
@@ -896,7 +920,7 @@ function AppInner() {
         )
       case 'settings':
         return (
-          <div className="min-h-0 flex-1 overflow-y-auto">
+          <div className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto">
             <SettingsPanel
               config={config}
               docGenerationSettings={docGenerationSettings}
@@ -940,19 +964,21 @@ function AppInner() {
           onSelectView={setActiveView}
         />
 
-        <main className="flex min-w-0 flex-1 flex-col overflow-hidden bg-white/[0.92]">
+        <main className="flex min-w-0 flex-1 flex-col overflow-hidden bg-white/[0.94]">
           {/* macOS 交通灯按钮区域 — 与侧边栏对齐 */}
-          <div className="window-drag-region h-12 shrink-0 flex items-end px-5 pb-1">
-            <h2 className="text-[13px] font-semibold text-stone-900">{activeViewTitle}</h2>
+          <div className="window-drag-region flex h-12 shrink-0 items-center border-b border-black/[0.06] bg-[linear-gradient(180deg,rgba(255,255,255,0.88),rgba(248,244,237,0.58))] px-5 lg:h-14 lg:px-7">
+            <h2 className="text-[17px] font-semibold tracking-[0.01em] text-stone-900">{activeViewTitle}</h2>
           </div>
 
-          <div className="flex flex-1 overflow-hidden px-5 py-3">
+          <div className="flex flex-1 overflow-hidden px-4 pt-1.5 pb-2.5 lg:px-6 lg:pt-2">
             <div key={activeView} className="flex min-w-0 flex-1 flex-col overflow-hidden animate-[fadeIn_200ms_ease-out]">
-              {renderActiveView()}
+              <Suspense fallback={<ViewLoadingState label={`${activeViewTitle}加载中…`} />}>
+                {renderActiveView()}
+              </Suspense>
             </div>
 
             {relatedBlocks !== null && (
-              <aside className="ml-4 w-80 shrink-0 overflow-y-auto rounded-lg border border-stone-200 bg-stone-50/80 p-4">
+              <aside className="ml-3 w-72 shrink-0 overflow-y-auto rounded-lg border border-stone-200 bg-stone-50/80 p-4 xl:ml-4 xl:w-80">
                 <div className="mb-3 flex items-center justify-between">
                   <h3 className="text-xs font-medium uppercase tracking-wider text-stone-400">相关块</h3>
                   <button
@@ -992,6 +1018,14 @@ function AppInner() {
         </main>
       </div>
     </>
+  )
+}
+
+function ViewLoadingState({ label }: { label: string }) {
+  return (
+    <div className="flex min-h-0 flex-1 items-center justify-center rounded-3xl border border-dashed border-stone-200 bg-white/70">
+      <p className="text-sm text-stone-400">{label}</p>
+    </div>
   )
 }
 

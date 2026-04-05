@@ -1,7 +1,6 @@
 import { useMemo, useRef } from 'react'
 import CodeMirror from '@uiw/react-codemirror'
 import { markdown, markdownLanguage } from '@codemirror/lang-markdown'
-import { languages } from '@codemirror/language-data'
 import {
   type DecorationSet,
   type EditorView,
@@ -260,7 +259,20 @@ class LivePreviewPlugin implements PluginValue {
   }
 
   update(update: ViewUpdate): void {
-    if (update.docChanged || update.viewportChanged || update.selectionSet) {
+    if (update.docChanged || update.viewportChanged) {
+      this.decorations = this.buildDecorations(update.view)
+      return
+    }
+
+    if (!update.selectionSet) {
+      return
+    }
+
+    const previousCursorLine = update.startState.field(cursorLineField)
+    const nextCursorLine = update.state.field(cursorLineField)
+
+    // 只有真正跨行移动时，才需要重建整套 Markdown 装饰。
+    if (previousCursorLine !== nextCursorLine) {
       this.decorations = this.buildDecorations(update.view)
     }
   }
@@ -609,7 +621,7 @@ export function MarkdownLivePreview({
 
   const extensions = useMemo(() => {
     const exts: Extension[] = [
-      markdown({ base: markdownLanguage, codeLanguages: languages }),
+      markdown({ base: markdownLanguage }),
       cursorLineField,
       livePreviewPlugin,
       livePreviewTheme,

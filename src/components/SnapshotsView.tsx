@@ -55,8 +55,8 @@ export function SnapshotsView({
   }
 
   return (
-    <section className="grid gap-4 xl:grid-cols-[320px_minmax(0,1fr)]">
-      <aside className="space-y-3">
+    <section className="grid gap-4 overflow-x-hidden overflow-y-auto pr-1 xl:grid-cols-[minmax(17rem,22rem)_minmax(0,1fr)] 2xl:min-h-0 2xl:flex-1 2xl:overflow-hidden 2xl:pr-0">
+      <aside className="space-y-3 2xl:min-h-0 2xl:overflow-y-auto">
         <p className="text-xs font-medium uppercase tracking-wider text-stone-400">快照列表</p>
 
         <input
@@ -229,7 +229,7 @@ export function SnapshotsView({
         </div>
       </aside>
 
-      <section className="rounded-lg border border-stone-200 bg-white/70 p-3">
+      <section className="rounded-lg border border-stone-200 bg-white/70 p-3 2xl:min-h-0 2xl:overflow-y-auto">
         {selectedSnapshot ? (
           <>
             <div className="flex flex-wrap items-center justify-between gap-2 border-b border-stone-200 pb-3">

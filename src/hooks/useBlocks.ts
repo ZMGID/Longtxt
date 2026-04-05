@@ -31,12 +31,58 @@ function flattenPages(data?: InfiniteData<Block[]>): Block[] {
   return sortBlocks(Array.from(blockMap.values()))
 }
 
-async function invalidateBlockQueries(queryClient: QueryClient): Promise<void> {
-  await Promise.all([
-    queryClient.invalidateQueries({ queryKey: queryKeys.blocks() }),
-    queryClient.invalidateQueries({ queryKey: queryKeys.tags() }),
-    queryClient.invalidateQueries({ queryKey: queryKeys.graphRoot() }),
-  ])
+function updateBlockPages(
+  data: InfiniteData<Block[]> | undefined,
+  updater: (page: Block[]) => Block[],
+): InfiniteData<Block[]> | undefined {
+  if (!data) {
+    return data
+  }
+
+  return {
+    ...data,
+    pages: data.pages.map((page) => updater(page)),
+  }
+}
+
+function insertBlockIntoCache(
+  data: InfiniteData<Block[]> | undefined,
+  block: Block,
+): InfiniteData<Block[]> {
+  if (!data) {
+    return {
+      pageParams: [0],
+      pages: [[block]],
+    }
+  }
+
+  const [firstPage = [], ...restPages] = data.pages
+
+  return {
+    ...data,
+    pages: [[block, ...firstPage.filter((item) => item.id !== block.id)], ...restPages],
+  }
+}
+
+function replaceBlockInCache(
+  data: InfiniteData<Block[]> | undefined,
+  block: Block,
+): InfiniteData<Block[]> | undefined {
+  return updateBlockPages(data, (page) => page.map((item) => (item.id === block.id ? block : item)))
+}
+
+function removeBlockFromCache(
+  data: InfiniteData<Block[]> | undefined,
+  blockId: string,
+): InfiniteData<Block[]> | undefined {
+  return updateBlockPages(data, (page) => page.filter((item) => item.id !== blockId))
+}
+
+function primeBlockCache(
+  queryClient: QueryClient,
+  updater: (data: InfiniteData<Block[]> | undefined) => InfiniteData<Block[]> | undefined,
+): void {
+  queryClient.setQueryData<InfiniteData<Block[]>>(queryKeys.blocks(), updater)
 }
 
 export function useBlocks() {
@@ -87,28 +133,26 @@ export function useBlocks() {
   }
 
   async function createBlock(content: string): Promise<void> {
-    await changbu.blocks.create(content)
-    await invalidateBlockQueries(queryClient)
+    const block = await changbu.blocks.create(content)
+    primeBlockCache(queryClient, (current) => insertBlockIntoCache(current, block))
   }
 
   async function updateBlock(id: string, content: string): Promise<void> {
-    await changbu.blocks.update(id, content)
-    await invalidateBlockQueries(queryClient)
+    const block = await changbu.blocks.update(id, content)
+    primeBlockCache(queryClient, (current) => replaceBlockInCache(current, block))
   }
 
   async function removeBlock(id: string): Promise<void> {
     await changbu.blocks.remove(id)
-    await invalidateBlockQueries(queryClient)
+    primeBlockCache(queryClient, (current) => removeBlockFromCache(current, id))
   }
 
   async function addTag(blockId: string, tagName: string): Promise<void> {
     await changbu.tags.add(blockId, tagName)
-    await invalidateBlockQueries(queryClient)
   }
 
   async function removeTag(blockId: string, tagId: string): Promise<void> {
     await changbu.tags.remove(blockId, tagId)
-    await invalidateBlockQueries(queryClient)
   }
 
   return {

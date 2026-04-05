@@ -58,7 +58,7 @@ export function SearchPanel({
   const canCopyDocument = document.content.trim().length > 0
 
   return (
-    <div className="flex min-h-full flex-col gap-4 lg:h-full lg:min-h-0">
+    <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-x-hidden overflow-y-auto pr-1">
       {/* 顶部：搜索输入区，通栏 */}
       <div className="shrink-0 rounded-lg border border-stone-200 bg-white/70 p-4">
         <p className="mb-2 text-xs font-medium uppercase tracking-wider text-stone-400">搜索生成</p>
@@ -94,8 +94,8 @@ export function SearchPanel({
       </div>
 
       {/* 下方双栏：检索结果 + 生成文档 */}
-      <div className="grid gap-4 lg:min-h-0 lg:flex-1 lg:grid-cols-[340px_minmax(0,1fr)] xl:grid-cols-[380px_minmax(0,1fr)]">
-        <aside className="flex flex-col gap-3 lg:min-h-0">
+      <div className="grid gap-4 xl:grid-cols-[minmax(16rem,24rem)_minmax(0,1fr)] 2xl:min-h-0 2xl:flex-1 2xl:grid-cols-[minmax(18rem,26rem)_minmax(0,1fr)]">
+        <aside className="flex flex-col gap-3 2xl:min-h-0">
           {searchError ? (
             <p className="rounded-lg border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">{searchError}</p>
           ) : null}
@@ -104,7 +104,7 @@ export function SearchPanel({
 
           {results.length > 0 ? (
             <>
-              <div data-testid="search-results-scroll" className="space-y-2 lg:min-h-0 lg:flex-1 lg:overflow-y-auto lg:pr-1">
+              <div data-testid="search-results-scroll" className="space-y-2 2xl:min-h-0 2xl:flex-1 2xl:overflow-y-auto 2xl:pr-1">
                 {results.map((result) => (
                   <SearchResultCard
                     key={result.block.id}
@@ -124,7 +124,7 @@ export function SearchPanel({
           )}
         </aside>
 
-        <section className="flex flex-col gap-3 lg:min-h-0">
+        <section className="flex flex-col gap-3 2xl:min-h-0">
           <div className="flex shrink-0 items-center justify-between">
             <div>
               <p className="text-xs font-medium uppercase tracking-wider text-stone-400">生成文档</p>
@@ -145,7 +145,7 @@ export function SearchPanel({
             </div>
           </div>
 
-          <div data-testid="generated-document-scroll" className="min-h-[420px] overflow-y-auto rounded-lg border border-stone-200 bg-white/70 px-5 py-5 lg:min-h-0 lg:flex-1">
+          <div data-testid="generated-document-scroll" className="min-h-[320px] overflow-visible rounded-lg border border-stone-200 bg-white/70 px-5 py-5 2xl:min-h-0 2xl:flex-1 2xl:overflow-y-auto">
             {document.content ? (
               <MarkdownContent content={document.content} />
             ) : (

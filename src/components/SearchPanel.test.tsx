@@ -65,8 +65,8 @@ describe('SearchPanel', () => {
     expect(screen.getByText('条目二')).toBeInTheDocument()
     expect(screen.getByText('1 条检索结果')).toBeInTheDocument()
     expect(screen.getByText('全文命中')).toBeInTheDocument()
-    expect(screen.getByTestId('search-results-scroll').className).toContain('lg:overflow-y-auto')
-    expect(screen.getByTestId('generated-document-scroll').className).toContain('overflow-y-auto')
+    expect(screen.getByTestId('search-results-scroll').className).toContain('2xl:overflow-y-auto')
+    expect(screen.getByTestId('generated-document-scroll').className).toContain('2xl:overflow-y-auto')
   })
 
   it('renders multiple retrieval sources for the same result', () => {

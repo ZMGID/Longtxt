@@ -123,7 +123,7 @@ export function GraphView({
 
       setSize({
         width: entry.contentRect.width,
-        height: Math.max(640, entry.contentRect.height),
+        height: Math.max(420, entry.contentRect.height),
       })
     })
 
@@ -190,8 +190,8 @@ export function GraphView({
   }, [graphData, nodes.length])
 
   return (
-    <section className="grid gap-4 xl:grid-cols-[260px_minmax(0,1fr)_320px]">
-      <aside className="rounded-lg border border-stone-200 bg-white/70 p-3">
+    <section className="grid gap-4 overflow-x-hidden overflow-y-auto pr-1 2xl:min-h-0 2xl:overflow-hidden 2xl:pr-0 2xl:grid-cols-[minmax(13rem,18rem)_minmax(0,1fr)_minmax(16rem,22rem)]">
+      <aside className="rounded-lg border border-stone-200 bg-white/70 p-3 2xl:min-h-0 2xl:overflow-y-auto">
         <p className="text-xs font-medium uppercase tracking-wider text-stone-400">标签筛选</p>
         <p className="mt-1 text-xs leading-5 text-stone-500">优先显示当前图里更有区分度的标签；高频元标签会自动淡出。点击节点看详情，双击跳回时间轴。</p>
 
@@ -226,7 +226,7 @@ export function GraphView({
         </div>
         <p className="mb-3 text-xs leading-5 text-stone-500">边只保留更具体的共享标签关系，过于泛化的默认标签不会直接把整张图连成一团。</p>
 
-        <div ref={containerRef} className="h-[600px] overflow-hidden rounded-lg border border-stone-200 bg-stone-50">
+        <div ref={containerRef} className="h-[clamp(420px,60vh,600px)] overflow-hidden rounded-lg border border-stone-200 bg-stone-50">
           {loading ? (
             <div className="flex h-full items-center justify-center text-sm text-stone-500">正在构建连接图…</div>
           ) : nodes.length === 0 ? (
@@ -241,7 +241,7 @@ export function GraphView({
               graphData={graphData}
               nodeRelSize={4}
               backgroundColor="#f8fafc"
-              cooldownTicks={80}
+              cooldownTicks={60}
               nodeLabel={(node) => {
                 const graphNode = node as GraphNode
                 const detail = graphNode.summary?.trim() || graphNode.label
@@ -315,7 +315,7 @@ export function GraphView({
         </div>
       </section>
 
-      <aside className="rounded-lg border border-stone-200 bg-white/70 p-3">
+      <aside className="rounded-lg border border-stone-200 bg-white/70 p-3 2xl:min-h-0 2xl:overflow-y-auto">
         <p className="text-xs font-medium uppercase tracking-wider text-stone-400">块详情</p>
 
         <div className="mt-3">

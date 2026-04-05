@@ -90,7 +90,7 @@ export function NotebookWorkspace({
       return
     }
 
-    const collapseThreshold = 1440
+    const collapseThreshold = 1320
 
     function syncViewport(): void {
       setIsCompactViewport(window.innerWidth < collapseThreshold)
@@ -187,7 +187,7 @@ export function NotebookWorkspace({
   const sidebarButtonLabel = isSidebarCollapsed ? '展开检索栏' : '收起检索栏'
 
   return (
-    <div className={`grid min-h-0 flex-1 gap-4 ${isSidebarCollapsed ? 'lg:h-full lg:grid-cols-[220px_minmax(0,1fr)] xl:grid-cols-[240px_minmax(0,1fr)]' : 'lg:h-full lg:grid-cols-[220px_minmax(0,1fr)_320px] xl:grid-cols-[240px_minmax(0,1fr)_360px]'}`}>
+    <div className={`grid min-h-0 flex-1 gap-4 overflow-x-hidden overflow-y-auto pr-1 2xl:h-full 2xl:overflow-hidden 2xl:pr-0 ${isSidebarCollapsed ? 'xl:grid-cols-[minmax(13rem,16rem)_minmax(0,1fr)] 2xl:grid-cols-[minmax(14rem,18rem)_minmax(0,1fr)]' : 'xl:grid-cols-[minmax(13rem,16rem)_minmax(0,1fr)_minmax(18rem,22rem)] 2xl:grid-cols-[minmax(14rem,18rem)_minmax(0,1fr)_minmax(18rem,24rem)]'}`}>
       <aside className="flex min-h-0 flex-col rounded-[28px] bg-stone-50/90 px-4 py-4">
         <div className="flex items-start justify-between gap-3 border-b border-stone-200/80 pb-4">
           <div>
@@ -205,7 +205,7 @@ export function NotebookWorkspace({
           </button>
         </div>
 
-        <div className="mt-4 pr-1 lg:min-h-0 lg:flex-1 lg:overflow-y-auto">
+        <div className="mt-4 pr-1 2xl:min-h-0 2xl:flex-1 2xl:overflow-y-auto">
           {loading ? (
             <div className="rounded-2xl bg-white px-4 py-5 text-sm text-stone-500">加载笔记本中…</div>
           ) : notebooks.length > 0 ? (
@@ -338,7 +338,7 @@ export function NotebookWorkspace({
               />
             </div>
 
-            <div className="mt-5 pr-1 lg:min-h-0 lg:flex-1 lg:overflow-y-auto">
+            <div className="mt-5 pr-1 2xl:min-h-0 2xl:flex-1 2xl:overflow-y-auto">
               {loadingNotebook ? (
                 <div className="rounded-3xl bg-white/70 px-6 py-10 text-sm text-stone-500">加载笔记本内容中…</div>
               ) : selectedNotebook.items.length > 0 ? (
@@ -450,7 +450,7 @@ export function NotebookWorkspace({
       </section>
 
       {!isSidebarCollapsed ? (
-        <aside className="flex min-h-0 flex-col rounded-[28px] bg-stone-50/80 p-4 lg:overflow-y-auto lg:pr-1">
+        <aside className="flex min-h-0 flex-col rounded-[28px] bg-stone-50/80 p-4 2xl:overflow-y-auto 2xl:pr-1">
           <section className="flex min-h-0 flex-1 flex-col rounded-3xl border border-stone-200 bg-white/90 px-4 py-4">
             <div>
               <p className="text-[11px] font-medium uppercase tracking-[0.2em] text-stone-400">检索补料</p>
@@ -486,7 +486,7 @@ export function NotebookWorkspace({
               <div className="mt-4 rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">{searchError}</div>
             ) : null}
 
-            <div className="mt-4 pr-1 lg:min-h-0 lg:flex-1 lg:overflow-y-auto">
+            <div className="mt-4 pr-1 2xl:min-h-0 2xl:flex-1 2xl:overflow-y-auto">
               {!selectedNotebook ? (
                 <div className="rounded-2xl border border-dashed border-stone-200 bg-stone-50/80 px-4 py-4 text-sm leading-6 text-stone-500">
                   先选择一个笔记本，再从这里搜索并加入相关引用块。

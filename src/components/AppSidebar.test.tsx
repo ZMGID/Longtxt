@@ -35,8 +35,8 @@ describe('AppSidebar', () => {
       />,
     )
 
-    expect(screen.getByTestId('app-sidebar').className).toContain('w-[68px]')
-    expect(screen.getByRole('button', { name: '搜索生成' }).className).toContain('bg-black/[0.08]')
+    expect(screen.getByTestId('app-sidebar').className).toContain('w-[60px]')
+    expect(screen.getByRole('button', { name: '搜索生成' }).className).toContain('bg-stone-900/[0.08]')
     expect(screen.getByText('20')).toBeInTheDocument()
     expect(screen.getByText('7')).toBeInTheDocument()
     expect(screen.getByText('3')).toBeInTheDocument()

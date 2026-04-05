@@ -112,15 +112,15 @@ async function registerAttachmentProtocol(dataDirectory: string): Promise<void> 
 
 function createMainWindow(): BrowserWindow {
   const window = new BrowserWindow({
-    width: 1280,
+    width: 1220,
     height: 820,
-    minWidth: 960,
-    minHeight: 640,
+    minWidth: 760,
+    minHeight: 560,
     backgroundColor: '#f5f5f5',
     title: '长布',
     titleBarStyle: 'hiddenInset',
     titleBarOverlay: {
-      height: 36,
+      height: 28,
     },
     ...(process.platform === 'darwin' ? { vibrancy: 'sidebar' } : {}),
     webPreferences: {
@@ -137,7 +137,7 @@ function createMainWindow(): BrowserWindow {
   }
 
   window.webContents.on('did-finish-load', () => {
-    window.webContents.setZoomFactor(1.1)
+    window.webContents.setZoomFactor(1)
   })
 
   window.webContents.setWindowOpenHandler(({ url }) => {

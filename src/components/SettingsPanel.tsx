@@ -178,8 +178,8 @@ export function SettingsPanel({
   onOpenSettingsDirectory,
 }: SettingsPanelProps) {
   return (
-    <section className="grid gap-4 xl:grid-cols-[minmax(0,1.1fr)_340px]">
-      <div className="space-y-4">
+    <section className="grid gap-4 overflow-x-hidden overflow-y-auto pr-1 xl:grid-cols-[minmax(0,1.1fr)_minmax(18rem,22rem)] 2xl:min-h-0 2xl:flex-1 2xl:overflow-hidden 2xl:pr-0">
+      <div className="space-y-4 2xl:min-h-0 2xl:overflow-y-auto">
         <ConfigSection title="LLM" description="支持 OpenAI 兼容接口。保存配置且通过连接测试后，应用才会切换到 live AI。">
           <SettingField
             label="Endpoint"
@@ -429,7 +429,7 @@ export function SettingsPanel({
         ) : null}
       </div>
 
-      <aside className="space-y-3">
+      <aside className="space-y-3 2xl:min-h-0 2xl:overflow-y-auto">
         <p className="text-xs font-medium uppercase tracking-wider text-stone-400">运行状态</p>
 
         {([
