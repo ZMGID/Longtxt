@@ -5,12 +5,13 @@ import * as sqliteVec from 'sqlite-vec'
 import { afterEach, describe, expect, it } from 'vitest'
 
 import { ensureVectorSchema, getVectorSchemaDimension, upsertBlockVector } from '../db/vectors'
+import { resolvePackagedExtensionPath } from '../db'
 
 const databases: Database.Database[] = []
 
 function createDb() {
   const db = new Database(':memory:')
-  db.loadExtension(sqliteVec.getLoadablePath())
+  db.loadExtension(resolvePackagedExtensionPath(sqliteVec.getLoadablePath()))
   databases.push(db)
   return db
 }
@@ -42,5 +43,21 @@ describe('vector schema', () => {
     expect(changed.changed).toBe(true)
     expect(getVectorSchemaDimension(db)).toBe(1024)
     expect(row.total).toBe(0)
+  })
+})
+
+describe('resolvePackagedExtensionPath', () => {
+  it('keeps the original path when no unpacked copy exists', () => {
+    const originalPath = '/tmp/app.asar/node_modules/sqlite-vec-darwin-arm64/vec0.dylib'
+
+    expect(resolvePackagedExtensionPath(originalPath, () => false)).toBe(originalPath)
+  })
+
+  it('prefers app.asar.unpacked when the unpacked copy exists', () => {
+    const originalPath = '/tmp/My App.app/Contents/Resources/app.asar/node_modules/sqlite-vec-darwin-arm64/vec0.dylib'
+
+    expect(
+      resolvePackagedExtensionPath(originalPath, (candidatePath) => candidatePath.includes('app.asar.unpacked')),
+    ).toBe('/tmp/My App.app/Contents/Resources/app.asar.unpacked/node_modules/sqlite-vec-darwin-arm64/vec0.dylib')
   })
 })

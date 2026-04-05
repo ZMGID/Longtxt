@@ -1,3 +1,5 @@
+import { existsSync } from 'node:fs'
+
 import Database from 'better-sqlite3'
 import * as sqliteVec from 'sqlite-vec'
 import { v4 as uuid } from 'uuid'
@@ -7,6 +9,24 @@ import { migrateTagKinds, seedDefaultTags } from './tags'
 
 export interface DatabaseBootstrapResult {
   vectorReady: boolean
+}
+
+/**
+ * Electron 打包后，原生扩展的 JS 入口仍在 app.asar 内，
+ * 但 dylib / node 等二进制通常会被解包到 app.asar.unpacked。
+ * loadExtension 只能加载真实文件，因此这里要优先切到 unpacked 副本。
+ */
+export function resolvePackagedExtensionPath(
+  filePath: string,
+  fileExists: (candidatePath: string) => boolean = existsSync,
+): string {
+  const unpackedPath = filePath.replace(/\.asar(?=[\\/])/, '.asar.unpacked')
+
+  return unpackedPath !== filePath && fileExists(unpackedPath) ? unpackedPath : filePath
+}
+
+function getSqliteVecLoadablePath(): string {
+  return resolvePackagedExtensionPath(sqliteVec.getLoadablePath())
 }
 
 function ensureColumn(db: Database.Database, tableName: string, columnName: string, sql: string): void {
@@ -166,7 +186,7 @@ export function initializeDatabase(db: Database.Database): DatabaseBootstrapResu
   let vectorReady = false
 
   try {
-    db.loadExtension(sqliteVec.getLoadablePath())
+    db.loadExtension(getSqliteVecLoadablePath())
     vectorReady = true
   } catch (error) {
     console.warn('[changbu] sqlite-vec unavailable, continuing without vector search.', error)
