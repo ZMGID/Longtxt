@@ -55,18 +55,18 @@ export function SnapshotsView({
   }
 
   return (
-    <section className="grid gap-4 overflow-x-hidden overflow-y-auto pr-1 xl:grid-cols-[minmax(17rem,22rem)_minmax(0,1fr)] 2xl:min-h-0 2xl:flex-1 2xl:overflow-hidden 2xl:pr-0">
-      <aside className="space-y-3 2xl:min-h-0 2xl:overflow-y-auto">
-        <p className="text-xs font-medium uppercase tracking-wider text-stone-400">快照列表</p>
+    <section className="grid min-h-0 min-w-0 flex-1 gap-4 overflow-hidden xl:grid-cols-[minmax(16rem,21rem)_minmax(0,1fr)]">
+      <aside className="flex min-h-0 min-w-0 flex-col gap-3 overflow-hidden">
+        <p className="shrink-0 text-xs font-medium uppercase tracking-wider text-stone-400">快照列表</p>
 
         <input
           value={snapshotQuery}
           onChange={(event) => onSnapshotQueryChange(event.target.value)}
           placeholder="搜索快照主题…"
-          className="w-full rounded border border-stone-200 bg-white/70 px-3 py-2 text-sm text-stone-900 outline-none transition focus:border-stone-400 focus:ring-1 focus:ring-stone-200"
+          className="shrink-0 w-full rounded border border-stone-200 bg-white/70 px-3 py-2 text-sm text-stone-900 outline-none transition focus:border-stone-400 focus:ring-1 focus:ring-stone-200"
         />
 
-        <div className="space-y-3 rounded-lg border border-stone-200 bg-white/70 p-3">
+        <div className="shrink-0 space-y-3 rounded-lg border border-stone-200 bg-white/70 p-3">
           <p className="text-xs font-medium text-stone-500">导出筛选</p>
           <div className="flex flex-wrap gap-1.5">
             {availableTags.slice(0, 18).map((tag) => {
@@ -146,7 +146,7 @@ export function SnapshotsView({
         </div>
 
         {importPreview ? (
-          <div className="rounded-lg border border-amber-200 bg-amber-50 p-3">
+          <div className="shrink-0 rounded-lg border border-amber-200 bg-amber-50 p-3">
             <p className="text-sm font-semibold text-amber-900">导入预览</p>
             <div className="mt-2 space-y-1 text-xs text-amber-900">
               <p>
@@ -203,7 +203,7 @@ export function SnapshotsView({
           </div>
         ) : null}
 
-        <div className="space-y-2">
+        <div className="min-h-0 flex-1 space-y-2 overflow-y-auto pr-1">
           {snapshots.map((snapshot) => (
             <button
               key={snapshot.id}
@@ -229,19 +229,19 @@ export function SnapshotsView({
         </div>
       </aside>
 
-      <section className="rounded-lg border border-stone-200 bg-white/70 p-3 2xl:min-h-0 2xl:overflow-y-auto">
+      <section className="flex min-h-0 min-w-0 flex-col overflow-hidden rounded-lg border border-stone-200 bg-white/70 p-3">
         {selectedSnapshot ? (
           <>
-            <div className="flex flex-wrap items-center justify-between gap-2 border-b border-stone-200 pb-3">
-              <div>
+            <div className="flex shrink-0 flex-wrap items-center justify-between gap-2 border-b border-stone-200 pb-3">
+              <div className="min-w-0">
                 <p className="text-xs font-medium uppercase tracking-wider text-stone-400">快照内容</p>
-                <h3 className="mt-0.5 text-lg font-semibold text-stone-900">{selectedSnapshot.topic}</h3>
+                <h3 className="mt-0.5 truncate text-lg font-semibold text-stone-900">{selectedSnapshot.topic}</h3>
                 <p className="mt-1 text-xs text-stone-400">
                   {new Date(selectedSnapshot.createdAt).toLocaleString('zh-CN')} · 引用 {selectedSnapshot.blockIds.length} 个块
                   {selectedSnapshot.notebookTitle ? ` · 来自 ${selectedSnapshot.notebookTitle}` : ''}
                 </p>
               </div>
-              <div className="flex flex-wrap gap-2">
+              <div className="flex shrink-0 flex-wrap gap-2">
                 <button
                   type="button"
                   onClick={() => {
@@ -264,13 +264,15 @@ export function SnapshotsView({
                 </button>
               </div>
             </div>
-            <div className="mt-4">
-              <MarkdownContent content={selectedSnapshot.content} />
+            <div className="mt-4 min-h-0 flex-1 overflow-y-auto overflow-x-hidden pr-1">
+              <div className="min-w-0 break-words">
+                <MarkdownContent content={selectedSnapshot.content} />
+              </div>
             </div>
           </>
         ) : (
-          <div className="flex min-h-[360px] items-center justify-center rounded-lg border border-dashed border-stone-200 text-sm text-stone-400">
-            还没有文档快照。先在搜索生成页产出一篇文档，再点击"保存快照".
+          <div className="flex min-h-[360px] flex-1 items-center justify-center rounded-lg border border-dashed border-stone-200 text-sm text-stone-400">
+            还没有文档快照。先在搜索生成页产出一篇文档，再点击"保存快照"。
           </div>
         )}
       </section>

@@ -58,7 +58,7 @@ export function SearchPanel({
   const canCopyDocument = document.content.trim().length > 0
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-x-hidden overflow-y-auto pr-1">
+    <div className="flex min-h-0 min-w-0 flex-1 flex-col gap-4 overflow-hidden">
       {/* 顶部：搜索输入区，通栏 */}
       <div className="shrink-0 rounded-lg border border-stone-200 bg-white/70 p-4">
         <p className="mb-2 text-xs font-medium uppercase tracking-wider text-stone-400">搜索生成</p>
@@ -94,29 +94,27 @@ export function SearchPanel({
       </div>
 
       {/* 下方双栏：检索结果 + 生成文档 */}
-      <div className="grid gap-4 xl:grid-cols-[minmax(16rem,24rem)_minmax(0,1fr)] 2xl:min-h-0 2xl:flex-1 2xl:grid-cols-[minmax(18rem,26rem)_minmax(0,1fr)]">
-        <aside className="flex flex-col gap-3 2xl:min-h-0">
+      <div className="grid min-h-0 min-w-0 flex-1 gap-4 grid-rows-[minmax(0,1fr)_minmax(0,1fr)] lg:grid-cols-[minmax(14rem,20rem)_minmax(0,1fr)] lg:grid-rows-1 2xl:grid-cols-[minmax(15rem,22rem)_minmax(0,1fr)]">
+        <aside className="flex min-h-0 min-w-0 flex-col gap-3 overflow-hidden">
           {searchError ? (
-            <p className="rounded-lg border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">{searchError}</p>
+            <p className="shrink-0 rounded-lg border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">{searchError}</p>
           ) : null}
 
           <p className="shrink-0 px-1 text-xs text-stone-400">{resultsTitle}</p>
 
           {results.length > 0 ? (
-            <>
-              <div data-testid="search-results-scroll" className="space-y-2 2xl:min-h-0 2xl:flex-1 2xl:overflow-y-auto 2xl:pr-1">
-                {results.map((result) => (
-                  <SearchResultCard
-                    key={result.block.id}
-                    result={result}
-                    query={query}
-                    onTagClick={onTagClick}
-                    showScore={showResultScore}
-                    metaLabel={resultMetaLabel}
-                  />
-                ))}
-              </div>
-            </>
+            <div data-testid="search-results-scroll" className="min-h-0 flex-1 space-y-2 overflow-y-auto pr-1">
+              {results.map((result) => (
+                <SearchResultCard
+                  key={result.block.id}
+                  result={result}
+                  query={query}
+                  onTagClick={onTagClick}
+                  showScore={showResultScore}
+                  metaLabel={resultMetaLabel}
+                />
+              ))}
+            </div>
           ) : (
             <div className="rounded-lg border border-dashed border-stone-200 bg-stone-50/80 px-4 py-4 text-sm leading-6 text-stone-500">
               {resultsEmptyHint}
@@ -124,13 +122,13 @@ export function SearchPanel({
           )}
         </aside>
 
-        <section className="flex flex-col gap-3 2xl:min-h-0">
-          <div className="flex shrink-0 items-center justify-between">
-            <div>
+        <section className="flex min-h-0 min-w-0 flex-col gap-3 overflow-hidden">
+          <div className="flex shrink-0 items-center justify-between gap-3">
+            <div className="min-w-0">
               <p className="text-xs font-medium uppercase tracking-wider text-stone-400">生成文档</p>
-              {document.topic ? <p className="mt-0.5 text-xs text-stone-500">主题：{document.topic}</p> : null}
+              {document.topic ? <p className="mt-0.5 truncate text-xs text-stone-500">主题：{document.topic}</p> : null}
             </div>
-            <div className="flex items-center gap-2">
+            <div className="flex shrink-0 items-center gap-2">
               {document.status !== 'idle' ? (
                 <span className="text-xs text-stone-400">
                   {document.status === 'streaming' ? '正在流式生成' : document.status === 'done' ? '生成完成' : document.status === 'error' ? '生成失败' : ''}
@@ -145,9 +143,11 @@ export function SearchPanel({
             </div>
           </div>
 
-          <div data-testid="generated-document-scroll" className="min-h-[320px] overflow-visible rounded-lg border border-stone-200 bg-white/70 px-5 py-5 2xl:min-h-0 2xl:flex-1 2xl:overflow-y-auto">
+          <div data-testid="generated-document-scroll" className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden rounded-lg border border-stone-200 bg-white/70 px-5 py-5">
             {document.content ? (
-              <MarkdownContent content={document.content} />
+              <div className="min-w-0 break-words">
+                <MarkdownContent content={document.content} />
+              </div>
             ) : (
               <p className="text-sm leading-7 text-stone-400">点击"生成文档"后，这里会逐段出现编排结果。</p>
             )}

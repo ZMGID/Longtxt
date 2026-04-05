@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 
 import type { Notebook, NotebookSummary, SearchResult, TagSuggestion } from '../../shared/types'
 import { formatTimeLabel } from '../lib/format'
@@ -81,19 +81,38 @@ export function NotebookWorkspace({
   const [deleteConfirm, setDeleteConfirm] = useState(false)
   const [draggedItemId, setDraggedItemId] = useState<string | null>(null)
   const [dropTargetItemId, setDropTargetItemId] = useState<string | null>(null)
-  const [isCompactViewport, setIsCompactViewport] = useState(false)
+  const [isStackedLayout, setIsStackedLayout] = useState(false)
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false)
   const [addingBlockIds, setAddingBlockIds] = useState<string[]>([])
+  const sidebarAutoCollapsedRef = useRef(false)
 
   useEffect(() => {
     if (typeof window === 'undefined') {
       return
     }
 
-    const collapseThreshold = 1320
+    const stackedBreakpoint = 1080
+    const sidebarCollapseBreakpoint = 1320
 
     function syncViewport(): void {
-      setIsCompactViewport(window.innerWidth < collapseThreshold)
+      const width = window.innerWidth
+      const shouldStack = width < stackedBreakpoint
+      const shouldCollapseSidebar = width < sidebarCollapseBreakpoint
+
+      setIsStackedLayout(shouldStack)
+      setIsSidebarCollapsed((current) => {
+        if (shouldCollapseSidebar) {
+          sidebarAutoCollapsedRef.current = true
+          return true
+        }
+
+        if (sidebarAutoCollapsedRef.current) {
+          sidebarAutoCollapsedRef.current = false
+          return false
+        }
+
+        return current
+      })
     }
 
     syncViewport()
@@ -103,12 +122,6 @@ export function NotebookWorkspace({
       window.removeEventListener('resize', syncViewport)
     }
   }, [])
-
-  useEffect(() => {
-    if (isCompactViewport) {
-      setIsSidebarCollapsed(true)
-    }
-  }, [isCompactViewport])
 
   useEffect(() => {
     setTitleDraft(selectedNotebook?.title ?? '')
@@ -185,10 +198,19 @@ export function NotebookWorkspace({
   }
 
   const sidebarButtonLabel = isSidebarCollapsed ? '展开检索栏' : '收起检索栏'
+  const layoutClassName = isStackedLayout
+    ? 'flex min-h-0 min-w-0 flex-1 flex-col gap-4 overflow-hidden'
+    : isSidebarCollapsed
+      ? 'grid min-h-0 min-w-0 flex-1 gap-4 overflow-hidden xl:grid-cols-[minmax(13.5rem,15.5rem)_minmax(0,1fr)] 2xl:grid-cols-[minmax(14rem,17rem)_minmax(0,1fr)]'
+      : 'grid min-h-0 min-w-0 flex-1 gap-4 overflow-hidden xl:grid-cols-[minmax(13.5rem,15.5rem)_minmax(0,1fr)_minmax(17rem,20rem)] 2xl:grid-cols-[minmax(14rem,17rem)_minmax(0,1fr)_minmax(18rem,22rem)]'
 
   return (
-    <div className={`grid min-h-0 flex-1 gap-4 overflow-x-hidden overflow-y-auto pr-1 2xl:h-full 2xl:overflow-hidden 2xl:pr-0 ${isSidebarCollapsed ? 'xl:grid-cols-[minmax(13rem,16rem)_minmax(0,1fr)] 2xl:grid-cols-[minmax(14rem,18rem)_minmax(0,1fr)]' : 'xl:grid-cols-[minmax(13rem,16rem)_minmax(0,1fr)_minmax(18rem,22rem)] 2xl:grid-cols-[minmax(14rem,18rem)_minmax(0,1fr)_minmax(18rem,24rem)]'}`}>
-      <aside className="flex min-h-0 flex-col rounded-[28px] bg-stone-50/90 px-4 py-4">
+    <div className={layoutClassName}>
+      <aside
+        className={isStackedLayout
+          ? 'order-2 flex max-h-[16rem] min-h-[13rem] shrink-0 flex-col rounded-[28px] bg-stone-50/90 px-4 py-4'
+          : 'flex min-h-0 flex-col rounded-[28px] bg-stone-50/90 px-4 py-4'}
+      >
         <div className="flex items-start justify-between gap-3 border-b border-stone-200/80 pb-4">
           <div>
             <p className="text-[11px] font-medium uppercase tracking-[0.24em] text-stone-400">笔记本</p>
@@ -205,7 +227,7 @@ export function NotebookWorkspace({
           </button>
         </div>
 
-        <div className="mt-4 pr-1 2xl:min-h-0 2xl:flex-1 2xl:overflow-y-auto">
+        <div className="mt-4 min-h-0 flex-1 overflow-y-auto pr-1">
           {loading ? (
             <div className="rounded-2xl bg-white px-4 py-5 text-sm text-stone-500">加载笔记本中…</div>
           ) : notebooks.length > 0 ? (
@@ -245,8 +267,8 @@ export function NotebookWorkspace({
         </div>
       </aside>
 
-      <section className="flex min-h-0 flex-1 flex-col">
-        <div className="mb-4 flex items-center justify-end">
+      <section className={isStackedLayout ? 'order-1 flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden' : 'flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden'}>
+        <div className="mb-4 flex shrink-0 items-center justify-end">
           <button
             type="button"
             onClick={handleToggleSidebar}
@@ -256,7 +278,7 @@ export function NotebookWorkspace({
           </button>
         </div>
         {error ? (
-          <div className="mb-4 rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">{error}</div>
+          <div className="mb-4 shrink-0 rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">{error}</div>
         ) : null}
 
         {!selectedNotebook ? (
@@ -280,7 +302,7 @@ export function NotebookWorkspace({
           </div>
         ) : (
           <>
-            <div className="rounded-[32px] bg-white/80 px-6 py-5 shadow-[0_24px_60px_rgba(28,25,23,0.06)]">
+            <div className="shrink-0 rounded-[32px] bg-white/80 px-6 py-5 shadow-[0_24px_60px_rgba(28,25,23,0.06)]">
               <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
                 <div className="min-w-0 flex-1">
                   <div className="flex items-center gap-3">
@@ -329,7 +351,7 @@ export function NotebookWorkspace({
               </div>
             </div>
 
-            <div className="mt-4">
+            <div className="mt-4 shrink-0">
               <InputBar
                 embedded
                 onSubmit={(content) => onCreateBlockInNotebook(selectedNotebook.id, content)}
@@ -338,7 +360,7 @@ export function NotebookWorkspace({
               />
             </div>
 
-            <div className="mt-5 pr-1 2xl:min-h-0 2xl:flex-1 2xl:overflow-y-auto">
+            <div className="mt-5 min-h-0 flex-1 overflow-y-auto pr-1">
               {loadingNotebook ? (
                 <div className="rounded-3xl bg-white/70 px-6 py-10 text-sm text-stone-500">加载笔记本内容中…</div>
               ) : selectedNotebook.items.length > 0 ? (
@@ -450,14 +472,18 @@ export function NotebookWorkspace({
       </section>
 
       {!isSidebarCollapsed ? (
-        <aside className="flex min-h-0 flex-col rounded-[28px] bg-stone-50/80 p-4 2xl:overflow-y-auto 2xl:pr-1">
+        <aside
+          className={isStackedLayout
+            ? 'order-3 flex max-h-[20rem] min-h-[16rem] shrink-0 flex-col rounded-[28px] bg-stone-50/80 p-4'
+            : 'flex min-h-0 flex-col rounded-[28px] bg-stone-50/80 p-4'}
+        >
           <section className="flex min-h-0 flex-1 flex-col rounded-3xl border border-stone-200 bg-white/90 px-4 py-4">
-            <div>
+            <div className="shrink-0">
               <p className="text-[11px] font-medium uppercase tracking-[0.2em] text-stone-400">检索补料</p>
               <p className="mt-2 text-xs leading-5 text-stone-500">在这里搜索相关块，确认后加入当前笔记本。</p>
             </div>
 
-            <div className="mt-4 flex gap-2">
+            <div className="mt-4 flex flex-col gap-2 sm:flex-row">
               <input
                 value={searchQuery}
                 onChange={(event) => onSearchQueryChange(event.target.value)}
@@ -483,10 +509,10 @@ export function NotebookWorkspace({
             </div>
 
             {searchError ? (
-              <div className="mt-4 rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">{searchError}</div>
+              <div className="mt-4 shrink-0 rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">{searchError}</div>
             ) : null}
 
-            <div className="mt-4 pr-1 2xl:min-h-0 2xl:flex-1 2xl:overflow-y-auto">
+            <div className="mt-4 min-h-0 flex-1 overflow-y-auto pr-1">
               {!selectedNotebook ? (
                 <div className="rounded-2xl border border-dashed border-stone-200 bg-stone-50/80 px-4 py-4 text-sm leading-6 text-stone-500">
                   先选择一个笔记本，再从这里搜索并加入相关引用块。

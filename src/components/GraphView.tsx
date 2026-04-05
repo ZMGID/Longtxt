@@ -123,7 +123,7 @@ export function GraphView({
 
       setSize({
         width: entry.contentRect.width,
-        height: Math.max(420, entry.contentRect.height),
+        height: Math.max(360, entry.contentRect.height),
       })
     })
 
@@ -190,8 +190,8 @@ export function GraphView({
   }, [graphData, nodes.length])
 
   return (
-    <section className="grid gap-4 overflow-x-hidden overflow-y-auto pr-1 2xl:min-h-0 2xl:overflow-hidden 2xl:pr-0 2xl:grid-cols-[minmax(13rem,18rem)_minmax(0,1fr)_minmax(16rem,22rem)]">
-      <aside className="rounded-lg border border-stone-200 bg-white/70 p-3 2xl:min-h-0 2xl:overflow-y-auto">
+    <section className="flex min-h-0 min-w-0 flex-1 flex-col gap-4 overflow-hidden xl:grid xl:grid-cols-[minmax(12rem,16rem)_minmax(0,1fr)] xl:grid-rows-[minmax(0,1fr)_auto] 2xl:grid-cols-[minmax(12.5rem,16rem)_minmax(0,1fr)_minmax(15rem,19rem)] 2xl:grid-rows-1">
+      <aside className="max-h-40 overflow-y-auto rounded-lg border border-stone-200 bg-white/70 p-3 xl:max-h-none xl:min-h-0">
         <p className="text-xs font-medium uppercase tracking-wider text-stone-400">标签筛选</p>
         <p className="mt-1 text-xs leading-5 text-stone-500">优先显示当前图里更有区分度的标签；高频元标签会自动淡出。点击节点看详情，双击跳回时间轴。</p>
 
@@ -216,17 +216,17 @@ export function GraphView({
         </div>
       </aside>
 
-      <section className="rounded-lg border border-stone-200 bg-white/70 p-3">
-        <div className="mb-3 flex items-center justify-between">
+      <section className="flex min-h-0 min-w-0 flex-col rounded-lg border border-stone-200 bg-white/70 p-3 xl:row-span-2 2xl:row-span-1">
+        <div className="mb-3 flex shrink-0 items-center justify-between gap-3">
           <p className="text-xs font-medium uppercase tracking-wider text-stone-400">连接图</p>
           <div className="flex gap-2">
             <span className="text-xs text-stone-400">{nodes.length} 个节点</span>
             <span className="text-xs text-stone-400">{edges.length} 条边</span>
           </div>
         </div>
-        <p className="mb-3 text-xs leading-5 text-stone-500">边只保留更具体的共享标签关系，过于泛化的默认标签不会直接把整张图连成一团。</p>
+        <p className="mb-3 shrink-0 text-xs leading-5 text-stone-500">边只保留更具体的共享标签关系，过于泛化的默认标签不会直接把整张图连成一团。</p>
 
-        <div ref={containerRef} className="h-[clamp(420px,60vh,600px)] overflow-hidden rounded-lg border border-stone-200 bg-stone-50">
+        <div ref={containerRef} className="min-h-[360px] flex-1 overflow-hidden rounded-lg border border-stone-200 bg-stone-50 xl:min-h-0">
           {loading ? (
             <div className="flex h-full items-center justify-center text-sm text-stone-500">正在构建连接图…</div>
           ) : nodes.length === 0 ? (
@@ -315,10 +315,10 @@ export function GraphView({
         </div>
       </section>
 
-      <aside className="rounded-lg border border-stone-200 bg-white/70 p-3 2xl:min-h-0 2xl:overflow-y-auto">
+      <aside className="max-h-64 overflow-y-auto rounded-lg border border-stone-200 bg-white/70 p-3 xl:max-h-none xl:min-h-[16rem] 2xl:min-h-0 2xl:overflow-y-auto">
         <p className="text-xs font-medium uppercase tracking-wider text-stone-400">块详情</p>
 
-        <div className="mt-3">
+        <div className="mt-3 min-w-0 break-words">
           {selectedBlock ? (
             <BlockCard block={selectedBlock} editable={false} compact />
           ) : (
