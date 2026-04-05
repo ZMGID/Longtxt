@@ -7,11 +7,14 @@ files:
   - dist-electron/**
   - package.json
 asarUnpack:
+  - node_modules/@node-rs/jieba-*/**
   - node_modules/better-sqlite3/**
   - node_modules/sqlite-vec-*/**
 mac:
   category: public.app-category.productivity
+  icon: build/icon.icns
 win:
+  icon: build/icon.ico
   target:
     - nsis
 npmRebuild: false

@@ -2,7 +2,7 @@ import { readFile } from 'node:fs/promises'
 import { extname, isAbsolute, join, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-import { app, BrowserWindow, dialog, protocol, shell } from 'electron'
+import { app, BrowserWindow, dialog, nativeImage, protocol, shell } from 'electron'
 
 import { IPC_CHANNELS } from '../shared/ipc'
 import type { BlockChangedEvent, CalendarChangedEvent, DocGenerationChunk, MetaChangedEvent, NotebookChangedEvent } from '../shared/types'
@@ -110,7 +110,27 @@ async function registerAttachmentProtocol(dataDirectory: string): Promise<void> 
   })
 }
 
+function resolveWindowIconPath(): string | null {
+  if (process.platform === 'darwin' || !isDevelopment) {
+    return null
+  }
+
+  return join(__dirname, '..', 'build', process.platform === 'win32' ? 'icon.ico' : 'icon.png')
+}
+
+function resolveWindowIcon() {
+  const iconPath = resolveWindowIconPath()
+
+  if (!iconPath) {
+    return undefined
+  }
+
+  const icon = nativeImage.createFromPath(iconPath)
+  return icon.isEmpty() ? undefined : icon
+}
+
 function createMainWindow(): BrowserWindow {
+  const icon = resolveWindowIcon()
   const window = new BrowserWindow({
     width: 1220,
     height: 820,
@@ -122,6 +142,7 @@ function createMainWindow(): BrowserWindow {
     titleBarOverlay: {
       height: 28,
     },
+    ...(icon ? { icon } : {}),
     ...(process.platform === 'darwin' ? { vibrancy: 'sidebar' } : {}),
     webPreferences: {
       preload: preloadPath,
