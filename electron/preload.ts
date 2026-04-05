@@ -1,13 +1,29 @@
 import { contextBridge, ipcRenderer } from 'electron'
 
 import { IPC_CHANNELS } from '../shared/ipc'
-import type { BlockChangedEvent, CalendarChangedEvent, ChangbuApi, DocGenerationChunk, MetaChangedEvent, NotebookChangedEvent } from '../shared/types'
+import type {
+  BlockChangedEvent,
+  CalendarChangedEvent,
+  ChangbuApi,
+  DocGenerationChunk,
+  MetaChangedEvent,
+  NotebookChangedEvent,
+  RendererExportOptions,
+} from '../shared/types'
 
 const blockListeners = new Set<(event: BlockChangedEvent) => void>()
 const notebookListeners = new Set<(event: NotebookChangedEvent) => void>()
 const metaListeners = new Set<(event: MetaChangedEvent) => void>()
 const calendarListeners = new Set<(event: CalendarChangedEvent) => void>()
 const docListeners = new Set<(chunk: DocGenerationChunk) => void>()
+
+function sanitizeExportOptions(options: Partial<RendererExportOptions> | undefined): RendererExportOptions {
+  return {
+    includeAttachments: Boolean(options?.includeAttachments),
+    tagFilter: options?.tagFilter,
+    dateRange: options?.dateRange,
+  }
+}
 
 ipcRenderer.on(IPC_CHANNELS.events.blockChanged, (_event, payload: BlockChangedEvent) => {
   for (const listener of blockListeners) {
@@ -100,12 +116,12 @@ const api: ChangbuApi = {
     generateDocument: (notebookId, topic) => ipcRenderer.invoke(IPC_CHANNELS.notebooks.generateDocument, notebookId, topic),
   },
   exports: {
-    markdown: (options) => ipcRenderer.invoke(IPC_CHANNELS.exports.markdown, options),
-    json: (options) => ipcRenderer.invoke(IPC_CHANNELS.exports.json, options),
+    markdown: (options) => ipcRenderer.invoke(IPC_CHANNELS.exports.markdown, sanitizeExportOptions(options)),
+    json: (options) => ipcRenderer.invoke(IPC_CHANNELS.exports.json, sanitizeExportOptions(options)),
   },
   imports: {
-    previewMarkdown: (filePaths) => ipcRenderer.invoke(IPC_CHANNELS.imports.previewMarkdown, filePaths),
-    previewJson: (filePath) => ipcRenderer.invoke(IPC_CHANNELS.imports.previewJson, filePath),
+    previewMarkdown: () => ipcRenderer.invoke(IPC_CHANNELS.imports.previewMarkdown),
+    previewJson: () => ipcRenderer.invoke(IPC_CHANNELS.imports.previewJson),
     confirm: (importId, conflictStrategy) => ipcRenderer.invoke(IPC_CHANNELS.imports.confirm, importId, conflictStrategy),
   },
   settings: {

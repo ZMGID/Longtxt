@@ -1,7 +1,7 @@
 // @vitest-environment node
 
 import Database from 'better-sqlite3'
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 
@@ -1137,6 +1137,95 @@ describe('app context', () => {
     expect(global.fetch).toHaveBeenCalledTimes(3)
 
     global.fetch = originalFetch
+  })
+
+  it('does not import markdown attachments from outside the selected file directory', async () => {
+    const { context, directory } = makeContextWithDirectory()
+    const bundleDirectory = join(directory, 'markdown-import')
+    const markdownPath = join(bundleDirectory, 'import.md')
+    const outsideAttachmentPath = join(directory, 'outside.png')
+
+    mkdirSync(bundleDirectory, { recursive: true })
+    writeFileSync(outsideAttachmentPath, Buffer.from(ONE_PIXEL_PNG_DATA_URL.split(',')[1], 'base64'))
+    writeFileSync(markdownPath, '导入内容\n\n![外部图片](../outside.png)', 'utf8')
+
+    const preview = await context.previewImportMarkdown([markdownPath])
+    expect(preview?.totalBlocks).toBe(1)
+
+    const imported = await context.confirmImport(preview!.importId, 'overwrite_all')
+    expect(imported.imported).toBe(1)
+
+    const blocks = await context.listBlocks()
+    expect(blocks).toHaveLength(1)
+    expect(blocks[0].content).toContain('![外部图片](../outside.png)')
+
+    const db = openDb(directory)
+    const attachmentCount = db.prepare('SELECT COUNT(*) AS total FROM attachments').get() as { total: number }
+    db.close()
+
+    expect(attachmentCount.total).toBe(0)
+    expect(existsSync(outsideAttachmentPath)).toBe(true)
+  })
+
+  it('does not leave partial data behind when import confirmation fails', async () => {
+    const { context, directory } = makeContextWithDirectory()
+    const importPath = join(directory, 'broken-import.json')
+
+    writeFileSync(
+      importPath,
+      JSON.stringify({
+        version: 2,
+        exportedAt: new Date().toISOString(),
+        blocks: [
+          {
+            id: 'block-valid',
+            content: '第一条本应成功的导入块。',
+            summary: null,
+            createdAt: '2026-04-01T09:00:00.000Z',
+            updatedAt: '2026-04-01T09:00:00.000Z',
+            status: 'ready',
+            aiMode: 'mock',
+            errorMessage: null,
+            tags: [],
+            attachments: [],
+          },
+          {
+            id: 'block-invalid',
+            content: '第二条会触发失败的导入块。',
+            summary: null,
+            createdAt: '2026-04-01T10:00:00.000Z',
+            updatedAt: '2026-04-01T10:00:00.000Z',
+            status: 'ready',
+            aiMode: 'mock',
+            errorMessage: null,
+            tags: [],
+            attachments: [
+              {
+                sourceUrl: 'file:///tmp/invalid.txt',
+                filename: 'invalid.txt',
+                mimeType: 'text/plain',
+                altText: null,
+                base64: Buffer.from('invalid').toString('base64'),
+              },
+            ],
+          },
+        ],
+      }, null, 2),
+      'utf8',
+    )
+
+    const preview = await context.previewImportJson(importPath)
+    expect(preview?.totalBlocks).toBe(2)
+
+    await expect(context.confirmImport(preview!.importId, 'overwrite_all')).rejects.toThrow('不支持的图片数据格式。')
+
+    const db = openDb(directory)
+    const blockCount = db.prepare('SELECT COUNT(*) AS total FROM blocks').get() as { total: number }
+    const attachmentCount = db.prepare('SELECT COUNT(*) AS total FROM attachments').get() as { total: number }
+    db.close()
+
+    expect(blockCount.total).toBe(0)
+    expect(attachmentCount.total).toBe(0)
   })
 
   it('preserves notebook relations while replacing tags and attachments on json overwrite import', async () => {

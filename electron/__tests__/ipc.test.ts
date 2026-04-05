@@ -4,10 +4,10 @@ import { mkdtempSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { IPC_CHANNELS } from '../../shared/ipc'
-import type { DocGenerationChunk } from '../../shared/types'
+import type { DocGenerationChunk, RendererExportOptions } from '../../shared/types'
 import { createAppContext, type AppContext } from '../appContext'
 import { createIpcHandlers } from '../ipc/register'
 
@@ -81,5 +81,44 @@ describe('ipc handlers', () => {
 
     expect(chunks.length).toBeGreaterThan(0)
     expect(chunks.at(-1)?.done).toBe(true)
+  })
+
+  it('drops renderer-supplied file system paths from import and export handlers', async () => {
+    const exportMarkdown = vi.fn(async () => null)
+    const exportJson = vi.fn(async () => null)
+    const previewImportMarkdown = vi.fn(async () => null)
+    const previewImportJson = vi.fn(async () => null)
+    const handlers = createIpcHandlers({
+      exportMarkdown,
+      exportJson,
+      previewImportMarkdown,
+      previewImportJson,
+    } as unknown as AppContext)
+
+    await (handlers[IPC_CHANNELS.exports.markdown] as (...args: unknown[]) => Promise<unknown>)({}, {
+      includeAttachments: true,
+      tagFilter: ['项目'],
+      dateRange: { start: '2026-04-01' },
+      targetPath: '/tmp/should-be-ignored',
+    } as RendererExportOptions & { targetPath: string })
+    await (handlers[IPC_CHANNELS.exports.json] as (...args: unknown[]) => Promise<unknown>)({}, {
+      includeAttachments: false,
+      targetPath: '/tmp/should-be-ignored.json',
+    } as RendererExportOptions & { targetPath: string })
+    await (handlers[IPC_CHANNELS.imports.previewMarkdown] as (...args: unknown[]) => Promise<unknown>)({}, ['/tmp/should-not-pass.md'])
+    await (handlers[IPC_CHANNELS.imports.previewJson] as (...args: unknown[]) => Promise<unknown>)({}, '/tmp/should-not-pass.json')
+
+    expect(exportMarkdown).toHaveBeenCalledWith({
+      includeAttachments: true,
+      tagFilter: ['项目'],
+      dateRange: { start: '2026-04-01' },
+    })
+    expect(exportJson).toHaveBeenCalledWith({
+      includeAttachments: false,
+      tagFilter: undefined,
+      dateRange: undefined,
+    })
+    expect(previewImportMarkdown.mock.calls[0]).toEqual([])
+    expect(previewImportJson.mock.calls[0]).toEqual([])
   })
 })

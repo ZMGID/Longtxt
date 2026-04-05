@@ -287,7 +287,7 @@ export function getGraphData(db: Database.Database, tagNames: string[] = []): { 
   const edges = candidateEdges
     .filter((edge) => keptEdgeKeys.has(edge.key))
     .sort(compareEdges)
-    .map(({ key, ...edge }) => edge)
+    .map(({ source, target, weight, sharedTags }) => ({ source, target, weight, sharedTags }))
 
   const degreeMap = new Map<string, number>()
   for (const edge of edges) {

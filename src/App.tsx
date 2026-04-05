@@ -1,4 +1,4 @@
-import { Suspense, lazy, startTransition, useEffect, useRef, useState } from 'react'
+import { Suspense, lazy, startTransition, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { useQueryClient } from '@tanstack/react-query'
 
@@ -187,7 +187,18 @@ function AppInner() {
   const graphData = graphQuery.data ?? { nodes: [], edges: [] }
   const graphLoading = graphQuery.isPending || graphQuery.isFetching
   const snapshotsQuery = useSnapshots(snapshotQuery, null, activeView === 'snapshots')
-  const snapshots = snapshotsQuery.data ?? []
+  const snapshots = useMemo(() => snapshotsQuery.data ?? [], [snapshotsQuery.data])
+
+  const refreshMeta = useCallback(async (): Promise<AppMeta> => {
+    await queryClient.refetchQueries({ queryKey: queryKeys.meta(), exact: true })
+    const result = queryClient.getQueryData<AppMeta>(queryKeys.meta())
+
+    if (!result) {
+      throw new Error('刷新应用状态失败。')
+    }
+
+    return result
+  }, [queryClient])
 
   useEffect(() => {
     let active = true
@@ -274,7 +285,7 @@ function AppInner() {
       active = false
       unsubscribe()
     }
-  }, [])
+  }, [refreshMeta])
 
   useEffect(() => {
     if (!snapshotsQuery.isSuccess) {
@@ -325,16 +336,6 @@ function AppInner() {
       setSelectedGraphBlockFallback(null)
     }
   }, [activeView, graphData.nodes, selectedGraphBlockId])
-
-  async function refreshMeta(): Promise<AppMeta> {
-    const result = await metaQuery.refetch()
-
-    if (!result.data) {
-      throw new Error('刷新应用状态失败。')
-    }
-
-    return result.data
-  }
 
   function handleConfigChange(nextConfig: AIConfig): void {
     setConfig(nextConfig)
@@ -668,76 +669,71 @@ function AppInner() {
         )
       case 'calendar':
         return (
-          <div className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto">
-            <CalendarView
-              settings={calendarSettings}
-              onJumpToBlock={async (blockId) => {
-                await ensureBlockLoaded(blockId)
-                setActiveView('timeline')
-                setFocusedBlockId(blockId)
-              }}
-            />
-          </div>
+          <CalendarView
+            settings={calendarSettings}
+            onJumpToBlock={async (blockId) => {
+              await ensureBlockLoaded(blockId)
+              setActiveView('timeline')
+              setFocusedBlockId(blockId)
+            }}
+          />
         )
       case 'notebooks':
         return (
-          <div className="flex min-h-0 flex-1 overflow-x-hidden overflow-y-auto">
-            <NotebookWorkspace
-              notebooks={notebooks}
-              selectedNotebookId={selectedNotebookId}
-              selectedNotebook={selectedNotebook}
-              loading={notebooksLoading}
-              loadingNotebook={loadingNotebook}
-              searching={notebookSearching}
-              searchQuery={searchQuery}
-              searchResults={notebookResults}
-              searchError={searchError}
-              error={notebooksError}
-              tagSuggestions={tags}
-              onSelectNotebook={selectNotebook}
-              onCreateNotebook={handleCreateNotebook}
-              onUpdateNotebookTitle={async (notebookId, title) => {
-                await updateNotebook(notebookId, title)
-              }}
-              onDeleteNotebook={async (notebookId) => {
-                await removeNotebook(notebookId)
-                toast('success', '笔记本已删除。')
-              }}
-              onCreateBlockInNotebook={async (notebookId, content) => {
-                await createBlockInNotebook(notebookId, content)
-                toast('success', '新块已加入当前笔记本。')
-              }}
-              onUpdateBlock={updateBlock}
-              onAddTag={addTag}
-              onRemoveTag={removeTag}
-              onTagClick={(tagName) => {
-                void handleNotebookBrowseTag(tagName)
-              }}
-              onRemoveNotebookItem={async (notebookId, itemId) => {
-                await removeNotebookItem(notebookId, itemId)
-                toast('success', '该块已从笔记本移出。')
-              }}
-              onReorderNotebookItems={async (notebookId, itemIds) => {
-                await reorderItems(notebookId, itemIds)
-              }}
-              onSearchQueryChange={setSearchQuery}
-              onSearch={async () => {
-                await handleNotebookSearch()
-              }}
-              onAddSearchResultToNotebook={async (blockId) => {
-                if (!selectedNotebook) {
-                  return
-                }
+          <NotebookWorkspace
+            notebooks={notebooks}
+            selectedNotebookId={selectedNotebookId}
+            selectedNotebook={selectedNotebook}
+            loading={notebooksLoading}
+            loadingNotebook={loadingNotebook}
+            searching={notebookSearching}
+            searchQuery={searchQuery}
+            searchResults={notebookResults}
+            searchError={searchError}
+            error={notebooksError}
+            tagSuggestions={tags}
+            onSelectNotebook={selectNotebook}
+            onCreateNotebook={handleCreateNotebook}
+            onUpdateNotebookTitle={async (notebookId, title) => {
+              await updateNotebook(notebookId, title)
+            }}
+            onDeleteNotebook={async (notebookId) => {
+              await removeNotebook(notebookId)
+              toast('success', '笔记本已删除。')
+            }}
+            onCreateBlockInNotebook={async (notebookId, content) => {
+              await createBlockInNotebook(notebookId, content)
+              toast('success', '新块已加入当前笔记本。')
+            }}
+            onUpdateBlock={updateBlock}
+            onAddTag={addTag}
+            onRemoveTag={removeTag}
+            onTagClick={(tagName) => {
+              void handleNotebookBrowseTag(tagName)
+            }}
+            onRemoveNotebookItem={async (notebookId, itemId) => {
+              await removeNotebookItem(notebookId, itemId)
+              toast('success', '该块已从笔记本移出。')
+            }}
+            onReorderNotebookItems={async (notebookId, itemIds) => {
+              await reorderItems(notebookId, itemIds)
+            }}
+            onSearchQueryChange={setSearchQuery}
+            onSearch={async () => {
+              await handleNotebookSearch()
+            }}
+            onAddSearchResultToNotebook={async (blockId) => {
+              if (!selectedNotebook) {
+                return
+              }
 
-                await handleAddBlockToNotebook(selectedNotebook.id, blockId)
-              }}
-            />
-          </div>
+              await handleAddBlockToNotebook(selectedNotebook.id, blockId)
+            }}
+          />
         )
       case 'search':
         return (
-          <div className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto">
-            <SearchPanel
+          <SearchPanel
             query={searchQuery}
             results={displayedSearchResults}
             resultsTitle={searchResultsTitle}
@@ -776,12 +772,10 @@ function AppInner() {
             }}
             inputRef={searchInputRef}
           />
-          </div>
         )
       case 'graph':
         return (
-          <div className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto">
-            <GraphView
+          <GraphView
             nodes={graphData.nodes}
             edges={graphData.edges}
             loading={graphLoading}
@@ -820,13 +814,11 @@ function AppInner() {
               setFocusedBlockId(blockId)
               setSelectedGraphBlockId(blockId)
             }}
-            />
-          </div>
+          />
         )
       case 'snapshots':
         return (
-          <div className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto">
-            <SnapshotsView
+          <SnapshotsView
             snapshots={snapshots}
             selectedSnapshotId={selectedSnapshotId}
             snapshotQuery={snapshotQuery}
@@ -916,37 +908,34 @@ function AppInner() {
               setImportPreview(null)
             }}
           />
-          </div>
         )
       case 'settings':
         return (
-          <div className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto">
-            <SettingsPanel
-              config={config}
-              docGenerationSettings={docGenerationSettings}
-              blockEnrichSettings={blockEnrichSettings}
-              calendarSettings={calendarSettings}
-              uiSettings={uiSettings}
-              meta={meta}
-              saving={settingsSaving}
-              testing={settingsTesting}
-              testResult={testResult}
-              onChange={handleConfigChange}
-              onDocGenerationSettingsChange={setDocGenerationSettings}
-              onBlockEnrichSettingsChange={setBlockEnrichSettings}
-              onCalendarSettingsChange={setCalendarSettings}
-              onUISettingsChange={setUiSettings}
-              onSave={handleSaveSettings}
-              onTest={handleTestSettings}
-              onRetryFailedVectors={handleRetryFailedVectors}
-              onOpenDataDirectory={async () => {
-                await changbu.settings.openDataDirectory()
-              }}
-              onOpenSettingsDirectory={async () => {
-                await changbu.settings.openSettingsDirectory()
-              }}
-            />
-          </div>
+          <SettingsPanel
+            config={config}
+            docGenerationSettings={docGenerationSettings}
+            blockEnrichSettings={blockEnrichSettings}
+            calendarSettings={calendarSettings}
+            uiSettings={uiSettings}
+            meta={meta}
+            saving={settingsSaving}
+            testing={settingsTesting}
+            testResult={testResult}
+            onChange={handleConfigChange}
+            onDocGenerationSettingsChange={setDocGenerationSettings}
+            onBlockEnrichSettingsChange={setBlockEnrichSettings}
+            onCalendarSettingsChange={setCalendarSettings}
+            onUISettingsChange={setUiSettings}
+            onSave={handleSaveSettings}
+            onTest={handleTestSettings}
+            onRetryFailedVectors={handleRetryFailedVectors}
+            onOpenDataDirectory={async () => {
+              await changbu.settings.openDataDirectory()
+            }}
+            onOpenSettingsDirectory={async () => {
+              await changbu.settings.openSettingsDirectory()
+            }}
+          />
         )
     }
   }
@@ -964,57 +953,59 @@ function AppInner() {
           onSelectView={setActiveView}
         />
 
-        <main className="flex min-w-0 flex-1 flex-col overflow-hidden bg-white/[0.94]">
-          {/* macOS 交通灯按钮区域 — 与侧边栏对齐 */}
-          <div className="window-drag-region flex h-12 shrink-0 items-center border-b border-black/[0.06] bg-[linear-gradient(180deg,rgba(255,255,255,0.88),rgba(248,244,237,0.58))] px-5 lg:h-14 lg:px-7">
-            <h2 className="text-[17px] font-semibold tracking-[0.01em] text-stone-900">{activeViewTitle}</h2>
-          </div>
-
-          <div className="flex flex-1 overflow-hidden px-4 pt-1.5 pb-2.5 lg:px-6 lg:pt-2">
-            <div key={activeView} className="flex min-w-0 flex-1 flex-col overflow-hidden animate-[fadeIn_200ms_ease-out]">
-              <Suspense fallback={<ViewLoadingState label={`${activeViewTitle}加载中…`} />}>
-                {renderActiveView()}
-              </Suspense>
+        <main className="flex min-w-0 flex-1 overflow-hidden bg-white/[0.94]">
+          <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
+            {/* macOS 交通灯按钮区域 — 与侧边栏对齐 */}
+            <div className="window-drag-region flex h-12 shrink-0 items-center border-b border-black/[0.06] bg-[linear-gradient(180deg,rgba(255,255,255,0.88),rgba(248,244,237,0.58))] px-5 lg:h-14 lg:px-7">
+              <h2 className="text-[17px] font-semibold tracking-[0.01em] text-stone-900">{activeViewTitle}</h2>
             </div>
 
-            {relatedBlocks !== null && (
-              <aside className="ml-3 w-72 shrink-0 overflow-y-auto rounded-lg border border-stone-200 bg-stone-50/80 p-4 xl:ml-4 xl:w-80">
-                <div className="mb-3 flex items-center justify-between">
-                  <h3 className="text-xs font-medium uppercase tracking-wider text-stone-400">相关块</h3>
-                  <button
-                    type="button"
-                    onClick={() => setRelatedBlocks(null)}
-                    className="text-xs text-stone-400 transition hover:text-stone-600"
-                  >
-                    关闭
-                  </button>
-                </div>
-                {relatedLoading ? (
-                  <p className="py-8 text-center text-sm text-stone-400">查找中…</p>
-                ) : relatedBlocks.length === 0 ? (
-                  <p className="py-8 text-center text-sm text-stone-400">未找到相关块。</p>
-                ) : (
-                  <div className="space-y-2">
-                    {relatedBlocks.map(({ block: related, score }) => (
-                      <div key={related.id}>
-                        <BlockCard
-                          block={related}
-                          compact
-                          editable={false}
-                          headerActions={
-                            <span className="text-[11px] font-medium text-stone-400">
-                              {Math.round(score * 100)}%
-                            </span>
-                          }
-                          onTagClick={(tagName) => { void handleBrowseTag(tagName) }}
-                        />
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </aside>
-            )}
+            <div className="flex min-h-0 min-w-0 flex-1 px-4 pb-2.5 pt-1.5 lg:px-6 lg:pt-2">
+              <div key={activeView} className="flex min-h-0 min-w-0 flex-1 animate-[fadeIn_200ms_ease-out] overflow-hidden">
+                <Suspense fallback={<ViewLoadingState label={`${activeViewTitle}加载中…`} />}>
+                  {renderActiveView()}
+                </Suspense>
+              </div>
+            </div>
           </div>
+
+          {relatedBlocks !== null && (
+            <aside className="hidden min-h-0 w-72 shrink-0 overflow-y-auto border-l border-stone-200 bg-stone-50/85 p-4 xl:flex xl:w-80 xl:flex-col">
+              <div className="mb-3 flex items-center justify-between">
+                <h3 className="text-xs font-medium uppercase tracking-wider text-stone-400">相关块</h3>
+                <button
+                  type="button"
+                  onClick={() => setRelatedBlocks(null)}
+                  className="text-xs text-stone-400 transition hover:text-stone-600"
+                >
+                  关闭
+                </button>
+              </div>
+              {relatedLoading ? (
+                <p className="py-8 text-center text-sm text-stone-400">查找中…</p>
+              ) : relatedBlocks.length === 0 ? (
+                <p className="py-8 text-center text-sm text-stone-400">未找到相关块。</p>
+              ) : (
+                <div className="space-y-2">
+                  {relatedBlocks.map(({ block: related, score }) => (
+                    <div key={related.id}>
+                      <BlockCard
+                        block={related}
+                        compact
+                        editable={false}
+                        headerActions={
+                          <span className="text-[11px] font-medium text-stone-400">
+                            {Math.round(score * 100)}%
+                          </span>
+                        }
+                        onTagClick={(tagName) => { void handleBrowseTag(tagName) }}
+                      />
+                    </div>
+                  ))}
+                </div>
+              )}
+            </aside>
+          )}
         </main>
       </div>
     </>

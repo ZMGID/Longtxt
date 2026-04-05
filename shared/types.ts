@@ -192,6 +192,8 @@ export interface ExportOptions {
   targetPath?: string | null
 }
 
+export type RendererExportOptions = Omit<ExportOptions, 'targetPath'>
+
 export interface ImportPreview {
   importId: string
   format: 'markdown' | 'json'
@@ -464,12 +466,12 @@ export interface ChangbuApi {
     generateDocument(notebookId: string, topic?: string): Promise<DocGenerationStart>
   }
   exports: {
-    markdown(options: ExportOptions): Promise<{ path: string; count: number } | null>
-    json(options: ExportOptions): Promise<{ path: string; count: number } | null>
+    markdown(options: RendererExportOptions): Promise<{ path: string; count: number } | null>
+    json(options: RendererExportOptions): Promise<{ path: string; count: number } | null>
   }
   imports: {
-    previewMarkdown(filePaths?: string[]): Promise<ImportPreview | null>
-    previewJson(filePath?: string): Promise<ImportPreview | null>
+    previewMarkdown(): Promise<ImportPreview | null>
+    previewJson(): Promise<ImportPreview | null>
     confirm(importId: string, conflictStrategy: ImportConflictStrategy): Promise<{ imported: number }>
   }
   tags: {

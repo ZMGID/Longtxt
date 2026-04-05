@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import { copyFile, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { basename, extname, isAbsolute, join, relative, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
@@ -28,6 +28,17 @@ interface AttachmentRow {
   file_path: string
   filename?: string
   mime_type?: string | null
+}
+
+interface StagedAttachmentFile {
+  filePath: string
+  fileUrl: string
+  markdownAlt: string
+  mimeType: string | null
+}
+
+interface StageLocalAttachmentOptions {
+  allowedSourceDirectory?: string
 }
 
 function getAttachmentsDirectory(dataDirectory: string): string {
@@ -62,6 +73,12 @@ function sanitizeAltText(filenameHint?: string): string {
   const source = filenameHint?.trim() || 'image'
   const withoutExtension = source.replace(/\.[^.]+$/, '')
   return withoutExtension.replace(/\s+/g, '-').slice(0, 40) || 'image'
+}
+
+function isPathInsideDirectory(filePath: string, directoryPath: string): boolean {
+  const relativePath = relative(resolve(directoryPath), resolve(filePath))
+
+  return relativePath !== '' && !relativePath.startsWith('..') && !isAbsolute(relativePath)
 }
 
 function extractAttachmentReferences(content: string): AttachmentReference[] {
@@ -147,12 +164,34 @@ function ensureAttachmentRecord(db: Database.Database, fileUrl: string, filePath
   }
 }
 
-export async function saveImageDataUrl(
-  db: Database.Database,
+async function stageAttachmentFile(
+  dataDirectory: string,
+  payload: Buffer,
+  extension: string,
+  mimeType: string | null,
+  filenameHint?: string,
+): Promise<StagedAttachmentFile> {
+  const attachmentsDirectory = getAttachmentsDirectory(dataDirectory)
+  const normalizedExtension = extension.startsWith('.') ? extension : `.${extension}`
+  const filename = `${Date.now()}-${randomUUID()}${normalizedExtension}`
+  const filePath = join(attachmentsDirectory, filename)
+
+  await mkdir(attachmentsDirectory, { recursive: true })
+  await writeFile(filePath, payload)
+
+  return {
+    filePath,
+    fileUrl: pathToFileURL(filePath).toString(),
+    markdownAlt: sanitizeAltText(filenameHint ?? filename),
+    mimeType,
+  }
+}
+
+export async function stageImageDataUrl(
   dataDirectory: string,
   dataUrl: string,
   filenameHint?: string,
-): Promise<{ fileUrl: string; markdownAlt: string }> {
+): Promise<StagedAttachmentFile> {
   const match = dataUrl.match(DATA_URL_PATTERN)
 
   if (!match) {
@@ -160,20 +199,47 @@ export async function saveImageDataUrl(
   }
 
   const [, mimeType, base64Payload] = match
-  const extension = getExtensionFromMimeType(mimeType)
-  const attachmentsDirectory = getAttachmentsDirectory(dataDirectory)
-  const filename = `${Date.now()}-${randomUUID()}.${extension}`
-  const filePath = join(attachmentsDirectory, filename)
+  return stageAttachmentFile(dataDirectory, Buffer.from(base64Payload, 'base64'), getExtensionFromMimeType(mimeType), mimeType, filenameHint)
+}
 
-  await mkdir(attachmentsDirectory, { recursive: true })
-  await writeFile(filePath, Buffer.from(base64Payload, 'base64'))
+export async function stageLocalAttachmentFile(
+  dataDirectory: string,
+  sourcePath: string,
+  filenameHint?: string,
+  options: StageLocalAttachmentOptions = {},
+): Promise<StagedAttachmentFile> {
+  const resolvedSourcePath = resolve(sourcePath)
+  const mimeType = getMimeTypeFromFilename(resolvedSourcePath)
 
-  const fileUrl = pathToFileURL(filePath).toString()
-  ensureAttachmentRecord(db, fileUrl, filePath, mimeType)
+  if (!mimeType) {
+    throw new Error('仅支持导入 PNG、JPG、WEBP、GIF 或 SVG 图片附件。')
+  }
+
+  if (options.allowedSourceDirectory && !isPathInsideDirectory(resolvedSourcePath, options.allowedSourceDirectory)) {
+    throw new Error('Markdown 附件必须位于导入文件所在目录内。')
+  }
+
+  return stageAttachmentFile(
+    dataDirectory,
+    await readFile(resolvedSourcePath),
+    extname(resolvedSourcePath) || `.${getExtensionFromMimeType(mimeType)}`,
+    mimeType,
+    filenameHint ?? basename(resolvedSourcePath),
+  )
+}
+
+export async function saveImageDataUrl(
+  db: Database.Database,
+  dataDirectory: string,
+  dataUrl: string,
+  filenameHint?: string,
+): Promise<{ fileUrl: string; markdownAlt: string }> {
+  const staged = await stageImageDataUrl(dataDirectory, dataUrl, filenameHint)
+  ensureAttachmentRecord(db, staged.fileUrl, staged.filePath, staged.mimeType)
 
   return {
-    fileUrl,
-    markdownAlt: sanitizeAltText(filenameHint),
+    fileUrl: staged.fileUrl,
+    markdownAlt: staged.markdownAlt,
   }
 }
 
@@ -183,20 +249,12 @@ export async function importLocalAttachmentFile(
   sourcePath: string,
   filenameHint?: string,
 ): Promise<{ fileUrl: string; markdownAlt: string }> {
-  const attachmentsDirectory = getAttachmentsDirectory(dataDirectory)
-  const extension = extname(sourcePath) || '.png'
-  const filename = `${Date.now()}-${randomUUID()}${extension}`
-  const targetPath = join(attachmentsDirectory, filename)
-
-  await mkdir(attachmentsDirectory, { recursive: true })
-  await copyFile(sourcePath, targetPath)
-
-  const fileUrl = pathToFileURL(targetPath).toString()
-  ensureAttachmentRecord(db, fileUrl, targetPath, getMimeTypeFromFilename(targetPath))
+  const staged = await stageLocalAttachmentFile(dataDirectory, sourcePath, filenameHint)
+  ensureAttachmentRecord(db, staged.fileUrl, staged.filePath, staged.mimeType)
 
   return {
-    fileUrl,
-    markdownAlt: sanitizeAltText(filenameHint ?? basename(sourcePath)),
+    fileUrl: staged.fileUrl,
+    markdownAlt: staged.markdownAlt,
   }
 }
 

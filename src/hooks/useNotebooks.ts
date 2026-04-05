@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useMemo, useState } from 'react'
 
 import { QueryClient, useQuery, useQueryClient } from '@tanstack/react-query'
 
@@ -35,43 +35,37 @@ async function invalidateNotebookQueries(
 
 export function useNotebooks() {
   const queryClient = useQueryClient()
-  const [selectedNotebookId, setSelectedNotebookId] = useState<string | null>(null)
+  const [preferredNotebookId, setPreferredNotebookId] = useState<string | null>(null)
   const notebooksQuery = useQuery({
     queryKey: queryKeys.notebooks(),
     queryFn: () => changbu.notebooks.list(),
   })
+  const notebooks = useMemo(() => notebooksQuery.data ?? [], [notebooksQuery.data])
+  const selectedNotebookId = useMemo(() => {
+    if (notebooks.length === 0) {
+      return null
+    }
+
+    return preferredNotebookId && notebooks.some((notebook) => notebook.id === preferredNotebookId) ? preferredNotebookId : notebooks[0].id
+  }, [notebooks, preferredNotebookId])
   const selectedNotebookQuery = useQuery({
     queryKey: selectedNotebookId ? queryKeys.notebook(selectedNotebookId) : queryKeys.notebookRoot(),
     queryFn: () => changbu.notebooks.get(selectedNotebookId!),
     enabled: Boolean(selectedNotebookId),
   })
-  const notebooks = notebooksQuery.data ?? []
   const selectedNotebook = useMemo(
     () => (selectedNotebookQuery.data ? toVisibleNotebook(selectedNotebookQuery.data) : null),
     [selectedNotebookQuery.data],
   )
   const loadingNotebook = Boolean(selectedNotebookId) && selectedNotebookQuery.isFetching && selectedNotebook?.id !== selectedNotebookId
 
-  useEffect(() => {
-    if (notebooks.length === 0) {
-      if (selectedNotebookId !== null) {
-        setSelectedNotebookId(null)
-      }
-      return
-    }
-
-    if (!selectedNotebookId || !notebooks.some((notebook) => notebook.id === selectedNotebookId)) {
-      setSelectedNotebookId(notebooks[0].id)
-    }
-  }, [notebooks, selectedNotebookId])
-
   function selectNotebook(id: string): void {
-    setSelectedNotebookId(id)
+    setPreferredNotebookId(id)
   }
 
   async function createNotebook(title?: string): Promise<Notebook> {
     const notebook = await changbu.notebooks.create(title)
-    setSelectedNotebookId(notebook.id)
+    setPreferredNotebookId(notebook.id)
     await invalidateNotebookQueries(queryClient, [notebook.id])
     return toVisibleNotebook(notebook)
   }
@@ -91,7 +85,7 @@ export function useNotebooks() {
     })
     const nextSelectedNotebookId = selectedNotebookId === id ? nextNotebooks[0]?.id ?? null : selectedNotebookId
 
-    setSelectedNotebookId(nextSelectedNotebookId)
+    setPreferredNotebookId(nextSelectedNotebookId)
 
     if (nextSelectedNotebookId) {
       await queryClient.invalidateQueries({ queryKey: queryKeys.notebook(nextSelectedNotebookId) })
@@ -110,7 +104,7 @@ export function useNotebooks() {
   async function createNotebookWithBlock(blockId: string, title?: string): Promise<NotebookMutationResult> {
     const notebook = await changbu.notebooks.create(title)
     const result = await changbu.notebooks.addBlock(notebook.id, blockId)
-    setSelectedNotebookId(notebook.id)
+    setPreferredNotebookId(notebook.id)
     await invalidateNotebookQueries(queryClient, [notebook.id])
     return {
       ...result,

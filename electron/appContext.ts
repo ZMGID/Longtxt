@@ -2219,8 +2219,14 @@ export function createAppContext(options: AppContextOptions): AppContext {
         throw new Error('导入预览已失效，请重新选择文件。')
       }
 
-      const result = await confirmImportJob(db, options.dataDirectory, job, conflictStrategy)
-      importJobs.delete(importId)
+      let result: Awaited<ReturnType<typeof confirmImportJob>>
+
+      try {
+        result = await confirmImportJob(db, options.dataDirectory, job, conflictStrategy)
+      } finally {
+        importJobs.delete(importId)
+      }
+
       const importedBlocks = getBlocksByIds(db, result.importedIds)
       const createdBlocks = getBlocksByIds(db, result.createdIds)
       const updatedBlocks = getBlocksByIds(db, result.updatedIds)

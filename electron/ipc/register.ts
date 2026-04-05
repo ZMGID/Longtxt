@@ -1,7 +1,16 @@
 import { ipcMain } from 'electron'
 
 import { IPC_CHANNELS } from '../../shared/ipc'
+import type { RendererExportOptions } from '../../shared/types'
 import type { AppContext } from '../appContext'
+
+function sanitizeExportOptions(options: Partial<RendererExportOptions> | undefined): RendererExportOptions {
+  return {
+    includeAttachments: Boolean(options?.includeAttachments),
+    tagFilter: options?.tagFilter,
+    dateRange: options?.dateRange,
+  }
+}
 
 export function createIpcHandlers(context: AppContext) {
   return {
@@ -66,10 +75,10 @@ export function createIpcHandlers(context: AppContext) {
     ) => context.updateNotebookReferenceReview(notebookId, blockId, patch, topic),
     [IPC_CHANNELS.notebooks.generateDocument]: (_event: unknown, notebookId: string, topic?: string) =>
       context.generateNotebookDocument(notebookId, topic),
-    [IPC_CHANNELS.exports.markdown]: (_event: unknown, options: Parameters<AppContext['exportMarkdown']>[0]) => context.exportMarkdown(options),
-    [IPC_CHANNELS.exports.json]: (_event: unknown, options: Parameters<AppContext['exportJson']>[0]) => context.exportJson(options),
-    [IPC_CHANNELS.imports.previewMarkdown]: (_event: unknown, filePaths?: string[]) => context.previewImportMarkdown(filePaths),
-    [IPC_CHANNELS.imports.previewJson]: (_event: unknown, filePath?: string) => context.previewImportJson(filePath),
+    [IPC_CHANNELS.exports.markdown]: (_event: unknown, options?: RendererExportOptions) => context.exportMarkdown(sanitizeExportOptions(options)),
+    [IPC_CHANNELS.exports.json]: (_event: unknown, options?: RendererExportOptions) => context.exportJson(sanitizeExportOptions(options)),
+    [IPC_CHANNELS.imports.previewMarkdown]: () => context.previewImportMarkdown(),
+    [IPC_CHANNELS.imports.previewJson]: () => context.previewImportJson(),
     [IPC_CHANNELS.imports.confirm]: (_event: unknown, importId: string, conflictStrategy: Parameters<AppContext['confirmImport']>[1]) =>
       context.confirmImport(importId, conflictStrategy),
     [IPC_CHANNELS.settings.get]: (_event: unknown, key: string) => context.getSetting(key),

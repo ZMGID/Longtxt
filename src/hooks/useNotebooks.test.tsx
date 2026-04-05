@@ -274,7 +274,7 @@ function createNotebookApiMock() {
           calendarListeners.delete(listener)
         }
       },
-      onDocGenerationChunk(_listener) {
+      onDocGenerationChunk() {
         return () => undefined
       },
     },

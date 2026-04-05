@@ -1,12 +1,18 @@
 import { mkdir, readFile, rm, writeFile } from 'node:fs/promises'
-import { basename, dirname, join } from 'node:path'
+import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path'
 
 import Database from 'better-sqlite3'
 import { v4 as uuid } from 'uuid'
 
 import type { AIExecutionMode, BlockStatus, ExportOptions, ImportConflictStrategy, ImportPreview, TagKind } from '../../shared/types'
 import { getOrCreateTag } from '../db/tags'
-import { cleanupOrphanAttachments, importLocalAttachmentFile, listBlockAttachments, saveImageDataUrl, syncBlockAttachmentRecords } from './attachments'
+import {
+  cleanupOrphanAttachments,
+  listBlockAttachments,
+  stageImageDataUrl,
+  stageLocalAttachmentFile,
+  syncBlockAttachmentRecords,
+} from './attachments'
 
 interface ExportBlockRow {
   id: string
@@ -38,6 +44,19 @@ interface ImportJob {
   format: 'markdown' | 'json'
   blocks: PreparedImportBlock[]
   conflicts: number
+}
+
+interface FinalizedImportBlock {
+  id: string
+  content: string
+  summary: string | null
+  createdAt: string
+  updatedAt: string
+  status: BlockStatus
+  aiMode: AIExecutionMode
+  errorMessage: string | null
+  tags: Array<{ name: string; source: 'auto' | 'manual'; kind?: TagKind }>
+  existed: boolean
 }
 
 interface JsonExportAttachment {
@@ -99,6 +118,16 @@ function sanitizeFileName(value: string): string {
 
 function summarizeContent(content: string): string {
   return content.replace(/\s+/g, ' ').trim().slice(0, 80)
+}
+
+function isPathInsideDirectory(filePath: string, directoryPath: string): boolean {
+  const relativePath = relative(resolve(directoryPath), resolve(filePath))
+
+  return relativePath !== '' && !relativePath.startsWith('..') && !isAbsolute(relativePath)
+}
+
+async function cleanupStagedFiles(filePaths: string[]): Promise<void> {
+  await Promise.all(filePaths.map((filePath) => rm(filePath, { force: true })))
 }
 
 function getFilteredBlockIds(db: Database.Database, options: ExportOptions): string[] {
@@ -279,10 +308,10 @@ export async function exportJsonBundle(
 }
 
 async function rewriteMarkdownAttachmentsForImport(
-  db: Database.Database,
   dataDirectory: string,
   sourceFilePath: string,
   content: string,
+  stagedFilePaths: string[],
 ): Promise<string> {
   const sourceDirectory = dirname(sourceFilePath)
   let nextContent = content
@@ -296,9 +325,46 @@ async function rewriteMarkdownAttachmentsForImport(
       continue
     }
 
-    const absolutePath = join(sourceDirectory, originalUrl)
-    const saved = await importLocalAttachmentFile(db, dataDirectory, absolutePath, altText)
-    nextContent = nextContent.replace(match[0], `![${saved.markdownAlt}](${saved.fileUrl})`)
+    const decodedUrl = (() => {
+      try {
+        return decodeURIComponent(originalUrl)
+      } catch {
+        return originalUrl
+      }
+    })()
+    const attachmentPath = resolve(sourceDirectory, decodedUrl)
+
+    if (!isPathInsideDirectory(attachmentPath, sourceDirectory)) {
+      continue
+    }
+
+    try {
+      const saved = await stageLocalAttachmentFile(dataDirectory, attachmentPath, altText, {
+        allowedSourceDirectory: sourceDirectory,
+      })
+      stagedFilePaths.push(saved.filePath)
+      nextContent = nextContent.replace(match[0], `![${saved.markdownAlt}](${saved.fileUrl})`)
+    } catch {
+      continue
+    }
+  }
+
+  return nextContent
+}
+
+async function rewriteJsonAttachmentsForImport(
+  dataDirectory: string,
+  content: string,
+  attachments: JsonExportAttachment[],
+  stagedFilePaths: string[],
+): Promise<string> {
+  let nextContent = content
+
+  for (const attachment of attachments) {
+    const dataUrl = `data:${attachment.mimeType ?? 'image/png'};base64,${attachment.base64}`
+    const saved = await stageImageDataUrl(dataDirectory, dataUrl, attachment.filename)
+    stagedFilePaths.push(saved.filePath)
+    nextContent = nextContent.replaceAll(attachment.sourceUrl, saved.fileUrl)
   }
 
   return nextContent
@@ -398,87 +464,117 @@ export async function confirmImportJob(
   job: ImportJob,
   conflictStrategy: ImportConflictStrategy,
 ): Promise<{ imported: number; importedIds: string[]; createdIds: string[]; updatedIds: string[] }> {
-  let imported = 0
-  const importedIds: string[] = []
-  const createdIds: string[] = []
-  const updatedIds: string[] = []
+  const stagedFilePaths: string[] = []
+  const blocks: FinalizedImportBlock[] = []
 
-  for (const block of job.blocks) {
-    let content = block.content
+  try {
+    for (const block of job.blocks) {
+      const id = block.id ?? uuid()
+      const existed = Boolean(block.id && db.prepare(`SELECT 1 FROM blocks WHERE id = ?`).get(id))
 
-    if (job.format === 'markdown' && block.sourcePath) {
-      content = await rewriteMarkdownAttachmentsForImport(db, dataDirectory, block.sourcePath, block.content)
-    }
-
-    if (job.format === 'json' && block.attachments) {
-      for (const attachment of block.attachments) {
-        const dataUrl = `data:${attachment.mimeType ?? 'image/png'};base64,${attachment.base64}`
-        const saved = await saveImageDataUrl(db, dataDirectory, dataUrl, attachment.filename)
-        content = content.replaceAll(attachment.sourceUrl, saved.fileUrl)
-      }
-    }
-
-    if (block.id) {
-      const exists = db.prepare(`SELECT 1 FROM blocks WHERE id = ?`).get(block.id)
-
-      if (exists && conflictStrategy === 'skip_all') {
+      if (existed && conflictStrategy === 'skip_all') {
         continue
       }
+
+      let content = block.content
+
+      if (job.format === 'markdown' && block.sourcePath) {
+        content = await rewriteMarkdownAttachmentsForImport(dataDirectory, block.sourcePath, block.content, stagedFilePaths)
+      }
+
+      if (job.format === 'json' && block.attachments) {
+        content = await rewriteJsonAttachmentsForImport(dataDirectory, block.content, block.attachments, stagedFilePaths)
+      }
+
+      const createdAt = block.createdAt ?? new Date().toISOString()
+      const updatedAt = block.updatedAt ?? createdAt
+
+      blocks.push({
+        id,
+        content,
+        summary: block.summary ?? null,
+        createdAt,
+        updatedAt,
+        status: job.format === 'json' ? sanitizeImportedStatus(block.status) : 'ready',
+        aiMode: job.format === 'json' ? sanitizeImportedAiMode(block.aiMode) : 'mock',
+        errorMessage: job.format === 'json' ? block.errorMessage ?? null : null,
+        tags: block.tags ?? [],
+        existed,
+      })
+    }
+  } catch (error) {
+    await cleanupStagedFiles(stagedFilePaths)
+    throw error
+  }
+
+  const applyImport = db.transaction((preparedBlocks: FinalizedImportBlock[]) => {
+    const importedIds: string[] = []
+    const createdIds: string[] = []
+    const updatedIds: string[] = []
+
+    for (const block of preparedBlocks) {
+      if (block.existed) {
+        db.prepare(
+          `
+            UPDATE blocks
+            SET
+              content = ?,
+              summary = ?,
+              status = ?,
+              ai_mode = ?,
+              error_message = ?,
+              created_at = ?,
+              updated_at = ?
+            WHERE id = ?
+          `,
+        ).run(block.content, block.summary, block.status, block.aiMode, block.errorMessage, block.createdAt, block.updatedAt, block.id)
+
+        db.prepare(`DELETE FROM block_tags WHERE block_id = ?`).run(block.id)
+        updatedIds.push(block.id)
+      } else {
+        db.prepare(
+          `
+            INSERT INTO blocks (id, content, summary, status, ai_mode, error_message, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+          `,
+        ).run(block.id, block.content, block.summary, block.status, block.aiMode, block.errorMessage, block.createdAt, block.updatedAt)
+        createdIds.push(block.id)
+      }
+
+      syncBlockAttachmentRecords(db, dataDirectory, block.id, block.content)
+
+      for (const tag of block.tags) {
+        const ensuredTag = getOrCreateTag(db, tag.name, tag.kind ?? (tag.source === 'manual' ? 'user' : 'detail'))
+        db.prepare(
+          `
+            INSERT INTO block_tags (block_id, tag_id, source)
+            VALUES (?, ?, ?)
+            ON CONFLICT(block_id, tag_id) DO UPDATE SET source = excluded.source
+          `,
+        ).run(block.id, ensuredTag.id, tag.source)
+      }
+
+      importedIds.push(block.id)
     }
 
-    const id = block.id ?? uuid()
-    const createdAt = block.createdAt ?? new Date().toISOString()
-    const updatedAt = block.updatedAt ?? createdAt
-    const status = job.format === 'json' ? sanitizeImportedStatus(block.status) : 'ready'
-    const aiMode = job.format === 'json' ? sanitizeImportedAiMode(block.aiMode) : 'mock'
-    const exists = db.prepare(`SELECT 1 FROM blocks WHERE id = ?`).get(id)
-
-    if (exists) {
-      db.prepare(
-        `
-          UPDATE blocks
-          SET
-            content = ?,
-            summary = ?,
-            status = ?,
-            ai_mode = ?,
-            error_message = ?,
-            created_at = ?,
-            updated_at = ?
-          WHERE id = ?
-        `,
-      ).run(content, block.summary ?? null, status, aiMode, block.errorMessage ?? null, createdAt, updatedAt, id)
-
-      db.prepare(`DELETE FROM block_tags WHERE block_id = ?`).run(id)
-      updatedIds.push(id)
-    } else {
-      db.prepare(
-        `
-          INSERT INTO blocks (id, content, summary, status, ai_mode, error_message, created_at, updated_at)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        `,
-      ).run(id, content, block.summary ?? null, status, aiMode, block.errorMessage ?? null, createdAt, updatedAt)
-      createdIds.push(id)
+    return {
+      imported: importedIds.length,
+      importedIds,
+      createdIds,
+      updatedIds,
     }
+  })
 
-    syncBlockAttachmentRecords(db, dataDirectory, id, content)
+  let result: { imported: number; importedIds: string[]; createdIds: string[]; updatedIds: string[] }
 
-    for (const tag of block.tags ?? []) {
-      const ensuredTag = getOrCreateTag(db, tag.name, tag.kind ?? (tag.source === 'manual' ? 'user' : 'detail'))
-      db.prepare(
-        `
-          INSERT INTO block_tags (block_id, tag_id, source)
-          VALUES (?, ?, ?)
-          ON CONFLICT(block_id, tag_id) DO UPDATE SET source = excluded.source
-        `,
-      ).run(id, ensuredTag.id, tag.source)
-    }
-
-    imported += 1
-    importedIds.push(id)
+  try {
+    result = applyImport(blocks)
+  } catch (error) {
+    await cleanupStagedFiles(stagedFilePaths)
+    throw error
   }
 
   await cleanupOrphanAttachments(db, dataDirectory)
 
-  return { imported, importedIds, createdIds, updatedIds }
+  return result
 }

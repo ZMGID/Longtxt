@@ -1,0 +1,490 @@
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+
+import type { Block, CalendarDayDetail, CalendarEntry, CalendarHeatmap, CalendarSuggestion } from '../../shared/types'
+import { formatCalendarDateLabel } from '../lib/calendar'
+import { CalendarView } from './CalendarView'
+
+const hookMocks = vi.hoisted(() => ({
+  useCalendarYears: vi.fn(),
+  useCalendarHeatmap: vi.fn(),
+  useCalendarDayDetail: vi.fn(),
+  useUpcomingCalendarEntries: vi.fn(),
+}))
+
+const calendarApiMocks = vi.hoisted(() => ({
+  createEntry: vi.fn(),
+  updateEntry: vi.fn(),
+  removeEntry: vi.fn(),
+  acceptSuggestion: vi.fn(),
+  dismissSuggestion: vi.fn(),
+}))
+
+vi.mock('../hooks/useCalendar', () => ({
+  useCalendarYears: hookMocks.useCalendarYears,
+  useCalendarHeatmap: hookMocks.useCalendarHeatmap,
+  useCalendarDayDetail: hookMocks.useCalendarDayDetail,
+  useUpcomingCalendarEntries: hookMocks.useUpcomingCalendarEntries,
+}))
+
+vi.mock('../lib/changbu', () => ({
+  changbu: {
+    calendar: calendarApiMocks,
+  },
+}))
+
+vi.mock('./toast-context', () => ({
+  useToast: () => ({
+    toast: vi.fn(),
+  }),
+}))
+
+const settings = {
+  aiSuggestionsEnabled: true,
+  maxSuggestionsPerBlock: 3,
+  upcomingDays: 7,
+}
+
+function formatDateKey(date: Date): string {
+  return `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, '0')}-${String(date.getUTCDate()).padStart(2, '0')}`
+}
+
+function buildHeatmapDays(): CalendarHeatmap['days'] {
+  const days: CalendarHeatmap['days'] = []
+  const cursor = new Date(Date.UTC(2026, 0, 1))
+
+  for (let index = 0; index < 365; index += 1) {
+    const key = formatDateKey(cursor)
+    const special =
+      key === '2026-04-05'
+        ? { blockCount: 4, intensityLevel: 3, hasEntries: true, hasSuggestions: true }
+        : key === '2026-04-06'
+          ? { blockCount: 2, intensityLevel: 2, hasEntries: true, hasSuggestions: true }
+          : { blockCount: 0, intensityLevel: 0, hasEntries: false, hasSuggestions: false }
+
+    days.push({
+      date: key,
+      ...special,
+    })
+
+    cursor.setUTCDate(cursor.getUTCDate() + 1)
+  }
+
+  return days
+}
+
+const heatmapData: CalendarHeatmap = {
+  year: 2026,
+  totalContributions: 6,
+  maxBlockCount: 4,
+  days: buildHeatmapDays(),
+}
+
+const todayBlock: Block = {
+  id: 'block-1',
+  content: '今天块正文，包含更长一点的内容用于展示。',
+  tags: [
+    {
+      id: 'tag-1',
+      name: '计划',
+      isDefault: false,
+      source: 'manual',
+      kind: 'user',
+    },
+  ],
+  createdAt: '2026-04-05T09:15:00.000Z',
+  updatedAt: '2026-04-05T09:20:00.000Z',
+  status: 'ready',
+  aiMode: 'live',
+  summary: '今天块摘要',
+  errorMessage: null,
+}
+
+const nextDayBlock: Block = {
+  id: 'block-2',
+  content: '第六天块正文。',
+  tags: [
+    {
+      id: 'tag-2',
+      name: '会议',
+      isDefault: false,
+      source: 'manual',
+      kind: 'user',
+    },
+  ],
+  createdAt: '2026-04-06T10:00:00.000Z',
+  updatedAt: '2026-04-06T10:10:00.000Z',
+  status: 'ready',
+  aiMode: 'live',
+  summary: '第六天块摘要',
+  errorMessage: null,
+}
+
+const todayEntry: CalendarEntry = {
+  id: 'entry-1',
+  title: '现有安排',
+  notes: '初始备注',
+  date: '2026-04-05',
+  startTime: '09:30',
+  allDay: false,
+  status: 'planned',
+  source: 'manual',
+  linkedBlockId: null,
+  createdAt: '2026-04-05T08:30:00.000Z',
+  updatedAt: '2026-04-05T08:40:00.000Z',
+}
+
+const tomorrowEntry: CalendarEntry = {
+  id: 'entry-2',
+  title: '明天会议',
+  notes: null,
+  date: '2026-04-06',
+  startTime: '10:00',
+  allDay: false,
+  status: 'planned',
+  source: 'manual',
+  linkedBlockId: null,
+  createdAt: '2026-04-05T18:00:00.000Z',
+  updatedAt: '2026-04-05T18:05:00.000Z',
+}
+
+const todaySuggestion: CalendarSuggestion = {
+  id: 'suggestion-1',
+  title: 'AI 识别会议',
+  notes: '来自块的建议备注',
+  date: '2026-04-05',
+  startTime: '14:00',
+  allDay: false,
+  sourceBlockId: 'block-1-source',
+  confidence: 0.91,
+  evidenceText: '明天下午两点开会。',
+  createdAt: '2026-04-05T08:50:00.000Z',
+  updatedAt: '2026-04-05T08:55:00.000Z',
+}
+
+const tomorrowSuggestion: CalendarSuggestion = {
+  id: 'suggestion-2',
+  title: '第二天 AI 建议',
+  notes: null,
+  date: '2026-04-06',
+  startTime: null,
+  allDay: true,
+  sourceBlockId: 'block-2-source',
+  confidence: 0.87,
+  evidenceText: '周一全天准备材料。',
+  createdAt: '2026-04-05T19:00:00.000Z',
+  updatedAt: '2026-04-05T19:05:00.000Z',
+}
+
+const dayDetails: Record<string, CalendarDayDetail> = {
+  '2026-04-05': {
+    date: '2026-04-05',
+    blockCount: 4,
+    blocks: [todayBlock],
+    entries: [todayEntry],
+    suggestions: [todaySuggestion],
+  },
+  '2026-04-06': {
+    date: '2026-04-06',
+    blockCount: 2,
+    blocks: [nextDayBlock],
+    entries: [tomorrowEntry],
+    suggestions: [tomorrowSuggestion],
+  },
+}
+
+let heatmapViewportWidth = 1200
+
+function setWindowSize(width: number, height = 900): void {
+  Object.defineProperty(window, 'innerWidth', {
+    configurable: true,
+    writable: true,
+    value: width,
+  })
+
+  Object.defineProperty(window, 'innerHeight', {
+    configurable: true,
+    writable: true,
+    value: height,
+  })
+}
+
+function resizeWindow(width: number, height = window.innerHeight || 900): void {
+  setWindowSize(width, height)
+  fireEvent(window, new Event('resize'))
+}
+
+function setHeatmapViewportWidth(width: number): void {
+  heatmapViewportWidth = width
+}
+
+function renderCalendar(width = 1600) {
+  setWindowSize(width, 900)
+
+  const queryClient = new QueryClient({
+    defaultOptions: {
+      queries: {
+        retry: false,
+      },
+    },
+  })
+  const onJumpToBlock = vi.fn(async () => {})
+  const renderResult = render(
+    <QueryClientProvider client={queryClient}>
+      <CalendarView settings={settings} onJumpToBlock={onJumpToBlock} />
+    </QueryClientProvider>,
+  )
+
+  return {
+    ...renderResult,
+    onJumpToBlock,
+  }
+}
+
+describe('CalendarView', () => {
+  beforeEach(() => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    vi.setSystemTime(new Date('2026-04-05T08:00:00.000Z'))
+    vi.clearAllMocks()
+    heatmapViewportWidth = 1200
+
+    class ResizeObserverMock {
+      private readonly callback?: ResizeObserverCallback
+
+      constructor(callback?: ResizeObserverCallback) {
+        this.callback = callback
+      }
+
+      observe(target?: Element) {
+        if (target instanceof HTMLElement) {
+          const width = target.getAttribute('style')?.includes('--calendar-cell-size') ? heatmapViewportWidth : 1200
+          const entry = [{ contentRect: { width } }] as ResizeObserverEntry[]
+          queueMicrotask(() => {
+            this.callback?.(entry, this as unknown as ResizeObserver)
+          })
+        }
+      }
+      disconnect() {}
+      unobserve() {}
+    }
+
+    vi.stubGlobal('ResizeObserver', ResizeObserverMock)
+
+    hookMocks.useCalendarYears.mockReturnValue({
+      data: [2026, 2025],
+    })
+    hookMocks.useCalendarHeatmap.mockImplementation((year: number) => ({
+      data: {
+        ...heatmapData,
+        year,
+      },
+      isPending: false,
+    }))
+    hookMocks.useCalendarDayDetail.mockImplementation((date: string) => ({
+      data: dayDetails[date] ?? dayDetails['2026-04-05'],
+      isPending: false,
+    }))
+    hookMocks.useUpcomingCalendarEntries.mockReturnValue({
+      data: [tomorrowEntry],
+      isPending: false,
+    })
+
+    setHeatmapViewportWidth(1200)
+    calendarApiMocks.updateEntry.mockResolvedValue(todayEntry)
+    calendarApiMocks.removeEntry.mockResolvedValue(undefined)
+    calendarApiMocks.acceptSuggestion.mockResolvedValue(todayEntry)
+    calendarApiMocks.dismissSuggestion.mockResolvedValue(undefined)
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+    vi.unstubAllGlobals()
+  })
+
+  it('places the heatmap at the top and removes redundant overview copy', async () => {
+    renderCalendar(1600)
+
+    expect(screen.getByRole('heading', { name: '2026 年记录密度' })).toBeInTheDocument()
+    expect(screen.queryByText('Calendar Workspace')).not.toBeInTheDocument()
+    expect(screen.queryByText('14 次记录')).not.toBeInTheDocument()
+    expect(screen.queryByText('Focus Day')).not.toBeInTheDocument()
+  })
+
+  it('progressively shifts from three panes to two panes to stacked without multiple column scroll owners', async () => {
+    const { container } = renderCalendar(1600)
+
+    await waitFor(() => {
+      expect(screen.getByTestId('calendar-layout')).toHaveAttribute('data-layout', 'three-pane')
+    })
+    expect(screen.getByTestId('calendar-layout')).toHaveAttribute('data-sidebar-mode', 'stacked')
+    expect(container.querySelectorAll('[class*="overflow-y-auto"]').length).toBe(1)
+
+    resizeWindow(1200)
+    await waitFor(() => {
+      expect(screen.getByTestId('calendar-layout')).toHaveAttribute('data-layout', 'two-pane')
+    })
+    expect(screen.getByTestId('calendar-layout')).toHaveAttribute('data-sidebar-mode', 'tabs')
+    expect(screen.getByTestId('calendar-sidebar-tablist')).toBeInTheDocument()
+
+    resizeWindow(880)
+    await waitFor(() => {
+      expect(screen.getByTestId('calendar-layout')).toHaveAttribute('data-layout', 'stacked')
+    })
+    expect(container.querySelectorAll('[class*="overflow-y-auto"]').length).toBe(1)
+  })
+
+  it('recalculates heatmap layout after shrinking to stacked mode and expanding again', async () => {
+    renderCalendar(1200)
+
+    setHeatmapViewportWidth(180)
+    resizeWindow(760)
+    await waitFor(() => {
+      expect(screen.getByTestId('calendar-layout')).toHaveAttribute('data-layout', 'stacked')
+    })
+
+    const compactDayLabel = `${formatCalendarDateLabel('2026-04-05')} · 4 个块`
+    const compactStyle = screen.getByRole('button', { name: compactDayLabel }).getAttribute('style') ?? ''
+    expect(compactStyle).toContain('width: 3.3962264150943398px')
+    expect(compactStyle).toContain('height: 3.3962264150943398px')
+
+    setHeatmapViewportWidth(1200)
+    resizeWindow(1600)
+    await waitFor(() => {
+      expect(screen.getByTestId('calendar-layout')).toHaveAttribute('data-layout', 'three-pane')
+    })
+
+    const expandedStyle = screen.getByRole('button', { name: compactDayLabel }).getAttribute('style') ?? ''
+    expect(expandedStyle).toContain('width: 15px')
+    expect(expandedStyle).toContain('height: 15px')
+  })
+
+  it('scrolls back to the top when shrinking into the narrow desktop layout', async () => {
+    renderCalendar(1200)
+
+    const scrollRoot = screen.getByTestId('calendar-scroll-root') as HTMLElement & { scrollTop: number }
+    scrollRoot.scrollTop = 240
+
+    resizeWindow(760)
+    await waitFor(() => {
+      expect(screen.getByTestId('calendar-layout')).toHaveAttribute('data-layout', 'stacked')
+    })
+
+    expect(scrollRoot.scrollTop).toBe(0)
+  })
+
+  it('scrolls back to the top when the window shrinks even inside the same layout bucket', async () => {
+    renderCalendar(1600)
+
+    const scrollRoot = screen.getByTestId('calendar-scroll-root') as HTMLElement & { scrollTop: number }
+    scrollRoot.scrollTop = 240
+
+    resizeWindow(1500)
+
+    await waitFor(() => {
+      expect(scrollRoot.scrollTop).toBe(0)
+    })
+  })
+
+  it('keeps the heatmap pinned to the top when only the window height collapses to the minimum size', async () => {
+    renderCalendar(760)
+
+    const scrollRoot = screen.getByTestId('calendar-scroll-root') as HTMLElement & { scrollTop: number }
+    scrollRoot.scrollTop = 240
+
+    resizeWindow(760, 560)
+
+    await waitFor(() => {
+      expect(scrollRoot.scrollTop).toBe(0)
+    })
+    expect(scrollRoot).toHaveStyle({ overflowAnchor: 'none' })
+    expect(screen.getByTestId('calendar-layout')).toHaveClass('shrink-0')
+    expect(screen.getByRole('heading', { name: '2026 年记录密度' }).closest('section')).toHaveClass('shrink-0')
+    expect(screen.getByRole('heading', { name: formatCalendarDateLabel('2026-04-05') }).closest('section')).toHaveClass('shrink-0')
+  })
+
+  it('switches selected date and toggles the unified day detail panels', async () => {
+    const { onJumpToBlock } = renderCalendar(1200)
+    const targetDayLabel = `${formatCalendarDateLabel('2026-04-06')} · 2 个块`
+
+    fireEvent.click(screen.getByRole('button', { name: targetDayLabel }))
+
+    await waitFor(() => {
+      expect(screen.getAllByText(formatCalendarDateLabel('2026-04-06')).length).toBeGreaterThan(0)
+    })
+    expect(screen.getByText('为 2026-04-06 添加安排')).toBeInTheDocument()
+
+    fireEvent.click(screen.getAllByRole('button', { name: /AI 建议/ })[0])
+    expect(screen.getByDisplayValue('第二天 AI 建议')).toBeInTheDocument()
+    expect(screen.getByText('证据：周一全天准备材料。')).toBeInTheDocument()
+
+    fireEvent.click(screen.getAllByRole('button', { name: /当天块/ })[0])
+    fireEvent.click(screen.getByText('第六天块摘要').closest('button') as HTMLButtonElement)
+
+    expect(onJumpToBlock).toHaveBeenCalledWith('block-2')
+  })
+
+  it('keeps create, edit, delete, and suggestion actions working in the refactored workspace', async () => {
+    renderCalendar(1200)
+
+    fireEvent.change(screen.getByLabelText('标题'), {
+      target: { value: '新的同步' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: '创建安排' }))
+
+    await waitFor(() => {
+      expect(calendarApiMocks.createEntry).toHaveBeenCalledWith({
+        title: '新的同步',
+        date: '2026-04-05',
+        allDay: true,
+        startTime: null,
+        notes: null,
+      })
+    })
+
+    fireEvent.change(screen.getByDisplayValue('现有安排'), {
+      target: { value: '更新后的安排' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: '保存' }))
+
+    await waitFor(() => {
+      expect(calendarApiMocks.updateEntry).toHaveBeenCalledWith(
+        'entry-1',
+        expect.objectContaining({
+          title: '更新后的安排',
+          date: '2026-04-05',
+          allDay: false,
+          startTime: '09:30',
+          notes: '初始备注',
+          status: 'planned',
+        }),
+      )
+    })
+
+    fireEvent.click(screen.getByRole('button', { name: '删除' }))
+    await waitFor(() => {
+      expect(calendarApiMocks.removeEntry).toHaveBeenCalledWith('entry-1')
+    })
+
+    fireEvent.click(screen.getAllByRole('button', { name: /AI 建议/ })[0])
+    fireEvent.click(screen.getByRole('button', { name: '采纳为正式安排' }))
+
+    await waitFor(() => {
+      expect(calendarApiMocks.acceptSuggestion).toHaveBeenCalledWith(
+        'suggestion-1',
+        expect.objectContaining({
+          title: 'AI 识别会议',
+          date: '2026-04-05',
+          allDay: false,
+          startTime: '14:00',
+          notes: '来自块的建议备注',
+        }),
+      )
+    })
+
+    fireEvent.click(screen.getByRole('button', { name: '忽略' }))
+    await waitFor(() => {
+      expect(calendarApiMocks.dismissSuggestion).toHaveBeenCalledWith('suggestion-1')
+    })
+  })
+})
