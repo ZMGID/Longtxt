@@ -289,6 +289,8 @@ export interface AppMeta {
   modelCallCounts: ModelCallCounts
   tokenUsage: TokenUsage | null
   failedVectorCount: number
+  pendingVectorCount: number
+  vectorQueueProcessing: boolean
 }
 
 export interface CalendarDaySummary {
@@ -380,7 +382,11 @@ export interface NotebookChangedEvent {
 }
 
 export interface MetaChangedEvent {
-  reason: 'settings' | 'ai-test' | 'vector-queue' | 'vector-failure' | 'vector-retry' | 'doc-generation' | 'usage' | 'calendar-suggestion'
+  reason: 'settings' | 'ai-test' | 'vector-queue' | 'vector-failure' | 'vector-retry' | 'doc-generation' | 'usage' | 'calendar-suggestion' | 'quit'
+}
+
+export interface AppQuitStateChangedEvent {
+  waiting: boolean
 }
 
 export interface CalendarChangedEvent {
@@ -496,5 +502,6 @@ export interface ChangbuApi {
     onMetaChanged(listener: (event: MetaChangedEvent) => void): () => void
     onCalendarChanged(listener: (event: CalendarChangedEvent) => void): () => void
     onDocGenerationChunk(listener: (chunk: DocGenerationChunk) => void): () => void
+    onQuitStateChanged(listener: (state: AppQuitStateChangedEvent) => void): () => void
   }
 }

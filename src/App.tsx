@@ -49,6 +49,7 @@ import { useNotebooks } from './hooks/useNotebooks'
 import { useSnapshots } from './hooks/useSnapshots'
 import { useTags } from './hooks/useTags'
 import { changbu } from './lib/changbu'
+import { loadDocumentReferences } from './lib/documentReferences'
 import { queryKeys } from './lib/queryKeys'
 
 const CalendarView = lazy(async () => {
@@ -150,6 +151,8 @@ function AppInner() {
     removeNotebookItem,
     reorderItems,
     createBlockInNotebook,
+    createNotebookStructureItem,
+    updateNotebookStructureItem,
   } = useNotebooks()
   const [activeView, setActiveView] = useState<AppView>('timeline')
   const [searchQuery, setSearchQuery] = useState('')
@@ -162,6 +165,10 @@ function AppInner() {
   const [notebookResults, setNotebookResults] = useState<SearchResult[]>([])
   const [hasSearched, setHasSearched] = useState(false)
   const [document, setDocument] = useState<DocumentState>(initialDocumentState)
+  const [documentReferences, setDocumentReferences] = useState<SearchResult[]>([])
+  const [documentReferencesLoading, setDocumentReferencesLoading] = useState(false)
+  const [documentDepositAction, setDocumentDepositAction] = useState<'create' | 'append' | null>(null)
+  const [isWaitingToQuit, setIsWaitingToQuit] = useState(false)
   const [config, setConfig] = useState<AIConfig>(DEFAULT_AI_CONFIG)
   const [docGenerationSettings, setDocGenerationSettings] = useState<DocGenerationSettings>(DEFAULT_DOC_GENERATION_SETTINGS)
   const [blockEnrichSettings, setBlockEnrichSettings] = useState<BlockEnrichSettings>(DEFAULT_BLOCK_ENRICH_SETTINGS)
@@ -181,6 +188,7 @@ function AppInner() {
   const [relatedBlocks, setRelatedBlocks] = useState<RelatedBlockResult[] | null>(null)
   const [relatedLoading, setRelatedLoading] = useState(false)
   const graphSelectionRequestRef = useRef<string | null>(null)
+  const documentReferencesRequestIdRef = useRef<string | null>(null)
   const metaQuery = useAppMeta()
   const meta = metaQuery.data ?? null
   const graphQuery = useGraphData(graphTagFilters, activeView === 'graph')
@@ -280,10 +288,18 @@ function AppInner() {
         void refreshMeta()
       }
     })
+    const unsubscribeQuitState = changbu.events.onQuitStateChanged((state) => {
+      if (!active) {
+        return
+      }
+
+      setIsWaitingToQuit(state.waiting)
+    })
 
     return () => {
       active = false
       unsubscribe()
+      unsubscribeQuitState()
     }
   }, [refreshMeta])
 
@@ -340,6 +356,38 @@ function AppInner() {
   function handleConfigChange(nextConfig: AIConfig): void {
     setConfig(nextConfig)
     setTestResult(null)
+  }
+
+  async function refreshDocumentReferences(requestId: string, blockIds: string[]): Promise<void> {
+    documentReferencesRequestIdRef.current = requestId
+
+    if (blockIds.length === 0) {
+      setDocumentReferences([])
+      setDocumentReferencesLoading(false)
+      return
+    }
+
+    setDocumentReferencesLoading(true)
+
+    try {
+      const references = await loadDocumentReferences(changbu.blocks.get, blockIds)
+
+      if (documentReferencesRequestIdRef.current !== requestId) {
+        return
+      }
+
+      setDocumentReferences(references)
+    } catch {
+      if (documentReferencesRequestIdRef.current !== requestId) {
+        return
+      }
+
+      setDocumentReferences([])
+    } finally {
+      if (documentReferencesRequestIdRef.current === requestId) {
+        setDocumentReferencesLoading(false)
+      }
+    }
   }
 
   async function handleSearch(): Promise<void> {
@@ -458,6 +506,10 @@ function AppInner() {
 
     setGenerating(true)
     setSearchError(null)
+    documentReferencesRequestIdRef.current = null
+    setDocumentReferences([])
+    setDocumentReferencesLoading(false)
+    setDocumentDepositAction(null)
     setDocument({
       status: 'streaming',
       requestId: null,
@@ -479,6 +531,7 @@ function AppInner() {
         mode: started.mode,
         error: null,
       })
+      void refreshDocumentReferences(started.requestId, started.blockIds)
     } catch (reason) {
       setGenerating(false)
       setDocument({
@@ -547,8 +600,50 @@ function AppInner() {
     const snapshot = await changbu.snapshots.save(document.topic, document.content, document.blockIds)
     await queryClient.invalidateQueries({ queryKey: queryKeys.snapshotsRoot() })
     setSelectedSnapshotId(snapshot.id)
+    setDocumentDepositAction(null)
     setActiveView('snapshots')
     toast('success', '文档快照已保存。')
+  }
+
+  async function handleDepositDocumentToNewNotebook(): Promise<void> {
+    if (!document.content.trim() || document.blockIds.length === 0 || documentDepositAction) {
+      return
+    }
+
+    setDocumentDepositAction('create')
+
+    try {
+      const notebookTitle = document.topic.trim() || `新笔记本 ${notebooks.length + 1}`
+      const notebook = await createNotebook(notebookTitle)
+
+      for (const blockId of document.blockIds) {
+        await addBlockToNotebook(notebook.id, blockId)
+      }
+
+      toast('success', `已新建「${notebook.title}」并收录本次参考块。`)
+      setActiveView('notebooks')
+    } finally {
+      setDocumentDepositAction(null)
+    }
+  }
+
+  async function handleDepositDocumentToCurrentNotebook(): Promise<void> {
+    if (!selectedNotebook || !document.content.trim() || document.blockIds.length === 0 || documentDepositAction) {
+      return
+    }
+
+    setDocumentDepositAction('append')
+
+    try {
+      for (const blockId of document.blockIds) {
+        await addBlockToNotebook(selectedNotebook.id, blockId)
+      }
+
+      toast('success', `本次参考块已加入「${selectedNotebook.title}」。`)
+      setActiveView('notebooks')
+    } finally {
+      setDocumentDepositAction(null)
+    }
   }
 
   async function handleAddBlockToNotebook(notebookId: string, blockId: string): Promise<void> {
@@ -705,6 +800,13 @@ function AppInner() {
               await createBlockInNotebook(notebookId, content)
               toast('success', '新块已加入当前笔记本。')
             }}
+            onCreateNotebookStructureItem={async (notebookId, type) => {
+              await createNotebookStructureItem(notebookId, { type })
+              toast('success', '结构项已加入当前笔记本。')
+            }}
+            onUpdateNotebookStructureItem={async (notebookId, itemId, patch) => {
+              await updateNotebookStructureItem(notebookId, itemId, patch)
+            }}
             onUpdateBlock={updateBlock}
             onAddTag={addTag}
             onRemoveTag={removeTag}
@@ -745,6 +847,10 @@ function AppInner() {
             searching={searching}
             generating={generating}
             document={document}
+            documentReferences={documentReferences}
+            documentReferencesLoading={documentReferencesLoading}
+            selectedNotebook={selectedNotebook ? { id: selectedNotebook.id, title: selectedNotebook.title } : null}
+            documentDepositAction={documentDepositAction}
             onQueryChange={(value) => {
               setSearchQuery(value)
               if (!value.trim()) {
@@ -760,6 +866,12 @@ function AppInner() {
             }}
             onSaveSnapshot={() => {
               void handleSaveSnapshot()
+            }}
+            onDepositToNewNotebook={() => {
+              void handleDepositDocumentToNewNotebook()
+            }}
+            onDepositToCurrentNotebook={() => {
+              void handleDepositDocumentToCurrentNotebook()
             }}
             onClearBrowseTag={() => {
               setBrowseTag(null)
@@ -953,7 +1065,12 @@ function AppInner() {
           onSelectView={setActiveView}
         />
 
-        <main className="flex min-w-0 flex-1 overflow-hidden bg-white/[0.94]">
+        <main className="relative flex min-w-0 flex-1 overflow-hidden bg-white/[0.94]">
+          {isWaitingToQuit ? (
+            <div className="pointer-events-none absolute inset-x-6 top-4 z-20 rounded-2xl border border-amber-200 bg-amber-50/95 px-4 py-3 text-sm text-amber-900 shadow-[0_12px_30px_rgba(120,53,15,0.08)]">
+              正在等待后台 AI / 向量任务完成后退出，请稍候。
+            </div>
+          ) : null}
           <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
             {/* macOS 交通灯按钮区域 — 与侧边栏对齐 */}
             <div className="window-drag-region flex h-12 shrink-0 items-center border-b border-black/[0.06] bg-[linear-gradient(180deg,rgba(255,255,255,0.88),rgba(248,244,237,0.58))] px-5 lg:h-14 lg:px-7">

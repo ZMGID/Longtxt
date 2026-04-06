@@ -82,5 +82,6 @@ export const IPC_CHANNELS = {
     metaChanged: 'events:meta-changed',
     calendarChanged: 'events:calendar-changed',
     docGenerationChunk: 'events:doc-generation-chunk',
+    quitStateChanged: 'events:quit-state-changed',
   },
 } as const

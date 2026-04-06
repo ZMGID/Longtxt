@@ -2,20 +2,12 @@ import { useMemo, useState } from 'react'
 
 import { QueryClient, useQuery, useQueryClient } from '@tanstack/react-query'
 
-import type { Notebook, NotebookBlockItem, NotebookMutationResult } from '../../shared/types'
+import type { Notebook, NotebookMutationResult, NotebookStructureItemInput, NotebookStructureItemPatch } from '../../shared/types'
 import { changbu } from '../lib/changbu'
 import { queryKeys } from '../lib/queryKeys'
 
 function toVisibleNotebook(notebook: Notebook): Notebook {
-  const items = notebook.items.filter((item): item is NotebookBlockItem => item.type === 'block')
-
-  return {
-    ...notebook,
-    itemCount: items.length,
-    blockCount: items.length,
-    structureCount: 0,
-    items,
-  }
+  return notebook
 }
 
 async function invalidateNotebookQueries(
@@ -135,6 +127,22 @@ export function useNotebooks() {
     return toVisibleNotebook(notebook)
   }
 
+  async function createNotebookStructureItem(notebookId: string, input: NotebookStructureItemInput): Promise<Notebook> {
+    const notebook = await changbu.notebooks.createStructureItem(notebookId, input)
+    await invalidateNotebookQueries(queryClient, [notebookId])
+    return toVisibleNotebook(notebook)
+  }
+
+  async function updateNotebookStructureItem(
+    notebookId: string,
+    itemId: string,
+    patch: NotebookStructureItemPatch,
+  ): Promise<Notebook> {
+    const notebook = await changbu.notebooks.updateStructureItem(notebookId, itemId, patch)
+    await invalidateNotebookQueries(queryClient, [notebookId])
+    return toVisibleNotebook(notebook)
+  }
+
   return {
     notebooks,
     selectedNotebookId,
@@ -151,5 +159,7 @@ export function useNotebooks() {
     removeNotebookItem,
     reorderItems,
     createBlockInNotebook,
+    createNotebookStructureItem,
+    updateNotebookStructureItem,
   }
 }

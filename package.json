@@ -5,7 +5,8 @@
   "type": "module",
   "main": "dist-electron/main.cjs",
   "scripts": {
-    "dev": "concurrently -k \"pnpm dev:renderer\" \"pnpm dev:electron\" \"pnpm dev:app\"",
+    "dev": "pnpm dev:prepare-bundle && concurrently -k \"pnpm dev:renderer\" \"pnpm dev:electron\" \"pnpm dev:app\"",
+    "dev:prepare-bundle": "node ./electron/prepareDevBundle.mjs",
     "dev:renderer": "vite --host 127.0.0.1 --port 5173",
     "dev:electron": "tsup --watch",
     "dev:app": "wait-on tcp:5173 file:dist-electron/main.cjs file:dist-electron/preload.cjs && cross-env VITE_DEV_SERVER_URL=http://127.0.0.1:5173 electronmon --watch dist-electron/main.cjs --watch dist-electron/preload.cjs dist-electron/main.cjs",
@@ -18,6 +19,7 @@
     "postinstall": "electron-builder install-app-deps",
     "test": "cross-env ELECTRON_RUN_AS_NODE=1 electron ./node_modules/vitest/vitest.mjs run",
     "test:manual-live": "cross-env ELECTRON_RUN_AS_NODE=1 electron ./node_modules/vitest/vitest.mjs run --config vite.manual-live.config.ts",
+    "test:smoke-release": "pnpm test && pnpm package:dir",
     "test:watch": "cross-env ELECTRON_RUN_AS_NODE=1 electron ./node_modules/vitest/vitest.mjs",
     "lint": "eslint .",
     "preview": "vite preview"

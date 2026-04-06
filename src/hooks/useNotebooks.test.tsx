@@ -244,6 +244,8 @@ function createNotebookApiMock() {
         },
         tokenUsage: null,
         failedVectorCount: 0,
+        pendingVectorCount: 0,
+        vectorQueueProcessing: false,
       }),
     },
     vectors: {
@@ -275,6 +277,9 @@ function createNotebookApiMock() {
         }
       },
       onDocGenerationChunk() {
+        return () => undefined
+      },
+      onQuitStateChanged() {
         return () => undefined
       },
     },

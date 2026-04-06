@@ -2,6 +2,7 @@ import { contextBridge, ipcRenderer } from 'electron'
 
 import { IPC_CHANNELS } from '../shared/ipc'
 import type {
+  AppQuitStateChangedEvent,
   BlockChangedEvent,
   CalendarChangedEvent,
   ChangbuApi,
@@ -16,6 +17,7 @@ const notebookListeners = new Set<(event: NotebookChangedEvent) => void>()
 const metaListeners = new Set<(event: MetaChangedEvent) => void>()
 const calendarListeners = new Set<(event: CalendarChangedEvent) => void>()
 const docListeners = new Set<(chunk: DocGenerationChunk) => void>()
+const quitStateListeners = new Set<(state: AppQuitStateChangedEvent) => void>()
 
 function sanitizeExportOptions(options: Partial<RendererExportOptions> | undefined): RendererExportOptions {
   return {
@@ -51,6 +53,12 @@ ipcRenderer.on(IPC_CHANNELS.events.calendarChanged, (_event, payload: CalendarCh
 
 ipcRenderer.on(IPC_CHANNELS.events.docGenerationChunk, (_event, payload: DocGenerationChunk) => {
   for (const listener of docListeners) {
+    listener(payload)
+  }
+})
+
+ipcRenderer.on(IPC_CHANNELS.events.quitStateChanged, (_event, payload: AppQuitStateChangedEvent) => {
+  for (const listener of quitStateListeners) {
     listener(payload)
   }
 })
@@ -164,6 +172,12 @@ const api: ChangbuApi = {
       docListeners.add(listener)
       return () => {
         docListeners.delete(listener)
+      }
+    },
+    onQuitStateChanged(listener) {
+      quitStateListeners.add(listener)
+      return () => {
+        quitStateListeners.delete(listener)
       }
     },
   },

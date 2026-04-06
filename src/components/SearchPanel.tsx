@@ -25,10 +25,16 @@ interface SearchPanelProps {
   searching: boolean
   generating: boolean
   document: DocumentState
+  documentReferences: SearchResult[]
+  documentReferencesLoading: boolean
+  selectedNotebook: { id: string; title: string } | null
+  documentDepositAction: 'create' | 'append' | null
   onQueryChange: (value: string) => void
   onSearch: () => void
   onGenerate: () => void
   onSaveSnapshot: () => void
+  onDepositToNewNotebook: () => void
+  onDepositToCurrentNotebook: () => void
   onClearBrowseTag: () => void
   onTagClick: (tagName: string) => void
   inputRef?: React.RefObject<HTMLTextAreaElement | null>
@@ -46,20 +52,26 @@ export function SearchPanel({
   searching,
   generating,
   document,
+  documentReferences,
+  documentReferencesLoading,
+  selectedNotebook,
+  documentDepositAction,
   onQueryChange,
   onSearch,
   onGenerate,
   onSaveSnapshot,
+  onDepositToNewNotebook,
+  onDepositToCurrentNotebook,
   onClearBrowseTag,
   onTagClick,
   inputRef,
 }: SearchPanelProps) {
   const { toast } = useToast()
   const canCopyDocument = document.content.trim().length > 0
+  const canShowReferences = document.status === 'done' && canCopyDocument
 
   return (
     <div className="flex min-h-0 min-w-0 flex-1 flex-col gap-4 overflow-hidden">
-      {/* 顶部：搜索输入区，通栏 */}
       <div className="shrink-0 rounded-lg border border-stone-200 bg-white/70 p-4">
         <p className="mb-2 text-xs font-medium uppercase tracking-wider text-stone-400">搜索生成</p>
         <p className="mb-3 text-xs leading-5 text-stone-500">先把问题写清楚，再决定是只看相关块，还是继续生成一篇结构化文档。</p>
@@ -93,7 +105,6 @@ export function SearchPanel({
         </div>
       </div>
 
-      {/* 下方双栏：检索结果 + 生成文档 */}
       <div className="grid min-h-0 min-w-0 flex-1 gap-4 grid-rows-[minmax(0,1fr)_minmax(0,1fr)] lg:grid-cols-[minmax(14rem,20rem)_minmax(0,1fr)] lg:grid-rows-1 2xl:grid-cols-[minmax(15rem,22rem)_minmax(0,1fr)]">
         <aside className="flex min-h-0 min-w-0 flex-col gap-3 overflow-hidden">
           {searchError ? (
@@ -143,15 +154,74 @@ export function SearchPanel({
             </div>
           </div>
 
-          <div data-testid="generated-document-scroll" className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden rounded-lg border border-stone-200 bg-white/70 px-5 py-5">
-            {document.content ? (
-              <div className="min-w-0 break-words">
-                <MarkdownContent content={document.content} />
+          <div className="grid min-h-0 flex-1 gap-3 xl:grid-cols-[minmax(0,1fr)_minmax(17rem,20rem)]">
+            <div data-testid="generated-document-scroll" className="min-h-0 overflow-y-auto overflow-x-hidden rounded-lg border border-stone-200 bg-white/70 px-5 py-5">
+              {document.content ? (
+                <div className="min-w-0 break-words">
+                  <MarkdownContent content={document.content} />
+                </div>
+              ) : (
+                <p className="text-sm leading-7 text-stone-400">点击"生成文档"后，这里会逐段出现编排结果。</p>
+              )}
+              {document.error ? <p className="mt-4 text-sm text-rose-600">{document.error}</p> : null}
+            </div>
+
+            <aside className="flex min-h-0 flex-col gap-3 overflow-hidden rounded-lg border border-stone-200 bg-stone-50/70 px-4 py-4">
+              <div className="shrink-0">
+                <p className="text-xs font-medium uppercase tracking-wider text-stone-400">本次参考块</p>
+                <p className="mt-1 text-xs leading-5 text-stone-500">生成完成后，这里会展示本次真正进入文档生成的引用块，并可继续沉淀到 notebook。</p>
               </div>
-            ) : (
-              <p className="text-sm leading-7 text-stone-400">点击"生成文档"后，这里会逐段出现编排结果。</p>
-            )}
-            {document.error ? <p className="mt-4 text-sm text-rose-600">{document.error}</p> : null}
+
+              <div className="shrink-0 flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  onClick={onDepositToNewNotebook}
+                  disabled={!canShowReferences || documentReferences.length === 0 || documentDepositAction !== null}
+                  className="rounded-full border border-stone-200 bg-white px-3 py-1.5 text-xs font-medium text-stone-700 transition hover:bg-stone-50 disabled:opacity-50"
+                >
+                  {documentDepositAction === 'create' ? '新建中…' : '新建 notebook'}
+                </button>
+                <button
+                  type="button"
+                  onClick={onDepositToCurrentNotebook}
+                  disabled={!canShowReferences || documentReferences.length === 0 || !selectedNotebook || documentDepositAction !== null}
+                  className="rounded-full border border-stone-200 bg-white px-3 py-1.5 text-xs font-medium text-stone-700 transition hover:bg-stone-50 disabled:opacity-50"
+                >
+                  {documentDepositAction === 'append'
+                    ? '保存中…'
+                    : selectedNotebook
+                      ? `加入「${selectedNotebook.title}」`
+                      : '加入当前 notebook'}
+                </button>
+              </div>
+
+              <div className="min-h-0 flex-1 overflow-y-auto pr-1">
+                {!canShowReferences ? (
+                  <div className="rounded-lg border border-dashed border-stone-200 bg-white/80 px-4 py-4 text-sm leading-6 text-stone-500">
+                    当前还没有可展示的参考块。生成失败或空文档时，这里不会保留上一轮的旧引用。
+                  </div>
+                ) : documentReferencesLoading ? (
+                  <div className="rounded-lg bg-white/80 px-4 py-4 text-sm text-stone-500">参考块加载中…</div>
+                ) : documentReferences.length > 0 ? (
+                  <div className="space-y-2">
+                    {documentReferences.map((result) => (
+                      <SearchResultCard
+                        key={result.block.id}
+                        result={result}
+                        query={query}
+                        onTagClick={onTagClick}
+                        showScore={false}
+                        metaLabel="本次参考"
+                      />
+                    ))}
+                  </div>
+                ) : (
+                  <div className="rounded-lg border border-dashed border-stone-200 bg-white/80 px-4 py-4 text-sm leading-6 text-stone-500">
+                    这次生成没有引用到已有块。你仍然可以保存快照，但暂时没有可沉淀的参考块集合。
+                  </div>
+                )}
+              </div>
+            </aside>
           </div>
         </section>
       </div>

@@ -33,12 +33,16 @@ export function ChangbuEventBridge() {
     const unsubscribeCalendarChanged = changbu.events.onCalendarChanged(() => {
       void queryClient.invalidateQueries({ queryKey: queryKeys.calendarRoot() })
     })
+    const unsubscribeQuitStateChanged = changbu.events.onQuitStateChanged(() => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.meta() })
+    })
 
     return () => {
       unsubscribeBlockChanged()
       unsubscribeNotebooksChanged()
       unsubscribeMetaChanged()
       unsubscribeCalendarChanged()
+      unsubscribeQuitStateChanged()
     }
   }, [queryClient])
 

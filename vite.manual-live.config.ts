@@ -17,7 +17,8 @@ export default defineConfig({
     globals: true,
     environment: 'jsdom',
     setupFiles: ['./src/test/setup.ts'],
-    include: ['electron/__tests__/**/*.temp.test.ts', 'electron/__tests__/**/*.temp.test.tsx'],
+    // 只执行显式标记为 manual/live 的诊断测试，避免混入默认回归。
+    include: ['**/*.temp.test.ts', '**/*.temp.test.tsx'],
     exclude: configDefaults.exclude,
   },
 })

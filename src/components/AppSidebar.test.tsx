@@ -21,6 +21,8 @@ const sampleMeta: AppMeta = {
   },
   tokenUsage: null,
   failedVectorCount: 0,
+  pendingVectorCount: 0,
+  vectorQueueProcessing: false,
 }
 
 describe('AppSidebar', () => {

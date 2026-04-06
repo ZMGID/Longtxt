@@ -10,11 +10,15 @@ import { createAppContext, type AppContext } from './appContext'
 import { registerIpcHandlers } from './ipc/register'
 
 const isDevelopment = Boolean(process.env.VITE_DEV_SERVER_URL)
+const APP_NAME = '长布'
+const APP_IDLE_TIMEOUT_MS = 15_000
 const preloadPath = join(__dirname, 'preload.cjs')
 const ATTACHMENT_PROTOCOL = 'changbu-attachment'
 let mainWindow: BrowserWindow | null = null
 let appContext: AppContext | null = null
 let unregisterHandlers: (() => void) | null = null
+let isQuitting = false
+let quitTask: Promise<void> | null = null
 
 protocol.registerSchemesAsPrivileged([
   {
@@ -31,13 +35,17 @@ protocol.registerSchemesAsPrivileged([
 
 function sendEvent(
   channel: string,
-  payload: BlockChangedEvent | NotebookChangedEvent | MetaChangedEvent | CalendarChangedEvent | DocGenerationChunk,
+  payload: BlockChangedEvent | NotebookChangedEvent | MetaChangedEvent | CalendarChangedEvent | DocGenerationChunk | { waiting: boolean },
 ): void {
   if (!mainWindow || mainWindow.isDestroyed()) {
     return
   }
 
   mainWindow.webContents.send(channel, payload)
+}
+
+function sendQuitState(waiting: boolean): void {
+  sendEvent(IPC_CHANNELS.events.quitStateChanged, { waiting })
 }
 
 function getMimeTypeFromPath(filePath: string): string {
@@ -111,11 +119,34 @@ async function registerAttachmentProtocol(dataDirectory: string): Promise<void> 
 }
 
 function resolveWindowIconPath(): string | null {
-  if (process.platform === 'darwin' || !isDevelopment) {
+  if (!isDevelopment) {
     return null
   }
 
+  if (process.platform === 'darwin') {
+    return join(__dirname, '..', 'build', 'icon.icns')
+  }
+
   return join(__dirname, '..', 'build', process.platform === 'win32' ? 'icon.ico' : 'icon.png')
+}
+
+function applyDevelopmentAppIcon(): void {
+  if (!isDevelopment || process.platform !== 'darwin') {
+    return
+  }
+
+  const iconPath = resolveWindowIconPath()
+
+  if (!iconPath) {
+    return
+  }
+
+  const icon = nativeImage.createFromPath(iconPath)
+
+  if (!icon.isEmpty() && app.dock) {
+    app.dock.setIcon(icon)
+    app.dock.setBadge('')
+  }
 }
 
 function resolveWindowIcon() {
@@ -127,6 +158,57 @@ function resolveWindowIcon() {
 
   const icon = nativeImage.createFromPath(iconPath)
   return icon.isEmpty() ? undefined : icon
+}
+
+async function waitForAppIdle(): Promise<void> {
+  if (!appContext) {
+    return
+  }
+
+  let timeoutHandle: ReturnType<typeof setTimeout> | null = null
+
+  try {
+    await Promise.race([
+      appContext.whenIdle(),
+      new Promise<void>((resolve) => {
+        timeoutHandle = setTimeout(() => {
+          console.warn(`[changbu] app idle wait timed out after ${APP_IDLE_TIMEOUT_MS}ms, continuing quit.`)
+          resolve()
+        }, APP_IDLE_TIMEOUT_MS)
+      }),
+    ])
+  } finally {
+    if (timeoutHandle) {
+      clearTimeout(timeoutHandle)
+    }
+  }
+}
+
+function finishQuit(): void {
+  sendQuitState(false)
+  appContext?.dispose()
+  appContext = null
+  unregisterHandlers?.()
+  unregisterHandlers = null
+  mainWindow?.destroy()
+  app.quit()
+}
+
+function requestAppQuit(): void {
+  if (isQuitting || quitTask) {
+    return
+  }
+
+  sendQuitState(true)
+  quitTask = (async () => {
+    try {
+      await waitForAppIdle()
+    } finally {
+      isQuitting = true
+      quitTask = null
+      finishQuit()
+    }
+  })()
 }
 
 function createMainWindow(): BrowserWindow {
@@ -166,6 +248,26 @@ function createMainWindow(): BrowserWindow {
     return { action: 'deny' }
   })
 
+  window.on('close', (event) => {
+    if (process.platform === 'darwin' || isQuitting || !appContext) {
+      return
+    }
+
+    event.preventDefault()
+    requestAppQuit()
+  })
+
+  return window
+}
+
+function openMainWindow(): BrowserWindow {
+  const window = createMainWindow()
+  mainWindow = window
+  window.on('closed', () => {
+    if (mainWindow === window) {
+      mainWindow = null
+    }
+  })
   return window
 }
 
@@ -174,6 +276,7 @@ async function bootstrap(): Promise<void> {
   const dataDirectory = join(userDataDirectory, 'data')
   const settingsFilePath = join(userDataDirectory, 'changbu-settings.json')
 
+  applyDevelopmentAppIcon()
   await registerAttachmentProtocol(dataDirectory)
 
   appContext = createAppContext({
@@ -214,18 +317,16 @@ async function bootstrap(): Promise<void> {
   })
 
   unregisterHandlers = registerIpcHandlers(appContext)
-  mainWindow = createMainWindow()
-  mainWindow.on('closed', () => {
-    mainWindow = null
-  })
+  openMainWindow()
 }
 
 app.whenReady().then(() => {
+  app.setName(APP_NAME)
   void bootstrap()
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {
-      mainWindow = createMainWindow()
+      openMainWindow()
     }
   })
 })
@@ -236,23 +337,11 @@ app.on('window-all-closed', () => {
   }
 })
 
-let isQuitting = false
-
 app.on('before-quit', (event) => {
   if (isQuitting || !appContext) {
     return
   }
 
   event.preventDefault()
-  isQuitting = true
-
-  void (async () => {
-    try {
-      await appContext.whenIdle()
-    } finally {
-      appContext.dispose()
-      unregisterHandlers?.()
-      app.quit()
-    }
-  })()
+  requestAppQuit()
 })

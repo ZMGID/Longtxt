@@ -241,6 +241,8 @@ describe('app context', () => {
     const meta = await context.getMeta()
     expect(meta.vectorReady).toBeTypeOf('boolean')
     expect(meta.vectorSchemaReady).toBeTypeOf('boolean')
+    expect(meta.pendingVectorCount).toBeGreaterThanOrEqual(0)
+    expect(typeof meta.vectorQueueProcessing).toBe('boolean')
 
     await context.updateBlock(created.id, '把搜索与文档生成链路也接进 Electron')
     await context.whenIdle()
@@ -375,6 +377,15 @@ describe('app context', () => {
     expect(await context.listBlocks()).toEqual([])
   })
 
+  it('rejects unsupported notebook structure item types', async () => {
+    const context = makeContext()
+    const notebook = await context.createNotebook('结构校验')
+
+    await expect(
+      context.createNotebookStructureItem(notebook.id, { type: 'unknown' as never }),
+    ).rejects.toThrow('Unsupported notebook structure item type')
+  })
+
   it('emits notebook change events for notebook CRUD, item changes, reviews, and linked block updates', async () => {
     const notebookEvents: NotebookChangedEvent[] = []
     const context = makeContext({
@@ -470,6 +481,8 @@ describe('app context', () => {
     expect(meta.resolvedBaseUrl).toBe('https://api.example.com')
     expect(meta.modelCallCounts).toEqual({ llm: 0, embedding: 0 })
     expect(typeof meta.vectorSchemaReady).toBe('boolean')
+    expect(meta.pendingVectorCount).toBeGreaterThanOrEqual(0)
+    expect(typeof meta.vectorQueueProcessing).toBe('boolean')
   })
 
   it('emits meta change events for settings, api tests, and doc generation', async () => {
@@ -1030,6 +1043,8 @@ describe('app context', () => {
     const metaDuringQueue = await context.getMeta()
     expect(metaDuringQueue.vectorReady).toBe(true)
     expect(metaDuringQueue.vectorSchemaReady).toBe(true)
+    expect(metaDuringQueue.pendingVectorCount).toBeGreaterThan(0)
+    expect(metaDuringQueue.vectorQueueProcessing).toBe(true)
 
     firstEmbedding.resolve(makeEmbeddingResponse([[0.41, 0.42, 0.43, 0.44]]))
     await context.whenIdle()

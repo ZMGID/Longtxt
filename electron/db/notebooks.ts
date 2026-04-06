@@ -14,6 +14,9 @@ import type {
 } from '../../shared/types'
 import { getBlocksByIds } from './blocks'
 
+const NOTEBOOK_ITEM_TYPES: NotebookItemType[] = ['block', 'heading', 'divider', 'note', 'todo']
+const NOTEBOOK_STRUCTURE_ITEM_TYPES: NotebookStructureItemInput['type'][] = ['heading', 'divider', 'note', 'todo']
+
 interface NotebookSummaryRow {
   id: string
   title: string
@@ -57,6 +60,20 @@ interface NotebookBlockEntry {
   blockId: string
   sortOrder: number
   block: NotebookBlockItem['block']
+}
+
+function isNotebookItemType(value: string): value is NotebookItemType {
+  return NOTEBOOK_ITEM_TYPES.includes(value as NotebookItemType)
+}
+
+function isNotebookStructureItemType(value: string): value is NotebookStructureItemInput['type'] {
+  return NOTEBOOK_STRUCTURE_ITEM_TYPES.includes(value as NotebookStructureItemInput['type'])
+}
+
+function assertNotebookStructureItemType(value: string): asserts value is NotebookStructureItemInput['type'] {
+  if (!isNotebookStructureItemType(value)) {
+    throw new Error(`Unsupported notebook structure item type: ${value}`)
+  }
 }
 
 function toNotebookSummary(row: NotebookSummaryRow): NotebookSummary {
@@ -159,6 +176,10 @@ function nextNotebookSortOrder(db: Database.Database, notebookId: string): numbe
 }
 
 function rowToNotebookItem(row: NotebookItemRow, blockEntries: Map<string, NotebookBlockItem['block']>): NotebookItem | null {
+  if (!isNotebookItemType(row.type)) {
+    return null
+  }
+
   const base = {
     id: row.id,
     type: row.type,
@@ -348,6 +369,7 @@ export function createNotebookStructureItem(
   updatedAt: string,
 ): Notebook {
   ensureNotebookExists(db, notebookId)
+  assertNotebookStructureItemType(input.type)
 
   db.prepare(
     `
@@ -404,6 +426,10 @@ export function updateNotebookStructureItem(
 
   if (current.type === 'block') {
     throw new Error('Block 类型不能通过结构块接口更新。')
+  }
+
+  if (!isNotebookStructureItemType(current.type)) {
+    throw new Error(`Unsupported notebook structure item type: ${current.type}`)
   }
 
   db.prepare(

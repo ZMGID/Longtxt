@@ -156,6 +156,46 @@ function SettingNumberField({
   )
 }
 
+function runtimeAiStatus(meta: AppMeta | null): string {
+  if (!meta?.aiConfigured) {
+    return '未配置，当前使用 mock'
+  }
+
+  if (meta.activeAiMode === 'live') {
+    return meta.lastAiError ? 'live AI 已启用，但最近运行失败' : 'live AI 已启用'
+  }
+
+  return '配置已保存，但当前仍停留在 mock'
+}
+
+function runtimeVectorStatus(meta: AppMeta | null): string {
+  if (!meta?.vectorReady) {
+    return '已降级：搜索仍可用，但仅标签 + FTS，不走向量召回'
+  }
+
+  if (!meta.vectorSchemaReady) {
+    return '向量可用，但 Schema 仍在准备'
+  }
+
+  return `可用 · ${meta.vectorDimension ?? '?'} 维`
+}
+
+function runtimeQueueStatus(meta: AppMeta | null): string {
+  if (!meta) {
+    return '加载中…'
+  }
+
+  if (meta.failedVectorCount > 0) {
+    return `失败待重试 · ${meta.failedVectorCount} 个块`
+  }
+
+  if (meta.pendingVectorCount > 0) {
+    return meta.vectorQueueProcessing ? `处理中 · ${meta.pendingVectorCount} 个待补齐` : `积压中 · ${meta.pendingVectorCount} 个待补齐`
+  }
+
+  return '正常'
+}
+
 export function SettingsPanel({
   config,
   docGenerationSettings,
@@ -434,19 +474,10 @@ export function SettingsPanel({
 
         {([
           { label: '数据目录', value: meta?.dataDirectory ?? '加载中…' },
-          {
-            label: 'API 状态',
-            value: !meta?.aiConfigured
-              ? '未配置，当前使用 mock'
-              : meta.activeAiMode === 'live'
-                ? '已启用 live AI'
-                : '已配置，但尚未通过测试，当前使用 mock',
-          },
-          { label: 'sqlite-vec', value: meta?.vectorReady ? '已加载' : '未加载，自动回退到普通检索' },
-          {
-            label: '向量 Schema',
-            value: meta?.vectorReady ? `${meta.vectorDimension ?? '?'} 维` : '尚未初始化',
-          },
+          { label: 'AI 模式', value: runtimeAiStatus(meta) },
+          { label: '向量状态', value: runtimeVectorStatus(meta) },
+          { label: '队列状态', value: runtimeQueueStatus(meta) },
+          { label: '待处理向量', value: `${meta?.pendingVectorCount ?? 0} 个` },
           { label: 'Base URL', value: meta?.resolvedBaseUrl ?? '尚未解析' },
         ] as const).map((item) => (
           <div key={item.label} className="rounded-lg border border-stone-200 bg-white/70 px-4 py-3">

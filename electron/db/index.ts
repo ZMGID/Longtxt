@@ -95,6 +95,112 @@ function migrateLegacyNotebookBlocks(db: Database.Database): void {
   transaction()
 }
 
+function migrateNotebookItemsSchema(db: Database.Database): void {
+  const row = db
+    .prepare(
+      `
+        SELECT sql
+        FROM sqlite_master
+        WHERE type = 'table'
+          AND name = 'notebook_items'
+      `,
+    )
+    .get() as { sql: string } | undefined
+
+  const normalizedSql = (row?.sql ?? '').replace(/\s+/g, ' ').toUpperCase()
+  const hasTypeCheck = normalizedSql.includes(`CHECK (TYPE IN ('BLOCK', 'HEADING', 'DIVIDER', 'NOTE', 'TODO'))`)
+  const hasCheckedCheck = normalizedSql.includes(`CHECK (CHECKED IN (0, 1))`)
+
+  if (hasTypeCheck && hasCheckedCheck) {
+    return
+  }
+
+  db.exec(`DROP INDEX IF EXISTS idx_notebook_items_notebook_id;`)
+  db.exec(`DROP INDEX IF EXISTS idx_notebook_items_block_id;`)
+  db.exec(`ALTER TABLE notebook_items RENAME TO notebook_items_legacy;`)
+  db.exec(`
+    CREATE TABLE notebook_items (
+      id TEXT PRIMARY KEY,
+      notebook_id TEXT NOT NULL REFERENCES notebooks(id) ON DELETE CASCADE,
+      type TEXT NOT NULL CHECK (type IN ('block', 'heading', 'divider', 'note', 'todo')),
+      block_id TEXT REFERENCES blocks(id) ON DELETE CASCADE,
+      content TEXT,
+      checked INTEGER NOT NULL DEFAULT 0 CHECK (checked IN (0, 1)),
+      sort_order INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+  `)
+
+  const legacyRows = db
+    .prepare(
+      `
+        SELECT id, notebook_id, type, block_id, content, checked, sort_order, created_at, updated_at
+        FROM notebook_items_legacy
+        ORDER BY notebook_id ASC, sort_order ASC, created_at ASC, id ASC
+      `,
+    )
+    .all() as Array<{
+    id: string
+    notebook_id: string
+    type: string
+    block_id: string | null
+    content: string | null
+    checked: number
+    sort_order: number
+    created_at: string
+    updated_at: string
+  }>
+  const hasBlock = db.prepare(`SELECT 1 FROM blocks WHERE id = ? LIMIT 1`)
+  const insert = db.prepare(
+    `
+      INSERT INTO notebook_items (
+        id,
+        notebook_id,
+        type,
+        block_id,
+        content,
+        checked,
+        sort_order,
+        created_at,
+        updated_at
+      )
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `,
+  )
+
+  const transaction = db.transaction(() => {
+    for (const row of legacyRows) {
+      const referencesExistingBlock = row.block_id ? Boolean(hasBlock.get(row.block_id)) : false
+      const normalizedType =
+        row.type === 'block' && referencesExistingBlock
+          ? 'block'
+          : row.type === 'heading' || row.type === 'divider' || row.type === 'note' || row.type === 'todo'
+            ? row.type
+            : referencesExistingBlock
+              ? 'block'
+              : 'note'
+
+      insert.run(
+        row.id,
+        row.notebook_id,
+        normalizedType,
+        normalizedType === 'block' ? row.block_id : null,
+        normalizedType === 'divider' || normalizedType === 'block' ? null : (row.content ?? ''),
+        normalizedType === 'todo' && row.checked ? 1 : 0,
+        row.sort_order,
+        row.created_at,
+        row.updated_at,
+      )
+    }
+  })
+
+  transaction()
+  db.exec(`DROP TABLE notebook_items_legacy;`)
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_notebook_items_notebook_id ON notebook_items (notebook_id, sort_order);`)
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_notebook_items_block_id ON notebook_items (block_id);`)
+}
+
 function migrateBlockAttachmentsSchema(db: Database.Database): void {
   const row = db
     .prepare(
@@ -180,6 +286,7 @@ export function initializeDatabase(db: Database.Database): DatabaseBootstrapResu
   db.exec(`CREATE INDEX IF NOT EXISTS idx_snapshots_notebook_id ON snapshots (notebook_id);`)
   seedDefaultTags(db)
   migrateTagKinds(db)
+  migrateNotebookItemsSchema(db)
   migrateLegacyNotebookBlocks(db)
   migrateBlockAttachmentsSchema(db)
 

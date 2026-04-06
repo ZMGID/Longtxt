@@ -38,9 +38,9 @@ const selectedNotebook = {
   title: '产品整理',
   createdAt: '2026-03-31T09:00:00.000Z',
   updatedAt: '2026-03-31T10:00:00.000Z',
-  itemCount: 1,
+  itemCount: 3,
   blockCount: 1,
-  structureCount: 0,
+  structureCount: 2,
   items: [
     {
       id: 'item-1',
@@ -58,6 +58,23 @@ const selectedNotebook = {
         status: 'ready' as const,
         aiMode: 'live' as const,
       },
+    },
+    {
+      id: 'item-2',
+      type: 'heading' as const,
+      sortOrder: 1,
+      createdAt: '2026-03-31T09:10:00.000Z',
+      updatedAt: '2026-03-31T09:10:00.000Z',
+      content: '整理标题',
+    },
+    {
+      id: 'item-3',
+      type: 'todo' as const,
+      sortOrder: 2,
+      createdAt: '2026-03-31T09:20:00.000Z',
+      updatedAt: '2026-03-31T09:20:00.000Z',
+      content: '补一条待办',
+      checked: false,
     },
   ],
 }
@@ -117,6 +134,8 @@ function renderWorkspace() {
     onUpdateNotebookTitle: vi.fn(async () => {}),
     onDeleteNotebook: vi.fn(async () => {}),
     onCreateBlockInNotebook: vi.fn(async () => {}),
+    onCreateNotebookStructureItem: vi.fn(async () => {}),
+    onUpdateNotebookStructureItem: vi.fn(async () => {}),
     onUpdateBlock: vi.fn(async () => {}),
     onAddTag: vi.fn(async () => {}),
     onRemoveTag: vi.fn(async () => {}),
@@ -161,6 +180,22 @@ describe('NotebookWorkspace', () => {
 
     await waitFor(() => {
       expect(props.onAddSearchResultToNotebook).toHaveBeenCalledWith('block-2')
+    })
+  })
+
+  it('shows structured notebook items and lets users create more structure items', async () => {
+    const props = renderWorkspace()
+
+    expect(screen.getByText('整理标题')).toBeInTheDocument()
+    expect(screen.getByText('补一条待办')).toBeInTheDocument()
+    expect(screen.getByText((content) => content.includes('3 项内容'))).toBeInTheDocument()
+    expect(screen.getByText((content) => content.includes('1 个引用块'))).toBeInTheDocument()
+    expect(screen.getByText((content) => content.includes('2 个结构项'))).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: '新建标题' }))
+
+    await waitFor(() => {
+      expect(props.onCreateNotebookStructureItem).toHaveBeenCalledWith('notebook-1', 'heading')
     })
   })
 

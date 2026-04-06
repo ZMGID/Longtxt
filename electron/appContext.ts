@@ -2350,6 +2350,7 @@ export function createAppContext(options: AppContextOptions): AppContext {
         isAIConfigured(config) && lastAiTestResult?.success && Boolean(savedFingerprint) && lastAiTestResult.configFingerprint === savedFingerprint
           ? 'live'
           : 'mock'
+      const pendingVectorCount = countPendingBlockVectors(db)
 
       return {
         dataDirectory: options.dataDirectory,
@@ -2365,6 +2366,8 @@ export function createAppContext(options: AppContextOptions): AppContext {
         modelCallCounts: { ...modelCallCounts },
         tokenUsage: tokenUsageAccum.requestCount > 0 ? { ...tokenUsageAccum } : null,
         failedVectorCount: countFailedBlockVectors(db),
+        pendingVectorCount,
+        vectorQueueProcessing: Boolean(reindexTask || activeReindexState) && pendingVectorCount > 0,
       }
     },
 

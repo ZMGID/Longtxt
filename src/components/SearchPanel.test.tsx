@@ -50,10 +50,16 @@ describe('SearchPanel', () => {
             mode: 'live',
             error: null,
           }}
+          documentReferences={[sampleResult]}
+          documentReferencesLoading={false}
+          selectedNotebook={null}
+          documentDepositAction={null}
           onQueryChange={vi.fn()}
           onSearch={vi.fn()}
           onGenerate={vi.fn()}
           onSaveSnapshot={vi.fn()}
+          onDepositToNewNotebook={vi.fn()}
+          onDepositToCurrentNotebook={vi.fn()}
           onClearBrowseTag={vi.fn()}
           onTagClick={vi.fn()}
         />
@@ -64,7 +70,7 @@ describe('SearchPanel', () => {
     expect(screen.getByText('条目一')).toBeInTheDocument()
     expect(screen.getByText('条目二')).toBeInTheDocument()
     expect(screen.getByText('1 条检索结果')).toBeInTheDocument()
-    expect(screen.getByText('全文命中')).toBeInTheDocument()
+    expect(screen.getAllByText('全文命中').length).toBeGreaterThan(0)
     expect(screen.getByTestId('search-results-scroll').className).toContain('overflow-y-auto')
     expect(screen.getByTestId('generated-document-scroll').className).toContain('overflow-y-auto')
   })
@@ -95,10 +101,16 @@ describe('SearchPanel', () => {
             mode: 'mock',
             error: null,
           }}
+          documentReferences={[]}
+          documentReferencesLoading={false}
+          selectedNotebook={null}
+          documentDepositAction={null}
           onQueryChange={vi.fn()}
           onSearch={vi.fn()}
           onGenerate={vi.fn()}
           onSaveSnapshot={vi.fn()}
+          onDepositToNewNotebook={vi.fn()}
+          onDepositToCurrentNotebook={vi.fn()}
           onClearBrowseTag={vi.fn()}
           onTagClick={vi.fn()}
         />
@@ -137,10 +149,16 @@ describe('SearchPanel', () => {
             mode: 'mock',
             error: null,
           }}
+          documentReferences={[]}
+          documentReferencesLoading={false}
+          selectedNotebook={null}
+          documentDepositAction={null}
           onQueryChange={vi.fn()}
           onSearch={vi.fn()}
           onGenerate={vi.fn()}
           onSaveSnapshot={vi.fn()}
+          onDepositToNewNotebook={vi.fn()}
+          onDepositToCurrentNotebook={vi.fn()}
           onClearBrowseTag={vi.fn()}
           onTagClick={vi.fn()}
         />
@@ -151,6 +169,49 @@ describe('SearchPanel', () => {
     expect(screen.getByText('最近更新')).toBeInTheDocument()
     expect(screen.queryByText(/得分/)).not.toBeInTheDocument()
     expect(screen.queryByText('全文命中')).not.toBeInTheDocument()
+  })
+
+  it('shows generated reference blocks and notebook deposition actions', () => {
+    render(
+      <ToastProvider>
+        <SearchPanel
+          query="SiliconFlow"
+          results={[sampleResult]}
+          resultsTitle="1 条检索结果"
+          resultsEmptyHint="没有找到相关块，换个关键词试试。"
+          browseTag={null}
+          searchError={null}
+          searching={false}
+          generating={false}
+          document={{
+            status: 'done',
+            requestId: '1',
+            topic: '测试主题',
+            content: '# 标题\n\n- 条目一\n- 条目二',
+            blockIds: ['block-1'],
+            mode: 'live',
+            error: null,
+          }}
+          documentReferences={[sampleResult]}
+          documentReferencesLoading={false}
+          selectedNotebook={{ id: 'notebook-1', title: '产品整理' }}
+          documentDepositAction={null}
+          onQueryChange={vi.fn()}
+          onSearch={vi.fn()}
+          onGenerate={vi.fn()}
+          onSaveSnapshot={vi.fn()}
+          onDepositToNewNotebook={vi.fn()}
+          onDepositToCurrentNotebook={vi.fn()}
+          onClearBrowseTag={vi.fn()}
+          onTagClick={vi.fn()}
+        />
+      </ToastProvider>,
+    )
+
+    expect(screen.getByText('本次参考块')).toBeInTheDocument()
+    expect(screen.getByText('本次参考')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '新建 notebook' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '加入「产品整理」' })).toBeInTheDocument()
   })
 
   it('allows saving a generated document even when no source blocks were referenced', () => {
@@ -174,10 +235,16 @@ describe('SearchPanel', () => {
             mode: 'live',
             error: null,
           }}
+          documentReferences={[]}
+          documentReferencesLoading={false}
+          selectedNotebook={null}
+          documentDepositAction={null}
           onQueryChange={vi.fn()}
           onSearch={vi.fn()}
           onGenerate={vi.fn()}
           onSaveSnapshot={vi.fn()}
+          onDepositToNewNotebook={vi.fn()}
+          onDepositToCurrentNotebook={vi.fn()}
           onClearBrowseTag={vi.fn()}
           onTagClick={vi.fn()}
         />
