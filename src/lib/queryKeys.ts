@@ -1,5 +1,7 @@
 export const queryKeys = {
   blocks: () => ['blocks'] as const,
+  blocksByDate: (date: string) => ['blocks', 'by-date', date] as const,
+  blockCleanupDays: () => ['blocks', 'cleanup-days'] as const,
   tags: () => ['tags'] as const,
   notebooks: () => ['notebooks'] as const,
   notebookRoot: () => ['notebook'] as const,
@@ -13,5 +15,6 @@ export const queryKeys = {
   calendarHeatmap: (year: number) => ['calendar', 'heatmap', year] as const,
   calendarDay: (date: string) => ['calendar', 'day', date] as const,
   calendarUpcoming: (limitDays: number) => ['calendar', 'upcoming', limitDays] as const,
+  dataManagement: () => ['data-management'] as const,
   meta: () => ['meta'] as const,
 }

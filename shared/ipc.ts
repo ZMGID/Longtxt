@@ -3,8 +3,10 @@ export const IPC_CHANNELS = {
     create: 'blocks:create',
     get: 'blocks:get',
     list: 'blocks:list',
+    listByDate: 'blocks:list-by-date',
     update: 'blocks:update',
     remove: 'blocks:remove',
+    removeMany: 'blocks:remove-many',
     findRelated: 'blocks:find-related',
   },
   search: {
@@ -65,10 +67,17 @@ export const IPC_CHANNELS = {
     previewJson: 'imports:preview-json',
     confirm: 'imports:confirm',
   },
+  data: {
+    getOverview: 'data:get-overview',
+    cleanupOrphanAttachments: 'data:cleanup-orphan-attachments',
+    rebuildAttachmentIndex: 'data:rebuild-attachment-index',
+    rebuildAllVectors: 'data:rebuild-all-vectors',
+  },
   settings: {
     get: 'settings:get',
     set: 'settings:set',
     testApi: 'settings:test-api',
+    openWindow: 'settings:open-window',
     openDataDirectory: 'settings:open-data-directory',
     openSettingsDirectory: 'settings:open-settings-directory',
     getMeta: 'settings:get-meta',

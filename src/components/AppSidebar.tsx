@@ -2,7 +2,7 @@ import type { ReactNode } from 'react'
 
 import type { AppMeta } from '../../shared/types'
 
-export type AppView = 'timeline' | 'calendar' | 'search' | 'notebooks' | 'graph' | 'snapshots' | 'settings'
+export type AppView = 'timeline' | 'calendar' | 'search' | 'notebooks' | 'graph' | 'snapshots' | 'data-management' | 'settings'
 
 interface AppSidebarProps {
   activeView: AppView
@@ -10,6 +10,8 @@ interface AppSidebarProps {
   aiStatusLabel: string
   meta: AppMeta | null
   onSelectView: (view: AppView) => void
+  onOpenSettings: () => void
+  onPrefetchView?: (view: AppView) => void
 }
 
 interface SidebarItem {
@@ -25,10 +27,11 @@ const items: SidebarItem[] = [
   { id: 'notebooks', label: '笔记本', icon: ({ active }) => <NotebookIcon active={active} /> },
   { id: 'graph', label: '连接图', icon: ({ active }) => <GraphIcon active={active} /> },
   { id: 'snapshots', label: '文档快照', icon: ({ active }) => <SnapshotIcon active={active} /> },
+  { id: 'data-management', label: '数据管理', icon: ({ active }) => <DataManagementIcon active={active} /> },
   { id: 'settings', label: '设置', icon: ({ active }) => <SettingsIcon active={active} /> },
 ]
 
-export function AppSidebar({ activeView, blockCount, aiStatusLabel, meta, onSelectView }: AppSidebarProps) {
+export function AppSidebar({ activeView, blockCount, aiStatusLabel, meta, onSelectView, onOpenSettings, onPrefetchView }: AppSidebarProps) {
   return (
     <aside
       data-testid="app-sidebar"
@@ -40,13 +43,30 @@ export function AppSidebar({ activeView, blockCount, aiStatusLabel, meta, onSele
         <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-t-[24px] border border-black/[0.06] bg-[linear-gradient(180deg,rgba(250,247,242,0.97),rgba(244,240,233,0.92))] shadow-[0_18px_48px_rgba(68,48,22,0.08)]">
           <nav className="flex flex-col items-center gap-2 px-1.5 pt-3 lg:px-2 lg:pt-4">
             {items.map((item) => {
-              const active = item.id === activeView
+              const active = item.id === 'settings' ? false : item.id === activeView
 
               return (
                 <button
                   key={item.id}
                   type="button"
-                  onClick={() => onSelectView(item.id)}
+                  onMouseEnter={() => {
+                    if (item.id !== 'settings') {
+                      onPrefetchView?.(item.id)
+                    }
+                  }}
+                  onFocus={() => {
+                    if (item.id !== 'settings') {
+                      onPrefetchView?.(item.id)
+                    }
+                  }}
+                  onClick={() => {
+                    if (item.id === 'settings') {
+                      onOpenSettings()
+                      return
+                    }
+
+                    onSelectView(item.id)
+                  }}
                   aria-label={item.label}
                   title={item.label}
                   className={`flex h-9 w-9 items-center justify-center rounded-2xl transition duration-200 active:scale-[0.97] lg:h-10 lg:w-10 ${
@@ -246,6 +266,17 @@ function SnapshotIcon({ active }: { active: boolean }) {
       <path d="M14 4.5V9h4" />
       <path d="M9 13h6" />
       <path d="M9 16h6" />
+    </SidebarIconFrame>
+  )
+}
+
+function DataManagementIcon({ active }: { active: boolean }) {
+  return (
+    <SidebarIconFrame active={active}>
+      <ellipse cx="12" cy="6" rx="6.5" ry="2.5" />
+      <path d="M5.5 6v4c0 1.4 2.9 2.5 6.5 2.5s6.5-1.1 6.5-2.5V6" />
+      <path d="M5.5 10v4c0 1.4 2.9 2.5 6.5 2.5s6.5-1.1 6.5-2.5v-4" />
+      <path d="M5.5 14v4c0 1.4 2.9 2.5 6.5 2.5s6.5-1.1 6.5-2.5v-4" />
     </SidebarIconFrame>
   )
 }

@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { Block, CalendarDayDetail, CalendarEntry, CalendarHeatmap, CalendarSuggestion } from '../../shared/types'
@@ -42,6 +42,7 @@ vi.mock('./toast-context', () => ({
 
 const settings = {
   aiSuggestionsEnabled: true,
+  autoAcceptAiSuggestions: false,
   maxSuggestionsPerBlock: 3,
   upcomingDays: 7,
 }
@@ -305,42 +306,73 @@ describe('CalendarView', () => {
   it('places the heatmap at the top and removes redundant overview copy', async () => {
     renderCalendar(1600)
 
-    expect(screen.getByRole('heading', { name: '2026 年记录密度' })).toBeInTheDocument()
+    expect(screen.getByText('全年热力图')).toBeInTheDocument()
+    expect(screen.queryByRole('heading', { name: '2026 年记录密度' })).not.toBeInTheDocument()
+    expect(screen.queryByText('全年热力图放在最上方；点击任一天，下面直接切到对应日期的工作内容。')).not.toBeInTheDocument()
+    expect(screen.getByText('已有安排')).toBeInTheDocument()
+    expect(screen.getAllByText('AI 建议').length).toBeGreaterThan(0)
     expect(screen.queryByText('Calendar Workspace')).not.toBeInTheDocument()
     expect(screen.queryByText('14 次记录')).not.toBeInTheDocument()
     expect(screen.queryByText('Focus Day')).not.toBeInTheDocument()
   })
 
-  it('progressively shifts from three panes to two panes to stacked without multiple column scroll owners', async () => {
+  it('uses inset selection styling and stronger in-cell markers for entries and suggestions', async () => {
+    renderCalendar(1600)
+
+    const selectedDayLabel = `${formatCalendarDateLabel('2026-04-05')} · 4 个块`
+
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: selectedDayLabel }).getAttribute('style')).toContain('width: 15px')
+    })
+
+    const selectedDay = screen.getByRole('button', { name: selectedDayLabel })
+    expect(selectedDay).toHaveAttribute('data-selected', 'true')
+    expect(selectedDay.getAttribute('style')).toContain('box-shadow: inset 0 0 0 2px #1c1917')
+    expect(within(selectedDay).getByTestId('calendar-entry-indicator-2026-04-05')).toBeInTheDocument()
+    expect(within(selectedDay).getByTestId('calendar-suggestion-indicator-2026-04-05')).toBeInTheDocument()
+  })
+
+  it('uses a docked desktop sidebar and collapses it on small screens without adding extra scroll owners', async () => {
     const { container } = renderCalendar(1600)
 
     await waitFor(() => {
-      expect(screen.getByTestId('calendar-layout')).toHaveAttribute('data-layout', 'three-pane')
-    })
-    expect(screen.getByTestId('calendar-layout')).toHaveAttribute('data-sidebar-mode', 'stacked')
-    expect(container.querySelectorAll('[class*="overflow-y-auto"]').length).toBe(1)
-
-    resizeWindow(1200)
-    await waitFor(() => {
       expect(screen.getByTestId('calendar-layout')).toHaveAttribute('data-layout', 'two-pane')
     })
-    expect(screen.getByTestId('calendar-layout')).toHaveAttribute('data-sidebar-mode', 'tabs')
-    expect(screen.getByTestId('calendar-sidebar-tablist')).toBeInTheDocument()
+    expect(screen.getByTestId('calendar-layout')).toHaveAttribute('data-sidebar-mode', 'docked')
+    expect(screen.getByTestId('calendar-sidebar')).toBeInTheDocument()
+    expect(screen.queryByTestId('calendar-sidebar-toggle')).not.toBeInTheDocument()
+    expect(container.querySelectorAll('[class*="overflow-y-auto"]').length).toBe(1)
 
     resizeWindow(880)
     await waitFor(() => {
-      expect(screen.getByTestId('calendar-layout')).toHaveAttribute('data-layout', 'stacked')
+      expect(screen.getByTestId('calendar-layout')).toHaveAttribute('data-layout', 'single-pane')
     })
+    expect(screen.getByTestId('calendar-layout')).toHaveAttribute('data-sidebar-mode', 'collapsed')
+    expect(screen.getByTestId('calendar-sidebar-toggle')).toBeInTheDocument()
+    expect(screen.queryByTestId('calendar-inline-sidebar')).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByTestId('calendar-sidebar-toggle'))
+    await waitFor(() => {
+      expect(screen.getByTestId('calendar-layout')).toHaveAttribute('data-sidebar-mode', 'inline')
+    })
+    expect(screen.getByTestId('calendar-inline-sidebar')).toBeInTheDocument()
+
+    resizeWindow(700)
+    await waitFor(() => {
+      expect(screen.getByTestId('calendar-layout')).toHaveAttribute('data-layout', 'single-pane')
+    })
+    expect(screen.getByTestId('calendar-layout')).toHaveAttribute('data-sidebar-mode', 'inline')
+    expect(screen.getByTestId('calendar-sidebar-tablist')).toBeInTheDocument()
     expect(container.querySelectorAll('[class*="overflow-y-auto"]').length).toBe(1)
   })
 
-  it('recalculates heatmap layout after shrinking to stacked mode and expanding again', async () => {
+  it('recalculates heatmap layout after shrinking to single-pane mode and expanding again', async () => {
     renderCalendar(1200)
 
     setHeatmapViewportWidth(180)
     resizeWindow(760)
     await waitFor(() => {
-      expect(screen.getByTestId('calendar-layout')).toHaveAttribute('data-layout', 'stacked')
+      expect(screen.getByTestId('calendar-layout')).toHaveAttribute('data-layout', 'single-pane')
     })
 
     const compactDayLabel = `${formatCalendarDateLabel('2026-04-05')} · 4 个块`
@@ -351,7 +383,7 @@ describe('CalendarView', () => {
     setHeatmapViewportWidth(1200)
     resizeWindow(1600)
     await waitFor(() => {
-      expect(screen.getByTestId('calendar-layout')).toHaveAttribute('data-layout', 'three-pane')
+      expect(screen.getByTestId('calendar-layout')).toHaveAttribute('data-layout', 'two-pane')
     })
 
     const expandedStyle = screen.getByRole('button', { name: compactDayLabel }).getAttribute('style') ?? ''
@@ -359,7 +391,7 @@ describe('CalendarView', () => {
     expect(expandedStyle).toContain('height: 15px')
   })
 
-  it('scrolls back to the top when shrinking into the narrow desktop layout', async () => {
+  it('scrolls back to the top when shrinking into the single-pane layout', async () => {
     renderCalendar(1200)
 
     const scrollRoot = screen.getByTestId('calendar-scroll-root') as HTMLElement & { scrollTop: number }
@@ -367,7 +399,7 @@ describe('CalendarView', () => {
 
     resizeWindow(760)
     await waitFor(() => {
-      expect(screen.getByTestId('calendar-layout')).toHaveAttribute('data-layout', 'stacked')
+      expect(screen.getByTestId('calendar-layout')).toHaveAttribute('data-layout', 'single-pane')
     })
 
     expect(scrollRoot.scrollTop).toBe(0)
@@ -399,7 +431,7 @@ describe('CalendarView', () => {
     })
     expect(scrollRoot).toHaveStyle({ overflowAnchor: 'none' })
     expect(screen.getByTestId('calendar-layout')).toHaveClass('shrink-0')
-    expect(screen.getByRole('heading', { name: '2026 年记录密度' }).closest('section')).toHaveClass('shrink-0')
+    expect(screen.getByText('全年热力图').closest('section')).toHaveClass('shrink-0')
     expect(screen.getByRole('heading', { name: formatCalendarDateLabel('2026-04-05') }).closest('section')).toHaveClass('shrink-0')
   })
 

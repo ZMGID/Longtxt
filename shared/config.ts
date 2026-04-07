@@ -59,6 +59,7 @@ export const DEFAULT_UI_SETTINGS: UISettings = {
 
 export const DEFAULT_CALENDAR_SETTINGS: CalendarSettings = {
   aiSuggestionsEnabled: true,
+  autoAcceptAiSuggestions: false,
   maxSuggestionsPerBlock: 3,
   upcomingDays: 30,
 }
@@ -245,6 +246,9 @@ export function normalizeCalendarSettings(
     aiSuggestionsEnabled: typeof value?.aiSuggestionsEnabled === 'boolean'
       ? value.aiSuggestionsEnabled
       : DEFAULT_CALENDAR_SETTINGS.aiSuggestionsEnabled,
+    autoAcceptAiSuggestions: typeof value?.autoAcceptAiSuggestions === 'boolean'
+      ? value.autoAcceptAiSuggestions
+      : DEFAULT_CALENDAR_SETTINGS.autoAcceptAiSuggestions,
     maxSuggestionsPerBlock: clampCalendarMaxSuggestionsPerBlock(
       typeof value?.maxSuggestionsPerBlock === 'number'
         ? value.maxSuggestionsPerBlock

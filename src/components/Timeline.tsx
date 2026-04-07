@@ -4,6 +4,7 @@ import { Virtuoso, type VirtuosoHandle } from 'react-virtuoso'
 
 import type { Block, NotebookSummary, TagSuggestion } from '../../shared/types'
 import { buildMiniTimelineGroups, getActiveMiniTimelineGroupKey } from '../lib/miniTimeline'
+import { formatDateKeyLabel } from '../lib/format'
 import { AddToNotebookMenu } from './AddToNotebookMenu'
 import { BlockCard } from './BlockCard'
 
@@ -58,6 +59,10 @@ export function Timeline({
     () => getActiveMiniTimelineGroupKey(miniTimelineGroups, boundedTopVisibleIndex),
     [boundedTopVisibleIndex, miniTimelineGroups],
   )
+  const miniTimelineGroupByStartIndex = useMemo(
+    () => new Map(miniTimelineGroups.map((group) => [group.startIndex, group])),
+    [miniTimelineGroups],
+  )
 
   useEffect(() => {
     if (!focusedBlockId) {
@@ -73,7 +78,6 @@ export function Timeline({
     virtuosoRef.current?.scrollToIndex({ index, align: 'center', behavior: 'auto' })
     onFocusedBlockHandled?.()
   }, [blocks, focusedBlockId, onFocusedBlockHandled])
-
 
   if (loading) {
     return (
@@ -152,8 +156,16 @@ export function Timeline({
           rangeChanged={(range) => {
             setTopVisibleIndex(range.startIndex)
           }}
-          itemContent={(_index, block) => (
+          itemContent={(index, block) => (
             <div className="pb-2">
+              {miniTimelineGroupByStartIndex.get(index) ? (
+                <div className="mb-2 border-b border-stone-200 pb-2 pt-1">
+                  <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-stone-400">日期</div>
+                  <div className="mt-1 text-sm font-semibold text-stone-900">
+                    {formatDateKeyLabel(miniTimelineGroupByStartIndex.get(index)!.key, { weekday: true })}
+                  </div>
+                </div>
+              ) : null}
               <BlockCard
                 key={block.id}
                 block={block}

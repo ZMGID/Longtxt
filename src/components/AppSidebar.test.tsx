@@ -20,6 +20,7 @@ const sampleMeta: AppMeta = {
     embedding: 3,
   },
   tokenUsage: null,
+  lifetimeTokenUsage: null,
   failedVectorCount: 0,
   pendingVectorCount: 0,
   vectorQueueProcessing: false,
@@ -34,11 +35,13 @@ describe('AppSidebar', () => {
         aiStatusLabel="已启用 live AI"
         meta={sampleMeta}
         onSelectView={vi.fn()}
+        onOpenSettings={vi.fn()}
       />,
     )
 
     expect(screen.getByTestId('app-sidebar').className).toContain('w-[60px]')
     expect(screen.getByRole('button', { name: '搜索生成' }).className).toContain('bg-stone-900/[0.08]')
+    expect(screen.getByRole('button', { name: '数据管理' })).toBeInTheDocument()
     expect(screen.getByText('20')).toBeInTheDocument()
     expect(screen.getByText('7')).toBeInTheDocument()
     expect(screen.getByText('3')).toBeInTheDocument()
@@ -58,11 +61,14 @@ describe('AppSidebar', () => {
         aiStatusLabel="已启用 live AI"
         meta={sampleMeta}
         onSelectView={handleSelectView}
+        onOpenSettings={vi.fn()}
       />,
     )
 
     fireEvent.click(screen.getByRole('button', { name: '笔记本' }))
+    fireEvent.click(screen.getByRole('button', { name: '数据管理' }))
 
     expect(handleSelectView).toHaveBeenCalledWith('notebooks')
+    expect(handleSelectView).toHaveBeenCalledWith('data-management')
   })
 })

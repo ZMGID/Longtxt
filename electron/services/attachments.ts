@@ -5,6 +5,8 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 
 import Database from 'better-sqlite3'
 
+import type { AttachmentIndexRebuildResult } from '../../shared/types'
+
 const DATA_URL_PATTERN = /^data:(image\/[a-zA-Z0-9.+-]+);base64,(.+)$/
 const IMAGE_MARKDOWN_PATTERN = /!\[([^\]]*)]\(([^)\s]+)(?:\s+"[^"]*")?\)/g
 const MIME_EXTENSION_MAP: Record<string, string> = {
@@ -293,7 +295,7 @@ export function syncBlockAttachmentRecords(
 export async function cleanupOrphanAttachments(
   db: Database.Database,
   dataDirectory: string,
-): Promise<void> {
+): Promise<number> {
   const orphanRows = db
     .prepare(
       `
@@ -304,13 +306,17 @@ export async function cleanupOrphanAttachments(
       `,
     )
     .all() as AttachmentRow[]
+  let removedCount = 0
 
   for (const orphan of orphanRows) {
     const localPath = toLocalAttachmentPath(orphan.file_url, dataDirectory) ?? orphan.file_path
 
     await rm(localPath, { force: true })
     db.prepare(`DELETE FROM attachments WHERE id = ?`).run(orphan.id)
+    removedCount += 1
   }
+
+  return removedCount
 }
 
 export function listBlockAttachments(
@@ -351,7 +357,7 @@ export async function readAttachmentBase64(filePath: string): Promise<string> {
   return buffer.toString('base64')
 }
 
-export async function rebuildAttachmentIndex(db: Database.Database, dataDirectory: string): Promise<void> {
+export async function rebuildAttachmentIndex(db: Database.Database, dataDirectory: string): Promise<AttachmentIndexRebuildResult> {
   const blocks = db
     .prepare(
       `
@@ -366,5 +372,12 @@ export async function rebuildAttachmentIndex(db: Database.Database, dataDirector
     syncBlockAttachmentRecords(db, dataDirectory, block.id, block.content)
   }
 
-  await cleanupOrphanAttachments(db, dataDirectory)
+  const removedOrphanCount = await cleanupOrphanAttachments(db, dataDirectory)
+  const attachmentCount = (db.prepare(`SELECT COUNT(*) AS total FROM attachments`).get() as { total: number }).total
+
+  return {
+    indexedBlockCount: blocks.length,
+    attachmentCount,
+    removedOrphanCount,
+  }
 }

@@ -39,6 +39,9 @@ export const changbu = {
   get imports() {
     return getApi().imports
   },
+  get data() {
+    return getApi().data
+  },
   get settings() {
     return getApi().settings
   },

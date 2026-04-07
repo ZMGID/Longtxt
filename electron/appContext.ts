@@ -18,41 +18,13 @@ import type {
   AIConfig,
   AIExecutionMode,
   ApiTestResult,
-  AppMeta,
   BlockEnrichSettings,
   Block,
-  BlockChangedEvent,
-  CalendarChangedEvent,
-  CalendarDayDetail,
-  CalendarEntry,
-  CalendarEntryInput,
-  CalendarEntryPatch,
-  CalendarHeatmap,
   CalendarSettings,
-  CalendarSuggestionAcceptInput,
-  DocGenerationChunk,
   DocGenerationSettings,
-  DocGenerationStart,
-  ExportOptions,
-  GraphEdge,
-  GraphNode,
-  ImportConflictStrategy,
-  ImportPreview,
   Notebook,
-  NotebookItem,
-  NotebookMutationResult,
-  NotebookChangedEvent,
-  MetaChangedEvent,
   NotebookReferencePreview,
-  NotebookReferenceReviewState,
-  NotebookStructureItemInput,
-  NotebookStructureItemPatch,
-  NotebookSummary,
-  PaginationInput,
   RelatedBlockResult,
-  SearchResult,
-  Snapshot,
-  TagSuggestion,
 } from '../shared/types'
 import {
   addManualTagToBlock,
@@ -62,6 +34,7 @@ import {
   deleteBlockRecord,
   getBlockById,
   getBlocksByIds,
+  listBlocksByDate as listBlocksByDateInDb,
   listRecentBlockContents,
   listBlocks,
   removeTagFromBlock,
@@ -71,6 +44,7 @@ import {
 } from './db/blocks'
 import {
   acceptCalendarSuggestion,
+  autoAcceptCalendarSuggestionsForBlock,
   clearCalendarSuggestionsForBlock,
   createCalendarEntry,
   dismissCalendarSuggestion,
@@ -136,23 +110,50 @@ import {
   resolveBaseUrl,
   type EmbeddingProvider,
   type LLMProvider,
-  type TokenUsageSink,
 } from './services/ai'
-import {
-  selectDocumentReferenceBlocks,
-  selectDocumentReferenceResults,
-  streamDocumentGeneration,
-} from './services/docgen'
+import { selectDocumentReferenceBlocks, selectDocumentReferenceResults } from './services/docgen'
 import { createTaggerEngine } from './services/tagger'
-import { cleanupOrphanAttachments, rebuildAttachmentIndex, saveImageDataUrl, syncBlockAttachmentRecords } from './services/attachments'
+import {
+  cleanupOrphanAttachments as cleanupOrphanAttachmentsService,
+  rebuildAttachmentIndex as rebuildAttachmentIndexService,
+  saveImageDataUrl,
+  syncBlockAttachmentRecords,
+} from './services/attachments'
 import { confirmImportJob, exportJsonBundle, exportMarkdownBundle, previewJsonImport, previewMarkdownImport } from './services/importExport'
 import { createSettingsFileStore, resolveSettingsFilePath } from './settingsFile'
+import {
+  buildNotebookWritingGuide,
+  createLiveVectorIndexState,
+  createMockVectorIndexState,
+  isAIConfigured,
+  isSameVectorIndexState,
+  isTransientEnrichError,
+  normalizeCalendarDate,
+  normalizeCalendarEntryInput,
+  normalizeCalendarEntryPatch,
+  normalizeCalendarSuggestionAcceptInput,
+  normalizeNotebookTitle,
+  normalizeNotebookTopic,
+  parseApiTestResult,
+  parseVectorIndexState,
+  shouldProbeCalendarSuggestions,
+  sleep,
+  todayDateKey,
+  validateContent,
+} from './appContext-utils'
+import { startStreamedDocumentGenerationTask } from './appContext-docgen'
+import { createContextEventEmitters, createPendingTaskTracker, createUsageTracker, parseTokenUsage } from './appContext-runtime'
+import type { AppContext, AppContextOptions, QueuedEnrichRequest, VectorIndexState } from './appContext-types'
+
+export type { AppContext, AppContextOptions } from './appContext-types'
 
 const AI_LAST_TEST_RESULT_KEY = 'ai_last_test_result'
+const TOKEN_USAGE_TOTALS_KEY = 'token_usage_totals'
 const VECTOR_INDEX_STATE_KEY = 'vector_index_state'
 const FILE_BACKED_SETTING_KEYS = new Set([
   'ai_config',
   AI_LAST_TEST_RESULT_KEY,
+  TOKEN_USAGE_TOTALS_KEY,
   BLOCK_ENRICH_SETTINGS_KEY,
   CALENDAR_SETTINGS_KEY,
   DOC_GENERATION_SETTINGS_KEY,
@@ -162,391 +163,6 @@ const MAX_ENRICH_RETRIES = 1
 const ENRICH_RETRY_DELAY_MS = 500
 const TAGGER_CORPUS_LIMIT = 50
 const VECTOR_REINDEX_BATCH_SIZE = 12
-
-interface QueuedEnrichRequest {
-  blockId: string
-  content: string
-  generation: number
-}
-
-interface VectorIndexState {
-  mode: AIExecutionMode
-  configFingerprint: string | null
-}
-
-export interface AppContextOptions {
-  dataDirectory: string
-  settingsFilePath?: string
-  onBlockChanged?: (event: BlockChangedEvent) => void
-  onNotebooksChanged?: (event: NotebookChangedEvent) => void
-  onMetaChanged?: (event: MetaChangedEvent) => void
-  onCalendarChanged?: (event: CalendarChangedEvent) => void
-  onDocGenerationChunk?: (chunk: DocGenerationChunk) => void
-  openPath?: (path: string) => Promise<string>
-  chooseOpenPaths?: (options: {
-    title: string
-    filters: Array<{ name: string; extensions: string[] }>
-    properties: Array<'openFile' | 'multiSelections' | 'openDirectory'>
-  }) => Promise<string[]>
-  chooseSavePath?: (options: {
-    title: string
-    defaultPath: string
-    filters: Array<{ name: string; extensions: string[] }>
-  }) => Promise<string | null>
-  chooseDirectory?: (title: string) => Promise<string | null>
-}
-
-export interface AppContext {
-  createBlock(content: string): Promise<Block>
-  getBlock(id: string): Promise<Block>
-  listBlocks(params?: PaginationInput): Promise<Block[]>
-  updateBlock(id: string, content: string): Promise<Block>
-  removeBlock(id: string): Promise<void>
-  findRelatedBlocks(blockId: string, limit?: number): Promise<RelatedBlockResult[]>
-  addTag(blockId: string, tagName: string): Promise<Block>
-  removeTag(blockId: string, tagId: string): Promise<Block>
-  listTags(query?: string): Promise<TagSuggestion[]>
-  saveImage(dataUrl: string, filenameHint?: string): Promise<{ fileUrl: string; markdownAlt: string }>
-  getGraphData(tagNames?: string[]): Promise<{ nodes: GraphNode[]; edges: GraphEdge[] }>
-  searchBlocks(query: string, limit?: number): Promise<SearchResult[]>
-  searchByTag(tagName: string, limit?: number): Promise<SearchResult[]>
-  generateDocument(topic: string): Promise<DocGenerationStart>
-  saveSnapshot(topic: string, content: string, blockIds: string[], notebookId?: string | null): Promise<Snapshot>
-  listSnapshots(query?: string, notebookId?: string | null): Promise<Snapshot[]>
-  getSnapshot(id: string): Promise<Snapshot>
-  removeSnapshot(id: string): Promise<void>
-  listCalendarYears(): Promise<number[]>
-  getCalendarHeatmap(year: number): Promise<CalendarHeatmap>
-  getCalendarDayDetail(date: string): Promise<CalendarDayDetail>
-  listUpcomingCalendarEntries(limitDays?: number): Promise<CalendarEntry[]>
-  createCalendarEntry(input: CalendarEntryInput): Promise<CalendarEntry>
-  updateCalendarEntry(id: string, patch: CalendarEntryPatch): Promise<CalendarEntry>
-  removeCalendarEntry(id: string): Promise<void>
-  acceptCalendarSuggestion(id: string, overrides?: CalendarSuggestionAcceptInput): Promise<CalendarEntry>
-  dismissCalendarSuggestion(id: string): Promise<void>
-  listNotebooks(): Promise<NotebookSummary[]>
-  getNotebook(id: string): Promise<Notebook>
-  createNotebook(title?: string): Promise<Notebook>
-  updateNotebook(id: string, title: string): Promise<Notebook>
-  removeNotebook(id: string): Promise<void>
-  addBlockToNotebook(notebookId: string, blockId: string): Promise<NotebookMutationResult>
-  removeNotebookItem(notebookId: string, itemId: string): Promise<Notebook>
-  reorderNotebookItems(notebookId: string, itemIds: string[]): Promise<Notebook>
-  createNotebookBlock(notebookId: string, content: string): Promise<Notebook>
-  createNotebookStructureItem(notebookId: string, input: NotebookStructureItemInput): Promise<Notebook>
-  updateNotebookStructureItem(notebookId: string, itemId: string, patch: NotebookStructureItemPatch): Promise<Notebook>
-  getNotebookReferencePreview(notebookId: string, topic?: string): Promise<NotebookReferencePreview>
-  updateNotebookReferenceReview(
-    notebookId: string,
-    blockId: string,
-    patch: Partial<Pick<NotebookReferenceReviewState, 'excluded' | 'locked' | 'pinned'>>,
-    topic?: string,
-  ): Promise<NotebookReferencePreview>
-  generateNotebookDocument(notebookId: string, topic?: string): Promise<DocGenerationStart>
-  exportMarkdown(options: ExportOptions): Promise<{ path: string; count: number } | null>
-  exportJson(options: ExportOptions): Promise<{ path: string; count: number } | null>
-  previewImportMarkdown(filePaths?: string[]): Promise<ImportPreview | null>
-  previewImportJson(filePath?: string): Promise<ImportPreview | null>
-  confirmImport(importId: string, conflictStrategy: ImportConflictStrategy): Promise<{ imported: number }>
-  getSetting(key: string): Promise<string | null>
-  setSetting(key: string, value: string): Promise<void>
-  testApi(config: AIConfig): Promise<ApiTestResult>
-  getMeta(): Promise<AppMeta>
-  openDataDirectory(): Promise<void>
-  openSettingsDirectory(): Promise<void>
-  retryFailedVectors(): Promise<number>
-  whenIdle(): Promise<void>
-  dispose(): void
-}
-
-function validateContent(content: string): string {
-  const trimmed = content.trim()
-
-  if (!trimmed) {
-    throw new Error('内容不能为空。')
-  }
-
-  return trimmed
-}
-
-function normalizeCalendarDate(value: string): string {
-  const trimmed = value.trim()
-
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) {
-    throw new Error('日期格式无效，应为 YYYY-MM-DD。')
-  }
-
-  const date = new Date(`${trimmed}T00:00:00`)
-
-  if (Number.isNaN(date.getTime())) {
-    throw new Error('日期无效。')
-  }
-
-  return trimmed
-}
-
-function normalizeCalendarTime(value: string | null | undefined): string | null {
-  if (value == null) {
-    return null
-  }
-
-  const trimmed = value.trim()
-
-  if (!trimmed) {
-    return null
-  }
-
-  if (!/^(?:[01]\d|2[0-3]):[0-5]\d$/.test(trimmed)) {
-    throw new Error('时间格式无效，应为 HH:mm。')
-  }
-
-  return trimmed
-}
-
-function normalizeCalendarTitle(title: string): string {
-  const trimmed = title.trim()
-
-  if (!trimmed) {
-    throw new Error('日历标题不能为空。')
-  }
-
-  return trimmed
-}
-
-function normalizeCalendarNotes(notes: string | null | undefined): string | null {
-  const trimmed = notes?.trim()
-  return trimmed ? trimmed : null
-}
-
-function normalizeCalendarEntryInput(input: CalendarEntryInput): CalendarEntryInput {
-  const allDay = input.allDay ?? !input.startTime
-
-  return {
-    title: normalizeCalendarTitle(input.title),
-    date: normalizeCalendarDate(input.date),
-    notes: normalizeCalendarNotes(input.notes),
-    startTime: allDay ? null : normalizeCalendarTime(input.startTime),
-    allDay,
-    linkedBlockId: input.linkedBlockId ?? null,
-  }
-}
-
-function normalizeCalendarEntryPatch(input: CalendarEntryPatch): CalendarEntryPatch {
-  const nextPatch: CalendarEntryPatch = {}
-
-  if (input.title !== undefined) {
-    nextPatch.title = normalizeCalendarTitle(input.title)
-  }
-
-  if (input.date !== undefined) {
-    nextPatch.date = normalizeCalendarDate(input.date)
-  }
-
-  if (input.notes !== undefined) {
-    nextPatch.notes = normalizeCalendarNotes(input.notes)
-  }
-
-  if (input.startTime !== undefined) {
-    nextPatch.startTime = normalizeCalendarTime(input.startTime)
-  }
-
-  if (input.allDay !== undefined) {
-    nextPatch.allDay = input.allDay
-    if (input.allDay) {
-      nextPatch.startTime = null
-    }
-  }
-
-  if (input.status !== undefined) {
-    nextPatch.status = input.status
-  }
-
-  return nextPatch
-}
-
-function normalizeCalendarSuggestionAcceptInput(input?: CalendarSuggestionAcceptInput): CalendarSuggestionAcceptInput | undefined {
-  if (!input) {
-    return undefined
-  }
-
-  const nextInput: CalendarSuggestionAcceptInput = {}
-
-  if (input.title !== undefined) {
-    nextInput.title = normalizeCalendarTitle(input.title)
-  }
-
-  if (input.date !== undefined) {
-    nextInput.date = normalizeCalendarDate(input.date)
-  }
-
-  if (input.notes !== undefined) {
-    nextInput.notes = normalizeCalendarNotes(input.notes)
-  }
-
-  if (input.startTime !== undefined) {
-    nextInput.startTime = normalizeCalendarTime(input.startTime)
-  }
-
-  if (input.allDay !== undefined) {
-    nextInput.allDay = input.allDay
-    if (input.allDay) {
-      nextInput.startTime = null
-    }
-  }
-
-  if (input.linkedBlockId !== undefined) {
-    nextInput.linkedBlockId = input.linkedBlockId
-  }
-
-  return nextInput
-}
-
-function todayDateKey(): string {
-  const now = new Date()
-
-  return [
-    now.getFullYear(),
-    String(now.getMonth() + 1).padStart(2, '0'),
-    String(now.getDate()).padStart(2, '0'),
-  ].join('-')
-}
-
-function shouldProbeCalendarSuggestions(content: string): boolean {
-  return [
-    /\b\d{4}-\d{1,2}-\d{1,2}\b/,
-    /\b\d{1,2}\/\d{1,2}\b/,
-    /\d{1,2}月\d{1,2}日/,
-    /(今天|明天|后天|今晚|今早|今天下午|今天晚上|本周|下周|周[一二三四五六日天]|星期[一二三四五六日天]|月底|月初|号前)/,
-  ].some((pattern) => pattern.test(content))
-}
-
-function normalizeNotebookTitle(title: string | undefined): string {
-  const trimmed = title?.trim()
-  return trimmed && trimmed.length > 0 ? trimmed : '未命名笔记本'
-}
-
-function normalizeNotebookTopic(notebook: Notebook, topic?: string): string {
-  const trimmed = topic?.trim()
-  return trimmed && trimmed.length > 0 ? trimmed : notebook.title
-}
-
-function buildNotebookWritingGuide(items: NotebookItem[]): string | null {
-  const guideLines = items.flatMap((item) => {
-    switch (item.type) {
-      case 'heading':
-        return item.content.trim() ? [`- 章节标题：${item.content.trim()}`] : []
-      case 'divider':
-        return ['- 分隔线：这里需要一个简洁的段落切换或章节过渡。']
-      case 'note':
-        return item.content.trim() ? [`- 注释：${item.content.trim()}`] : []
-      case 'todo':
-        return item.content.trim()
-          ? [`- 待办${item.checked ? '（已完成，可酌情吸收）' : '（优先处理）'}：${item.content.trim()}`]
-          : []
-      default:
-        return []
-    }
-  })
-
-  return guideLines.length > 0 ? guideLines.join('\n') : null
-}
-
-function isAIConfigured(config: AIConfig): boolean {
-  return Boolean(
-    config.llm.endpoint.trim() &&
-      config.llm.apiKey.trim() &&
-      config.llm.model.trim() &&
-      config.embedding.endpoint.trim() &&
-      config.embedding.apiKey.trim() &&
-      config.embedding.model.trim(),
-  )
-}
-
-function parseApiTestResult(raw: string | null): ApiTestResult | null {
-  if (!raw) {
-    return null
-  }
-
-  try {
-    const parsed = JSON.parse(raw) as Partial<ApiTestResult>
-
-    if (typeof parsed.success !== 'boolean') {
-      return null
-    }
-
-    return {
-      success: parsed.success,
-      modelsOk: Boolean(parsed.modelsOk),
-      embeddingOk: Boolean(parsed.embeddingOk),
-      llmOk: Boolean(parsed.llmOk),
-      llmStreamingOk: Boolean(parsed.llmStreamingOk),
-      resolvedBaseUrl: parsed.resolvedBaseUrl ?? '',
-      embeddingModel: parsed.embeddingModel ?? '',
-      embeddingDimension: typeof parsed.embeddingDimension === 'number' ? parsed.embeddingDimension : null,
-      chatModel: parsed.chatModel ?? '',
-      error: parsed.error,
-      checkedAt: parsed.checkedAt ?? new Date(0).toISOString(),
-      configFingerprint: parsed.configFingerprint,
-    }
-  } catch {
-    return null
-  }
-}
-
-function parseVectorIndexState(raw: string | null): VectorIndexState | null {
-  if (!raw) {
-    return null
-  }
-
-  try {
-    const parsed = JSON.parse(raw) as Partial<VectorIndexState>
-
-    if (parsed.mode !== 'mock' && parsed.mode !== 'live') {
-      return null
-    }
-
-    return {
-      mode: parsed.mode,
-      configFingerprint: typeof parsed.configFingerprint === 'string' ? parsed.configFingerprint : null,
-    }
-  } catch {
-    return null
-  }
-}
-
-function createMockVectorIndexState(): VectorIndexState {
-  return {
-    mode: 'mock',
-    configFingerprint: null,
-  }
-}
-
-function createLiveVectorIndexState(configFingerprint: string): VectorIndexState {
-  return {
-    mode: 'live',
-    configFingerprint,
-  }
-}
-
-function isSameVectorIndexState(left: VectorIndexState | null, right: VectorIndexState | null): boolean {
-  if (!left || !right) {
-    return left === right
-  }
-
-  return left.mode === right.mode && left.configFingerprint === right.configFingerprint
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms))
-}
-
-function isTransientEnrichError(error: unknown): boolean {
-  if (!(error instanceof Error)) {
-    return false
-  }
-
-  return /请求超时|fetch failed|network|socket|temporar|temporarily|rate limit|429|5\d\d/i.test(error.message)
-}
 
 export function createAppContext(options: AppContextOptions): AppContext {
   mkdirSync(options.dataDirectory, { recursive: true })
@@ -563,7 +179,7 @@ export function createAppContext(options: AppContextOptions): AppContext {
     ),
   })
   const tagger = createTaggerEngine()
-  const pendingTasks = new Set<Promise<unknown>>()
+  const { pendingTasks, trackTask } = createPendingTaskTracker()
   const blockEnrichGenerations = new Map<string, number>()
   let queuedEnrichRequests: QueuedEnrichRequest[] = []
   let queuedEnrichTimer: ReturnType<typeof setTimeout> | null = null
@@ -578,85 +194,23 @@ export function createAppContext(options: AppContextOptions): AppContext {
   let vectorSchemaReady = vectorReady ? currentVectorDimension !== null : false
   let currentVectorIndexState = parseVectorIndexState(getDbSetting(db, VECTOR_INDEX_STATE_KEY))
   const importJobs = new Map<string, Awaited<ReturnType<typeof previewMarkdownImport>>['job']>()
-
-  // 累计 token 用量（自程序启动后）
-  let modelCallCounts = { llm: 0, embedding: 0 }
-  let tokenUsageAccum = { promptTokens: 0, completionTokens: 0, totalTokens: 0, requestCount: 0 }
-  const tokenSink: TokenUsageSink = {
-    recordRequest(kind) {
-      modelCallCounts = {
-        llm: modelCallCounts.llm + Number(kind === 'llm'),
-        embedding: modelCallCounts.embedding + Number(kind === 'embedding'),
-      }
-      tokenUsageAccum = {
-        ...tokenUsageAccum,
-        requestCount: tokenUsageAccum.requestCount + 1,
-      }
-      emitMetaChanged({
-        reason: 'usage',
-      })
+  const {
+    emitBlockChanged,
+    emitNotebooksChanged,
+    emitMetaChanged,
+    emitCalendarChanged,
+    emitDocGenerationChunk,
+    emitTouchedNotebooks,
+  } = createContextEventEmitters(options)
+  const { tokenSink, getModelCallCounts, getTokenUsage, getLifetimeTokenUsage } = createUsageTracker({
+    emitMetaChanged,
+    initialLifetimeUsage: parseTokenUsage(settingsStore.get(TOKEN_USAGE_TOTALS_KEY)),
+    persistLifetimeUsage(usage) {
+      settingsStore.set(TOKEN_USAGE_TOTALS_KEY, JSON.stringify(usage))
     },
-    add(promptTokens, completionTokens) {
-      if (promptTokens === 0 && completionTokens === 0) {
-        return
-      }
+  })
 
-      tokenUsageAccum = {
-        promptTokens: tokenUsageAccum.promptTokens + promptTokens,
-        completionTokens: tokenUsageAccum.completionTokens + completionTokens,
-        totalTokens: tokenUsageAccum.totalTokens + promptTokens + completionTokens,
-        requestCount: tokenUsageAccum.requestCount,
-      }
-      emitMetaChanged({
-        reason: 'usage',
-      })
-    },
-  }
-
-  void trackTask(rebuildAttachmentIndex(db, options.dataDirectory))
-
-  function emitBlockChanged(event: BlockChangedEvent): void {
-    options.onBlockChanged?.(event)
-  }
-
-  function emitNotebooksChanged(event: NotebookChangedEvent): void {
-    options.onNotebooksChanged?.(event)
-  }
-
-  function emitMetaChanged(event: MetaChangedEvent): void {
-    options.onMetaChanged?.(event)
-  }
-
-  function emitCalendarChanged(event: CalendarChangedEvent): void {
-    options.onCalendarChanged?.(event)
-  }
-
-  function emitDocGenerationChunk(chunk: DocGenerationChunk): void {
-    options.onDocGenerationChunk?.(chunk)
-  }
-
-  function emitTouchedNotebooks(
-    notebookIds: string[],
-    reason: NotebookChangedEvent['reason'],
-  ): void {
-    if (notebookIds.length === 0) {
-      return
-    }
-
-    emitNotebooksChanged({
-      notebookIds,
-      reason,
-    })
-  }
-
-  function trackTask<T>(task: Promise<T>): Promise<T> {
-    pendingTasks.add(task)
-    void task.catch(() => undefined)
-    void task.finally(() => {
-      pendingTasks.delete(task)
-    })
-    return task
-  }
+  void trackTask(rebuildAttachmentIndexService(db, options.dataDirectory))
 
   function getLastAiTestResult(): ApiTestResult | null {
     return parseApiTestResult(settingsStore.get(AI_LAST_TEST_RESULT_KEY))
@@ -847,20 +401,32 @@ export function createAppContext(options: AppContextOptions): AppContext {
         return
       }
 
-      replaceCalendarSuggestionsForBlock(
-        db,
-        blockId,
-        suggestions.map((suggestion) => ({
-          title: suggestion.title,
-          notes: suggestion.notes,
-          date: suggestion.date,
-          startTime: suggestion.startTime,
-          allDay: suggestion.allDay,
-          confidence: suggestion.confidence,
-          evidenceText: suggestion.evidenceText,
-        })),
-        new Date().toISOString(),
-      )
+      const suggestionInputs = suggestions.map((suggestion) => ({
+        title: suggestion.title,
+        notes: suggestion.notes,
+        date: suggestion.date,
+        startTime: suggestion.startTime,
+        allDay: suggestion.allDay,
+        confidence: suggestion.confidence,
+        evidenceText: suggestion.evidenceText,
+      }))
+      const now = new Date().toISOString()
+
+      if (calendarSettings.autoAcceptAiSuggestions) {
+        autoAcceptCalendarSuggestionsForBlock(
+          db,
+          blockId,
+          suggestionInputs,
+          now,
+        )
+      } else {
+        replaceCalendarSuggestionsForBlock(
+          db,
+          blockId,
+          suggestionInputs,
+          now,
+        )
+      }
 
       if (mode === 'live' && clearRuntimeAiError()) {
         emitMetaChanged({
@@ -1629,6 +1195,82 @@ export function createAppContext(options: AppContextOptions): AppContext {
     return transaction()
   }
 
+  function deleteBlocksWithEffects(
+    ids: string[],
+    removeOptions: { strict?: boolean } = {},
+  ): {
+    deletedBlocks: Block[]
+    touchedNotebookIds: string[]
+  } {
+    const uniqueIds = Array.from(new Set(ids.filter((id) => id.trim().length > 0)))
+
+    if (uniqueIds.length === 0) {
+      return {
+        deletedBlocks: [],
+        touchedNotebookIds: [],
+      }
+    }
+
+    const touchedNotebookIds = new Set<string>()
+
+    const deletedBlocks = db.transaction(() => {
+      const removed: Block[] = []
+      const now = new Date().toISOString()
+
+      for (const id of uniqueIds) {
+        let block: Block
+
+        try {
+          block = getBlockById(db, id)
+        } catch (error) {
+          if (removeOptions.strict) {
+            throw error
+          }
+
+          continue
+        }
+
+        advanceBlockEnrichGeneration(id)
+
+        for (const notebookId of touchNotebooksForBlock(db, id, now)) {
+          touchedNotebookIds.add(notebookId)
+        }
+
+        removed.push(deleteBlockRecord(db, block.id))
+
+        if (vectorReady) {
+          deleteBlockVector(db, block.id)
+        }
+
+        removePendingBlockVectors(db, [block.id])
+        removeFailedBlockVector(db, block.id)
+      }
+
+      return removed
+    })()
+
+    if (deletedBlocks.length > 0) {
+      emitTouchedNotebooks(Array.from(touchedNotebookIds), 'block-unlinked')
+      emitMetaChanged({
+        reason: 'vector-queue',
+      })
+
+      for (const deletedBlock of deletedBlocks) {
+        emitBlockChanged({
+          block: deletedBlock,
+          reason: 'deleted',
+        })
+      }
+
+      void trackTask(cleanupOrphanAttachmentsService(db, options.dataDirectory))
+    }
+
+    return {
+      deletedBlocks,
+      touchedNotebookIds: Array.from(touchedNotebookIds),
+    }
+  }
+
   async function createStandaloneBlock(content: string): Promise<Block> {
     const safeContent = validateContent(content)
     const now = new Date().toISOString()
@@ -1666,6 +1308,10 @@ export function createAppContext(options: AppContextOptions): AppContext {
       })
     },
 
+    async listBlocksByDate(date) {
+      return listBlocksByDateInDb(db, date)
+    },
+
     async updateBlock(id, content) {
       const safeContent = validateContent(content)
       const enrichGeneration = advanceBlockEnrichGeneration(id)
@@ -1682,32 +1328,22 @@ export function createAppContext(options: AppContextOptions): AppContext {
       scheduleEnrich(id, safeContent, enrichGeneration)
       enqueueBlocksForVectorReindex([block])
       scheduleCurrentVectorReindex()
-      void trackTask(cleanupOrphanAttachments(db, options.dataDirectory))
+      void trackTask(cleanupOrphanAttachmentsService(db, options.dataDirectory))
 
       return getBlockById(db, id)
     },
 
     async removeBlock(id) {
-      advanceBlockEnrichGeneration(id)
-      emitTouchedNotebooks(touchNotebooksForBlock(db, id, new Date().toISOString()), 'block-unlinked')
-      const deletedBlock = deleteBlockRecord(db, id)
+      deleteBlocksWithEffects([id], { strict: true })
+    },
 
-      if (vectorReady) {
-        deleteBlockVector(db, id)
+    async removeBlocks(ids) {
+      const { deletedBlocks } = deleteBlocksWithEffects(ids)
+
+      return {
+        removed: deletedBlocks.length,
+        removedIds: deletedBlocks.map((block) => block.id),
       }
-
-      removePendingBlockVectors(db, [id])
-      removeFailedBlockVector(db, id)
-      emitMetaChanged({
-        reason: 'vector-queue',
-      })
-
-      emitBlockChanged({
-        block: deletedBlock,
-        reason: 'deleted',
-      })
-
-      void trackTask(cleanupOrphanAttachments(db, options.dataDirectory))
     },
 
     async findRelatedBlocks(blockId, limit = 10): Promise<RelatedBlockResult[]> {
@@ -1797,40 +1433,27 @@ export function createAppContext(options: AppContextOptions): AppContext {
       const blocks = selectDocumentReferenceBlocks(results, maxReferenceBlocks)
 
       void trackTask(
-        (async () => {
-          try {
-            for await (const chunk of streamDocumentGeneration(requestId, safeTopic, blocks, llmProvider, mode, {
-              temperature,
-              maxTokens: maxOutputTokens,
-            })) {
-              if (mode === 'live' && chunk.delta) {
-                clearRuntimeAiError()
-              }
-
-              emitDocGenerationChunk(chunk)
-            }
-
-            emitMetaChanged({
-              reason: 'doc-generation',
-            })
-          } catch (error) {
+        startStreamedDocumentGenerationTask({
+          requestId,
+          topic: safeTopic,
+          blocks,
+          llmProvider,
+          mode,
+          temperature,
+          maxOutputTokens,
+          onChunk: emitDocGenerationChunk,
+          onLiveDelta: clearRuntimeAiError,
+          onError: (error) => {
             if (mode === 'live') {
               rememberRuntimeAiError(error)
             }
-
-            emitDocGenerationChunk({
-              requestId,
-              topic: safeTopic,
-              delta: '',
-              done: true,
-              mode,
-              error: error instanceof Error ? error.message : '文档生成失败。',
-            })
+          },
+          onSettled: () => {
             emitMetaChanged({
               reason: 'doc-generation',
             })
-          }
-        })(),
+          },
+        }),
       )
 
       return {
@@ -2089,44 +1712,28 @@ export function createAppContext(options: AppContextOptions): AppContext {
       const writingGuide = buildNotebookWritingGuide(notebook.items)
 
       void trackTask(
-        (async () => {
-          try {
-            for await (const chunk of streamDocumentGeneration(
-              requestId,
-              safeTopic,
-              selectedBlocks,
-              llmProvider,
-              mode,
-              { writingGuide, temperature, maxTokens: maxOutputTokens },
-            )) {
-              if (mode === 'live' && chunk.delta) {
-                clearRuntimeAiError()
-              }
-
-              emitDocGenerationChunk(chunk)
-            }
-
-            emitMetaChanged({
-              reason: 'doc-generation',
-            })
-          } catch (error) {
+        startStreamedDocumentGenerationTask({
+          requestId,
+          topic: safeTopic,
+          blocks: selectedBlocks,
+          llmProvider,
+          mode,
+          temperature,
+          maxOutputTokens,
+          writingGuide,
+          onChunk: emitDocGenerationChunk,
+          onLiveDelta: clearRuntimeAiError,
+          onError: (error) => {
             if (mode === 'live') {
               rememberRuntimeAiError(error)
             }
-
-            emitDocGenerationChunk({
-              requestId,
-              topic: safeTopic,
-              delta: '',
-              done: true,
-              mode,
-              error: error instanceof Error ? error.message : '文档生成失败。',
-            })
+          },
+          onSettled: () => {
             emitMetaChanged({
               reason: 'doc-generation',
             })
-          }
-        })(),
+          },
+        }),
       )
 
       return {
@@ -2268,8 +1875,86 @@ export function createAppContext(options: AppContextOptions): AppContext {
       enqueueBlocksForVectorReindex(importedBlocks)
       scheduleCurrentVectorReindex()
 
-      void trackTask(cleanupOrphanAttachments(db, options.dataDirectory))
+      void trackTask(cleanupOrphanAttachmentsService(db, options.dataDirectory))
       return result
+    },
+
+    async getDataManagementOverview() {
+      const config = getSavedConfig()
+      const pendingVectorCount = countPendingBlockVectors(db)
+      const tokenUsage = getTokenUsage()
+      const totalNotebookCount = (db.prepare(`SELECT COUNT(*) AS total FROM notebooks`).get() as { total: number }).total
+      const totalSnapshotCount = (db.prepare(`SELECT COUNT(*) AS total FROM snapshots`).get() as { total: number }).total
+      const totalAttachmentCount = (db.prepare(`SELECT COUNT(*) AS total FROM attachments`).get() as { total: number }).total
+
+      return {
+        dataDirectory: options.dataDirectory,
+        databasePath,
+        settingsDirectory: dirname(settingsStore.filePath),
+        settingsFilePath: settingsStore.filePath,
+        totalBlockCount: countBlocks(db),
+        totalNotebookCount,
+        totalSnapshotCount,
+        totalAttachmentCount,
+        totalVectorCount: vectorReady && currentVectorDimension !== null ? countBlockVectors(db) : 0,
+        vectorReady,
+        aiConfigured: isAIConfigured(config),
+        activeAiMode: getExecutionMode(),
+        vectorDimension: currentVectorDimension,
+        vectorSchemaReady: vectorReady && vectorSchemaReady,
+        failedVectorCount: countFailedBlockVectors(db),
+        pendingVectorCount,
+        vectorQueueProcessing: Boolean(reindexTask || activeReindexState) && pendingVectorCount > 0,
+        tokenUsage: tokenUsage.requestCount > 0 ? tokenUsage : null,
+      }
+    },
+
+    async cleanupOrphanAttachments() {
+      const removedCount = await trackTask(cleanupOrphanAttachmentsService(db, options.dataDirectory))
+
+      emitMetaChanged({
+        reason: 'data-management',
+      })
+
+      return { removedCount }
+    },
+
+    async rebuildAttachmentIndex() {
+      const result = await trackTask(rebuildAttachmentIndexService(db, options.dataDirectory))
+
+      emitMetaChanged({
+        reason: 'data-management',
+      })
+
+      return result
+    },
+
+    async rebuildAllVectors() {
+      if (!vectorReady || currentVectorDimension === null) {
+        throw new Error('当前向量索引不可用，无法重建。')
+      }
+
+      const providerState = getVectorProviderState()
+
+      if (!providerState) {
+        throw new Error('当前 AI / 向量配置尚未就绪，请先完成 API 测试或改用 mock。')
+      }
+
+      const queuedBlockCount = countBlocks(db)
+
+      clearFailedBlockVectors(db)
+      resetPendingBlockVectors(db)
+      scheduleReindex(providerState.embeddingProvider, providerState.mode, providerState.indexState, {
+        fullRebuild: true,
+      })
+
+      emitMetaChanged({
+        reason: 'data-management',
+      })
+
+      return {
+        queuedBlockCount,
+      }
     },
 
     async getSetting(key) {
@@ -2352,6 +2037,9 @@ export function createAppContext(options: AppContextOptions): AppContext {
           : 'mock'
       const pendingVectorCount = countPendingBlockVectors(db)
 
+      const tokenUsage = getTokenUsage()
+      const lifetimeTokenUsage = getLifetimeTokenUsage()
+
       return {
         dataDirectory: options.dataDirectory,
         totalBlockCount: countBlocks(db),
@@ -2363,8 +2051,9 @@ export function createAppContext(options: AppContextOptions): AppContext {
         activeAiMode,
         lastAiError,
         lastAiTestResult,
-        modelCallCounts: { ...modelCallCounts },
-        tokenUsage: tokenUsageAccum.requestCount > 0 ? { ...tokenUsageAccum } : null,
+        modelCallCounts: getModelCallCounts(),
+        tokenUsage: tokenUsage.requestCount > 0 ? tokenUsage : null,
+        lifetimeTokenUsage: lifetimeTokenUsage.requestCount > 0 ? lifetimeTokenUsage : null,
         failedVectorCount: countFailedBlockVectors(db),
         pendingVectorCount,
         vectorQueueProcessing: Boolean(reindexTask || activeReindexState) && pendingVectorCount > 0,

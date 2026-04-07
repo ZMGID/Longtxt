@@ -68,8 +68,10 @@ const api: ChangbuApi = {
     create: (content) => ipcRenderer.invoke(IPC_CHANNELS.blocks.create, content),
     get: (id) => ipcRenderer.invoke(IPC_CHANNELS.blocks.get, id),
     list: (params) => ipcRenderer.invoke(IPC_CHANNELS.blocks.list, params),
+    listByDate: (date) => ipcRenderer.invoke(IPC_CHANNELS.blocks.listByDate, date),
     update: (id, content) => ipcRenderer.invoke(IPC_CHANNELS.blocks.update, id, content),
     remove: (id) => ipcRenderer.invoke(IPC_CHANNELS.blocks.remove, id),
+    removeMany: (ids) => ipcRenderer.invoke(IPC_CHANNELS.blocks.removeMany, ids),
     findRelated: (blockId, limit) => ipcRenderer.invoke(IPC_CHANNELS.blocks.findRelated, blockId, limit),
   },
   search: {
@@ -132,10 +134,17 @@ const api: ChangbuApi = {
     previewJson: () => ipcRenderer.invoke(IPC_CHANNELS.imports.previewJson),
     confirm: (importId, conflictStrategy) => ipcRenderer.invoke(IPC_CHANNELS.imports.confirm, importId, conflictStrategy),
   },
+  data: {
+    getOverview: () => ipcRenderer.invoke(IPC_CHANNELS.data.getOverview),
+    cleanupOrphanAttachments: () => ipcRenderer.invoke(IPC_CHANNELS.data.cleanupOrphanAttachments),
+    rebuildAttachmentIndex: () => ipcRenderer.invoke(IPC_CHANNELS.data.rebuildAttachmentIndex),
+    rebuildAllVectors: () => ipcRenderer.invoke(IPC_CHANNELS.data.rebuildAllVectors),
+  },
   settings: {
     get: (key) => ipcRenderer.invoke(IPC_CHANNELS.settings.get, key),
     set: (key, value) => ipcRenderer.invoke(IPC_CHANNELS.settings.set, key, value),
     testApi: (config) => ipcRenderer.invoke(IPC_CHANNELS.settings.testApi, config),
+    openWindow: () => ipcRenderer.invoke(IPC_CHANNELS.settings.openWindow),
     openDataDirectory: () => ipcRenderer.invoke(IPC_CHANNELS.settings.openDataDirectory),
     openSettingsDirectory: () => ipcRenderer.invoke(IPC_CHANNELS.settings.openSettingsDirectory),
     getMeta: () => ipcRenderer.invoke(IPC_CHANNELS.settings.getMeta),

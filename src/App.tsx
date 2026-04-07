@@ -1,4 +1,4 @@
-import { Suspense, lazy, startTransition, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { startTransition, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { useQueryClient } from '@tanstack/react-query'
 
@@ -31,19 +31,28 @@ import type {
   CalendarSettings,
   DocGenerationChunk,
   DocGenerationSettings,
+  ImportConflictStrategy,
   RelatedBlockResult,
   SearchResult,
   UISettings,
 } from '../shared/types'
 import { AppSidebar, type AppView } from './components/AppSidebar'
 import { BlockCard } from './components/BlockCard'
+import { CalendarView } from './components/CalendarView'
 import { ChangbuEventBridge } from './components/ChangbuEventBridge'
+import { DataManagementView } from './components/DataManagementView'
+import { GraphView } from './components/GraphView'
 import { InputBar } from './components/InputBar'
+import { NotebookWorkspace } from './components/NotebookWorkspace'
+import { SearchPanel } from './components/SearchPanel'
+import { SettingsPanel } from './components/SettingsPanel'
+import { SnapshotsView } from './components/SnapshotsView'
 import { Timeline } from './components/Timeline'
 import { ToastProvider } from './components/Toast'
 import { useToast } from './components/toast-context'
 import { useAppMeta } from './hooks/useAppMeta'
 import { useBlocks } from './hooks/useBlocks'
+import { fetchBlockCleanupDays } from './hooks/useBlockCleanupDays'
 import { useGraphData } from './hooks/useGraphData'
 import { useNotebooks } from './hooks/useNotebooks'
 import { useSnapshots } from './hooks/useSnapshots'
@@ -52,35 +61,14 @@ import { changbu } from './lib/changbu'
 import { loadDocumentReferences } from './lib/documentReferences'
 import { queryKeys } from './lib/queryKeys'
 
-const CalendarView = lazy(async () => {
-  const module = await import('./components/CalendarView')
-  return { default: module.CalendarView }
-})
-
-const GraphView = lazy(async () => {
-  const module = await import('./components/GraphView')
-  return { default: module.GraphView }
-})
-
-const NotebookWorkspace = lazy(async () => {
-  const module = await import('./components/NotebookWorkspace')
-  return { default: module.NotebookWorkspace }
-})
-
-const SearchPanel = lazy(async () => {
-  const module = await import('./components/SearchPanel')
-  return { default: module.SearchPanel }
-})
-
-const SettingsPanel = lazy(async () => {
-  const module = await import('./components/SettingsPanel')
-  return { default: module.SettingsPanel }
-})
-
-const SnapshotsView = lazy(async () => {
-  const module = await import('./components/SnapshotsView')
-  return { default: module.SnapshotsView }
-})
+function formatTodayDateKey(): string {
+  const today = new Date()
+  return [
+    today.getFullYear(),
+    String(today.getMonth() + 1).padStart(2, '0'),
+    String(today.getDate()).padStart(2, '0'),
+  ].join('-')
+}
 
 interface DocumentState {
   status: 'idle' | 'streaming' | 'done' | 'error'
@@ -193,7 +181,7 @@ function AppInner() {
   const meta = metaQuery.data ?? null
   const graphQuery = useGraphData(graphTagFilters, activeView === 'graph')
   const graphData = graphQuery.data ?? { nodes: [], edges: [] }
-  const graphLoading = graphQuery.isPending || graphQuery.isFetching
+  const graphLoading = graphQuery.isPending && graphData.nodes.length === 0 && graphData.edges.length === 0
   const snapshotsQuery = useSnapshots(snapshotQuery, null, activeView === 'snapshots')
   const snapshots = useMemo(() => snapshotsQuery.data ?? [], [snapshotsQuery.data])
 
@@ -207,6 +195,85 @@ function AppInner() {
 
     return result
   }, [queryClient])
+
+  const refreshDataManagementState = useCallback(async (): Promise<void> => {
+    await Promise.all([
+      refreshMeta(),
+      queryClient.invalidateQueries({ queryKey: queryKeys.dataManagement(), exact: true }),
+    ])
+  }, [queryClient, refreshMeta])
+
+  const prefetchViewResources = useCallback((view: AppView): void => {
+    const currentYear = new Date().getFullYear()
+    const today = formatTodayDateKey()
+
+    switch (view) {
+      case 'calendar':
+        void Promise.allSettled([
+          queryClient.prefetchQuery({
+            queryKey: queryKeys.calendarYears(),
+            queryFn: () => changbu.calendar.listYears(),
+          }),
+          queryClient.prefetchQuery({
+            queryKey: queryKeys.calendarHeatmap(currentYear),
+            queryFn: () => changbu.calendar.getYearHeatmap(currentYear),
+          }),
+          queryClient.prefetchQuery({
+            queryKey: queryKeys.calendarDay(today),
+            queryFn: () => changbu.calendar.getDayDetail(today),
+          }),
+          queryClient.prefetchQuery({
+            queryKey: queryKeys.calendarUpcoming(calendarSettings.upcomingDays),
+            queryFn: () => changbu.calendar.listUpcoming(calendarSettings.upcomingDays),
+          }),
+        ])
+        return
+      case 'search':
+        return
+      case 'notebooks':
+        return
+      case 'graph':
+        void queryClient.prefetchQuery({
+          queryKey: queryKeys.graph(graphTagFilters),
+          queryFn: () => changbu.graph.getData(graphTagFilters),
+        })
+        return
+      case 'snapshots':
+        void queryClient.prefetchQuery({
+          queryKey: queryKeys.snapshots('', null),
+          queryFn: () => changbu.snapshots.list('', null),
+        })
+        return
+      case 'data-management':
+        void Promise.allSettled([
+          queryClient.prefetchQuery({
+            queryKey: queryKeys.dataManagement(),
+            queryFn: () => changbu.data.getOverview(),
+          }),
+          queryClient.prefetchQuery({
+            queryKey: queryKeys.blockCleanupDays(),
+            queryFn: fetchBlockCleanupDays,
+          }),
+        ])
+        return
+      case 'timeline':
+      case 'settings':
+        return
+    }
+  }, [calendarSettings.upcomingDays, queryClient])
+
+  useEffect(() => {
+    const warmViews: AppView[] = ['calendar', 'search', 'snapshots', 'data-management', 'graph']
+    const timeoutId = setTimeout(() => {
+      warmViews.forEach((view) => {
+        prefetchViewResources(view)
+      })
+    }, 40)
+
+    return () => {
+      clearTimeout(timeoutId)
+    }
+  }, [prefetchViewResources])
 
   useEffect(() => {
     let active = true
@@ -302,6 +369,57 @@ function AppInner() {
       unsubscribeQuitState()
     }
   }, [refreshMeta])
+
+  useEffect(() => {
+    const unsubscribeMeta = changbu.events.onMetaChanged((event) => {
+      if (event.reason !== 'settings') {
+        return
+      }
+
+      void changbu.settings.get('ai_config').then((saved) => {
+        if (!saved) {
+          setConfig(DEFAULT_AI_CONFIG)
+          return
+        }
+
+        try {
+          const parsed = JSON.parse(saved) as AIConfig
+          setConfig({
+            llm: {
+              ...DEFAULT_AI_CONFIG.llm,
+              ...parsed.llm,
+            },
+            embedding: {
+              ...DEFAULT_AI_CONFIG.embedding,
+              ...parsed.embedding,
+            },
+          })
+        } catch {
+          setConfig(DEFAULT_AI_CONFIG)
+        }
+      })
+
+      void changbu.settings.get(DOC_GENERATION_SETTINGS_KEY).then((saved) => {
+        setDocGenerationSettings(parseDocGenerationSettings(saved))
+      })
+
+      void changbu.settings.get(BLOCK_ENRICH_SETTINGS_KEY).then((saved) => {
+        setBlockEnrichSettings(parseBlockEnrichSettings(saved))
+      })
+
+      void changbu.settings.get(CALENDAR_SETTINGS_KEY).then((saved) => {
+        setCalendarSettings(parseCalendarSettings(saved))
+      })
+
+      void changbu.settings.get(UI_SETTINGS_KEY).then((saved) => {
+        setUiSettings(parseUISettings(saved))
+      })
+    })
+
+    return () => {
+      unsubscribeMeta()
+    }
+  }, [])
 
   useEffect(() => {
     if (!snapshotsQuery.isSuccess) {
@@ -554,6 +672,14 @@ function AppInner() {
     const normalizedCalendarSettings = normalizeCalendarSettings(calendarSettings)
     const normalizedUISettings = normalizeUISettings(uiSettings)
 
+    function formatCalendarSettingsSummary(settings: CalendarSettings): string {
+      if (!settings.aiSuggestionsEnabled) {
+        return '已关闭'
+      }
+
+      return `已启用（每块最多 ${settings.maxSuggestionsPerBlock} 条，${settings.autoAcceptAiSuggestions ? '自动加入日历' : '需手动确认'}）`
+    }
+
     try {
       await changbu.settings.set('ai_config', JSON.stringify(config))
       await changbu.settings.set(DOC_GENERATION_SETTINGS_KEY, JSON.stringify(normalizedDocGenerationSettings))
@@ -568,8 +694,8 @@ function AppInner() {
       toast(
         nextMeta.activeAiMode === 'live' ? 'success' : 'info',
         nextMeta.activeAiMode === 'live'
-          ? `设置已保存，当前使用 live AI。文档生成引用上限 ${normalizedDocGenerationSettings.maxReferenceBlocks}、候选 ${normalizedDocGenerationSettings.retrievalLimit}、输出 ${normalizedDocGenerationSettings.maxOutputTokens} token；块 enrich ${normalizedBlockEnrichSettings.queueEnabled ? `队列已启用（最多 ${normalizedBlockEnrichSettings.maxBatchBlocks} 块 / ${normalizedBlockEnrichSettings.queueDebounceMs}ms）` : '保持逐条'}；日历 AI 建议${normalizedCalendarSettings.aiSuggestionsEnabled ? `已启用（每块最多 ${normalizedCalendarSettings.maxSuggestionsPerBlock} 条）` : '已关闭'}。`
-          : `设置已保存，但尚未通过测试，当前仍使用 mock。文档生成引用上限 ${normalizedDocGenerationSettings.maxReferenceBlocks}、候选 ${normalizedDocGenerationSettings.retrievalLimit}、输出 ${normalizedDocGenerationSettings.maxOutputTokens} token；块 enrich ${normalizedBlockEnrichSettings.queueEnabled ? `队列已启用（最多 ${normalizedBlockEnrichSettings.maxBatchBlocks} 块 / ${normalizedBlockEnrichSettings.queueDebounceMs}ms）` : '保持逐条'}；日历 AI 建议${normalizedCalendarSettings.aiSuggestionsEnabled ? `已启用（每块最多 ${normalizedCalendarSettings.maxSuggestionsPerBlock} 条）` : '已关闭'}。`,
+          ? `设置已保存，当前使用 live AI。文档生成引用上限 ${normalizedDocGenerationSettings.maxReferenceBlocks}、候选 ${normalizedDocGenerationSettings.retrievalLimit}、输出 ${normalizedDocGenerationSettings.maxOutputTokens} token；块 enrich ${normalizedBlockEnrichSettings.queueEnabled ? `队列已启用（最多 ${normalizedBlockEnrichSettings.maxBatchBlocks} 块 / ${normalizedBlockEnrichSettings.queueDebounceMs}ms）` : '保持逐条'}；日历 AI 建议${formatCalendarSettingsSummary(normalizedCalendarSettings)}。`
+          : `设置已保存，但尚未通过测试，当前仍使用 mock。文档生成引用上限 ${normalizedDocGenerationSettings.maxReferenceBlocks}、候选 ${normalizedDocGenerationSettings.retrievalLimit}、输出 ${normalizedDocGenerationSettings.maxOutputTokens} token；块 enrich ${normalizedBlockEnrichSettings.queueEnabled ? `队列已启用（最多 ${normalizedBlockEnrichSettings.maxBatchBlocks} 块 / ${normalizedBlockEnrichSettings.queueDebounceMs}ms）` : '保持逐条'}；日历 AI 建议${formatCalendarSettingsSummary(normalizedCalendarSettings)}。`,
       )
     } catch (reason) {
       toast('error', reason instanceof Error ? reason.message : '设置保存失败。')
@@ -589,6 +715,51 @@ function AppInner() {
       toast('error', reason instanceof Error ? reason.message : 'API 测试失败。')
     } finally {
       setSettingsTesting(false)
+    }
+  }
+
+  async function handleExportJsonBackup(): Promise<void> {
+    try {
+      const result = await changbu.exports.json({ includeAttachments: true })
+
+      if (!result) {
+        toast('info', '已取消 JSON 备份。')
+        return
+      }
+
+      toast('success', `JSON 备份已导出到 ${result.path}，共 ${result.count} 个块。`)
+    } catch (reason) {
+      toast('error', reason instanceof Error ? reason.message : 'JSON 备份失败。')
+    }
+  }
+
+  async function handlePreviewJsonImport(): Promise<void> {
+    try {
+      const preview = await changbu.imports.previewJson()
+
+      if (!preview) {
+        setImportPreview(null)
+        toast('info', '已取消 JSON 导入。')
+        return
+      }
+
+      setImportPreview(preview)
+    } catch (reason) {
+      toast('error', reason instanceof Error ? reason.message : 'JSON 导入预览失败。')
+    }
+  }
+
+  async function handleConfirmImport(strategy: ImportConflictStrategy): Promise<void> {
+    if (!importPreview) {
+      return
+    }
+
+    try {
+      const result = await changbu.imports.confirm(importPreview.importId, strategy)
+      setImportPreview(null)
+      toast('success', `导入完成，共导入 ${result.imported} 个块。`)
+    } catch (reason) {
+      toast('error', reason instanceof Error ? reason.message : '导入失败。')
     }
   }
 
@@ -679,10 +850,40 @@ function AppInner() {
   async function handleRetryFailedVectors(): Promise<void> {
     try {
       const count = await changbu.vectors.retryFailed()
-      await refreshMeta()
+      await refreshDataManagementState()
       toast('success', `已重新入队 ${count} 个失败向量。`)
     } catch (reason) {
       toast('error', reason instanceof Error ? reason.message : '重试失败。')
+    }
+  }
+
+  async function handleCleanupOrphanAttachments(): Promise<void> {
+    try {
+      const result = await changbu.data.cleanupOrphanAttachments()
+      await refreshDataManagementState()
+      toast('success', `已清理 ${result.removedCount} 个孤儿附件。`)
+    } catch (reason) {
+      toast('error', reason instanceof Error ? reason.message : '清理孤儿附件失败。')
+    }
+  }
+
+  async function handleRebuildAttachmentIndex(): Promise<void> {
+    try {
+      const result = await changbu.data.rebuildAttachmentIndex()
+      await refreshDataManagementState()
+      toast('success', `附件索引已重建：扫描 ${result.indexedBlockCount} 个块，登记 ${result.attachmentCount} 个附件，清理 ${result.removedOrphanCount} 个孤儿附件。`)
+    } catch (reason) {
+      toast('error', reason instanceof Error ? reason.message : '重建附件索引失败。')
+    }
+  }
+
+  async function handleRebuildAllVectors(): Promise<void> {
+    try {
+      const result = await changbu.data.rebuildAllVectors()
+      await refreshDataManagementState()
+      toast('success', `已重新排队全部块的向量任务，共 ${result.queuedBlockCount} 条。`)
+    } catch (reason) {
+      toast('error', reason instanceof Error ? reason.message : '重建全部向量失败。')
     }
   }
 
@@ -724,6 +925,7 @@ function AppInner() {
     notebooks: '笔记本',
     graph: '连接图',
     snapshots: '文档快照',
+    'data-management': '数据管理',
     settings: '设置',
   }[activeView]
 
@@ -935,7 +1137,6 @@ function AppInner() {
             selectedSnapshotId={selectedSnapshotId}
             snapshotQuery={snapshotQuery}
             importPreview={importPreview}
-            availableTags={tags}
             onSnapshotQueryChange={(value) => {
               setSnapshotQuery(value)
             }}
@@ -988,39 +1189,15 @@ function AppInner() {
                 toast('error', reason instanceof Error ? reason.message : 'Markdown 导入预览失败。')
               }
             }}
-            onPreviewJsonImport={async () => {
-              try {
-                const preview = await changbu.imports.previewJson()
-
-                if (!preview) {
-                  setImportPreview(null)
-                  toast('info', '已取消 JSON 导入。')
-                  return
-                }
-
-                setImportPreview(preview)
-              } catch (reason) {
-                toast('error', reason instanceof Error ? reason.message : 'JSON 导入预览失败。')
-              }
-            }}
-            onConfirmImport={async (strategy) => {
-              if (!importPreview) {
-                return
-              }
-
-              try {
-                const result = await changbu.imports.confirm(importPreview.importId, strategy)
-                setImportPreview(null)
-                toast('success', `导入完成，共导入 ${result.imported} 个块。`)
-              } catch (reason) {
-                toast('error', reason instanceof Error ? reason.message : '导入失败。')
-              }
-            }}
+            onPreviewJsonImport={handlePreviewJsonImport}
+            onConfirmImport={handleConfirmImport}
             onDismissImportPreview={() => {
               setImportPreview(null)
             }}
           />
         )
+      case 'data-management':
+        return <DataManagementView />
       case 'settings':
         return (
           <SettingsPanel
@@ -1033,6 +1210,7 @@ function AppInner() {
             saving={settingsSaving}
             testing={settingsTesting}
             testResult={testResult}
+            importPreview={importPreview}
             onChange={handleConfigChange}
             onDocGenerationSettingsChange={setDocGenerationSettings}
             onBlockEnrichSettingsChange={setBlockEnrichSettings}
@@ -1040,7 +1218,16 @@ function AppInner() {
             onUISettingsChange={setUiSettings}
             onSave={handleSaveSettings}
             onTest={handleTestSettings}
+            onCreateBackup={handleExportJsonBackup}
+            onLoadBackupPreview={handlePreviewJsonImport}
+            onConfirmImport={handleConfirmImport}
+            onDismissImportPreview={() => {
+              setImportPreview(null)
+            }}
             onRetryFailedVectors={handleRetryFailedVectors}
+            onCleanupOrphanAttachments={handleCleanupOrphanAttachments}
+            onRebuildAttachmentIndex={handleRebuildAttachmentIndex}
+            onRebuildAllVectors={handleRebuildAllVectors}
             onOpenDataDirectory={async () => {
               await changbu.settings.openDataDirectory()
             }}
@@ -1063,6 +1250,10 @@ function AppInner() {
           aiStatusLabel={aiStatusLabel}
           meta={meta}
           onSelectView={setActiveView}
+          onPrefetchView={prefetchViewResources}
+          onOpenSettings={() => {
+            void changbu.settings.openWindow()
+          }}
         />
 
         <main className="relative flex min-w-0 flex-1 overflow-hidden bg-white/[0.94]">
@@ -1079,9 +1270,7 @@ function AppInner() {
 
             <div className="flex min-h-0 min-w-0 flex-1 px-4 pb-2.5 pt-1.5 lg:px-6 lg:pt-2">
               <div key={activeView} className="flex min-h-0 min-w-0 flex-1 animate-[fadeIn_200ms_ease-out] overflow-hidden">
-                <Suspense fallback={<ViewLoadingState label={`${activeViewTitle}加载中…`} />}>
-                  {renderActiveView()}
-                </Suspense>
+                {renderActiveView()}
               </div>
             </div>
           </div>
@@ -1126,14 +1315,6 @@ function AppInner() {
         </main>
       </div>
     </>
-  )
-}
-
-function ViewLoadingState({ label }: { label: string }) {
-  return (
-    <div className="flex min-h-0 flex-1 items-center justify-center rounded-3xl border border-dashed border-stone-200 bg-white/70">
-      <p className="text-sm text-stone-400">{label}</p>
-    </div>
   )
 }
 

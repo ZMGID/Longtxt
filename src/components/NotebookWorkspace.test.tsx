@@ -1,3 +1,4 @@
+import type { ReactNode } from 'react'
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 
@@ -5,7 +6,7 @@ import type { SearchResult } from '../../shared/types'
 import { NotebookWorkspace } from './NotebookWorkspace'
 
 vi.mock('./BlockCard', () => ({
-  BlockCard: ({ block, headerActions }: { block: { content: string }; headerActions?: React.ReactNode }) => (
+  BlockCard: ({ block, headerActions }: { block: { content: string }; headerActions?: ReactNode }) => (
     <div>
       <div>{block.content}</div>
       {headerActions}
@@ -116,7 +117,23 @@ const searchResults: SearchResult[] = [
   },
 ]
 
-function renderWorkspace() {
+function setWindowSize(width: number, height = 900): void {
+  Object.defineProperty(window, 'innerWidth', {
+    configurable: true,
+    writable: true,
+    value: width,
+  })
+
+  Object.defineProperty(window, 'innerHeight', {
+    configurable: true,
+    writable: true,
+    value: height,
+  })
+}
+
+function renderWorkspace({ width = 1600, openSearch = false }: { width?: number; openSearch?: boolean } = {}) {
+  setWindowSize(width)
+
   const props = {
     notebooks,
     selectedNotebookId: 'notebook-1',
@@ -148,31 +165,69 @@ function renderWorkspace() {
   }
 
   render(<NotebookWorkspace {...props} />)
-  fireEvent.click(screen.getByRole('button', { name: '展开检索栏' }))
+
+  if (openSearch) {
+    fireEvent.click(screen.getByTestId('notebook-search-toggle'))
+  }
 
   return props
 }
 
 describe('NotebookWorkspace', () => {
-  it('hides structure block entry and notebook workbench panels', () => {
-    renderWorkspace()
+  it('uses a docked notebook list, keeps search collapsed by default, and removes old workbench panels', async () => {
+    renderWorkspace({ width: 1600 })
 
+    await waitFor(() => {
+      expect(screen.getByTestId('notebook-layout')).toHaveAttribute('data-layout', 'two-pane')
+    })
+    expect(screen.getByTestId('notebook-layout')).toHaveAttribute('data-list-mode', 'docked')
+    expect(screen.getByTestId('notebook-layout')).toHaveAttribute('data-search-mode', 'collapsed')
+    expect(screen.getByTestId('notebook-list-panel')).toBeInTheDocument()
+    expect(screen.queryByTestId('notebook-search-panel')).not.toBeInTheDocument()
     expect(screen.queryByText('结构块')).not.toBeInTheDocument()
     expect(screen.queryByText('生成文档')).not.toBeInTheDocument()
     expect(screen.queryByText('引用审核')).not.toBeInTheDocument()
     expect(screen.queryByText('快照历史')).not.toBeInTheDocument()
-    expect(screen.getByText('检索补料')).toBeInTheDocument()
   })
 
-  it('shows retrieval sources in notebook sidebar search results', () => {
-    renderWorkspace()
+  it('opens the search panel on demand and shows retrieval sources', async () => {
+    renderWorkspace({ width: 1600, openSearch: true })
 
+    await waitFor(() => {
+      expect(screen.getByTestId('notebook-layout')).toHaveAttribute('data-search-mode', 'docked')
+    })
+    expect(screen.getByText('检索补料')).toBeInTheDocument()
     expect(screen.getByText('全文命中')).toBeInTheDocument()
     expect(screen.getByText('向量命中')).toBeInTheDocument()
   })
 
+  it('collapses auxiliary panels in single-pane mode and reveals them through toggles', async () => {
+    renderWorkspace({ width: 900 })
+
+    await waitFor(() => {
+      expect(screen.getByTestId('notebook-layout')).toHaveAttribute('data-layout', 'single-pane')
+    })
+    expect(screen.getByTestId('notebook-layout')).toHaveAttribute('data-list-mode', 'collapsed')
+    expect(screen.getByTestId('notebook-layout')).toHaveAttribute('data-search-mode', 'collapsed')
+    expect(screen.queryByTestId('notebook-list-panel')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('notebook-search-panel')).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByTestId('notebook-list-toggle'))
+    await waitFor(() => {
+      expect(screen.getByTestId('notebook-layout')).toHaveAttribute('data-list-mode', 'inline')
+    })
+    expect(screen.getByTestId('notebook-list-panel')).toBeInTheDocument()
+
+    fireEvent.click(screen.getByTestId('notebook-search-toggle'))
+    await waitFor(() => {
+      expect(screen.getByTestId('notebook-layout')).toHaveAttribute('data-search-mode', 'inline')
+    })
+    expect(screen.queryByTestId('notebook-list-panel')).not.toBeInTheDocument()
+    expect(screen.getByTestId('notebook-search-panel')).toBeInTheDocument()
+  })
+
   it('marks existing notebook blocks and adds new search results to the current notebook', async () => {
-    const props = renderWorkspace()
+    const props = renderWorkspace({ width: 1600, openSearch: true })
 
     expect(screen.getByRole('button', { name: '已加入当前笔记本' })).toBeDisabled()
 
@@ -184,7 +239,7 @@ describe('NotebookWorkspace', () => {
   })
 
   it('shows structured notebook items and lets users create more structure items', async () => {
-    const props = renderWorkspace()
+    const props = renderWorkspace({ width: 1600 })
 
     expect(screen.getByText('整理标题')).toBeInTheDocument()
     expect(screen.getByText('补一条待办')).toBeInTheDocument()
@@ -199,8 +254,8 @@ describe('NotebookWorkspace', () => {
     })
   })
 
-  it('uses tag click for secondary search from the notebook sidebar', () => {
-    const props = renderWorkspace()
+  it('uses tag click for secondary search from the notebook search panel', () => {
+    const props = renderWorkspace({ width: 1600, openSearch: true })
 
     fireEvent.click(screen.getByRole('button', { name: '需求' }))
 

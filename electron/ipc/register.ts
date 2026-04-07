@@ -4,6 +4,8 @@ import { IPC_CHANNELS } from '../../shared/ipc'
 import type { RendererExportOptions } from '../../shared/types'
 import type { AppContext } from '../appContext'
 
+type IpcHandler = (event: unknown, ...args: unknown[]) => unknown
+
 function sanitizeExportOptions(options: Partial<RendererExportOptions> | undefined): RendererExportOptions {
   return {
     includeAttachments: Boolean(options?.includeAttachments),
@@ -12,13 +14,15 @@ function sanitizeExportOptions(options: Partial<RendererExportOptions> | undefin
   }
 }
 
-export function createIpcHandlers(context: AppContext) {
+export function createIpcHandlers(context: AppContext, extraHandlers: Record<string, IpcHandler> = {}) {
   return {
     [IPC_CHANNELS.blocks.create]: (_event: unknown, content: string) => context.createBlock(content),
     [IPC_CHANNELS.blocks.get]: (_event: unknown, id: string) => context.getBlock(id),
     [IPC_CHANNELS.blocks.list]: (_event: unknown, params?: { offset?: number; limit?: number }) => context.listBlocks(params),
+    [IPC_CHANNELS.blocks.listByDate]: (_event: unknown, date: string) => context.listBlocksByDate(date),
     [IPC_CHANNELS.blocks.update]: (_event: unknown, id: string, content: string) => context.updateBlock(id, content),
     [IPC_CHANNELS.blocks.remove]: (_event: unknown, id: string) => context.removeBlock(id),
+    [IPC_CHANNELS.blocks.removeMany]: (_event: unknown, ids: string[]) => context.removeBlocks(ids),
     [IPC_CHANNELS.blocks.findRelated]: (_event: unknown, blockId: string, limit?: number) => context.findRelatedBlocks(blockId, limit),
     [IPC_CHANNELS.search.blocks]: (_event: unknown, query: string, limit?: number) => context.searchBlocks(query, limit),
     [IPC_CHANNELS.search.byTag]: (_event: unknown, tagName: string, limit?: number) => context.searchByTag(tagName, limit),
@@ -81,6 +85,10 @@ export function createIpcHandlers(context: AppContext) {
     [IPC_CHANNELS.imports.previewJson]: () => context.previewImportJson(),
     [IPC_CHANNELS.imports.confirm]: (_event: unknown, importId: string, conflictStrategy: Parameters<AppContext['confirmImport']>[1]) =>
       context.confirmImport(importId, conflictStrategy),
+    [IPC_CHANNELS.data.getOverview]: () => context.getDataManagementOverview(),
+    [IPC_CHANNELS.data.cleanupOrphanAttachments]: () => context.cleanupOrphanAttachments(),
+    [IPC_CHANNELS.data.rebuildAttachmentIndex]: () => context.rebuildAttachmentIndex(),
+    [IPC_CHANNELS.data.rebuildAllVectors]: () => context.rebuildAllVectors(),
     [IPC_CHANNELS.settings.get]: (_event: unknown, key: string) => context.getSetting(key),
     [IPC_CHANNELS.settings.set]: (_event: unknown, key: string, value: string) => context.setSetting(key, value),
     [IPC_CHANNELS.settings.testApi]: (_event: unknown, config: Parameters<AppContext['testApi']>[0]) => context.testApi(config),
@@ -88,11 +96,12 @@ export function createIpcHandlers(context: AppContext) {
     [IPC_CHANNELS.settings.openSettingsDirectory]: () => context.openSettingsDirectory(),
     [IPC_CHANNELS.settings.getMeta]: () => context.getMeta(),
     [IPC_CHANNELS.vectors.retryFailed]: () => context.retryFailedVectors(),
+    ...extraHandlers,
   }
 }
 
-export function registerIpcHandlers(context: AppContext): () => void {
-  const handlers = createIpcHandlers(context)
+export function registerIpcHandlers(context: AppContext, extraHandlers: Record<string, IpcHandler> = {}): () => void {
+  const handlers = createIpcHandlers(context, extraHandlers)
 
   for (const [channel, handler] of Object.entries(handlers)) {
     ipcMain.handle(channel, handler)

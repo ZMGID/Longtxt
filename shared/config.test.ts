@@ -84,10 +84,12 @@ describe('parseCalendarSettings', () => {
   it('normalizes calendar suggestion settings', () => {
     expect(parseCalendarSettings(JSON.stringify({
       aiSuggestionsEnabled: false,
+      autoAcceptAiSuggestions: true,
       maxSuggestionsPerBlock: 99,
       upcomingDays: 999,
     }))).toEqual({
       aiSuggestionsEnabled: false,
+      autoAcceptAiSuggestions: true,
       maxSuggestionsPerBlock: 8,
       upcomingDays: 120,
     })

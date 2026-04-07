@@ -3,8 +3,9 @@ import { useMemo } from 'react'
 import { QueryClient, useInfiniteQuery, useQueryClient } from '@tanstack/react-query'
 import type { InfiniteData } from '@tanstack/react-query'
 
-import type { Block } from '../../shared/types'
+import type { Block, BlockBatchRemoveResult } from '../../shared/types'
 import { changbu } from '../lib/changbu'
+import { removeBlocksCompat } from '../lib/blockCleanupCompat'
 import { queryKeys } from '../lib/queryKeys'
 
 const PAGE_SIZE = 40
@@ -78,6 +79,14 @@ function removeBlockFromCache(
   return updateBlockPages(data, (page) => page.filter((item) => item.id !== blockId))
 }
 
+function removeBlocksFromCache(
+  data: InfiniteData<Block[]> | undefined,
+  blockIds: string[],
+): InfiniteData<Block[]> | undefined {
+  const blockIdSet = new Set(blockIds)
+  return updateBlockPages(data, (page) => page.filter((item) => !blockIdSet.has(item.id)))
+}
+
 function primeBlockCache(
   queryClient: QueryClient,
   updater: (data: InfiniteData<Block[]> | undefined) => InfiniteData<Block[]> | undefined,
@@ -147,6 +156,16 @@ export function useBlocks() {
     primeBlockCache(queryClient, (current) => removeBlockFromCache(current, id))
   }
 
+  async function removeBlocks(ids: string[]): Promise<BlockBatchRemoveResult> {
+    const result = await removeBlocksCompat(ids)
+
+    if (result.removedIds.length > 0) {
+      primeBlockCache(queryClient, (current) => removeBlocksFromCache(current, result.removedIds))
+    }
+
+    return result
+  }
+
   async function addTag(blockId: string, tagName: string): Promise<void> {
     await changbu.tags.add(blockId, tagName)
   }
@@ -165,6 +184,7 @@ export function useBlocks() {
     createBlock,
     updateBlock,
     removeBlock,
+    removeBlocks,
     addTag,
     removeTag,
     loadMore,

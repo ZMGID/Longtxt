@@ -1,5 +1,5 @@
 import { render, screen } from '@testing-library/react'
-import { forwardRef, type ComponentProps, type ReactNode } from 'react'
+import { Fragment, forwardRef, type ComponentProps, type ReactNode } from 'react'
 import { describe, expect, it, vi } from 'vitest'
 
 import type { Block } from '../../shared/types'
@@ -17,7 +17,7 @@ vi.mock('react-virtuoso', async () => {
       }
     : never
 
-  const MockVirtuoso = forwardRef<HTMLDivElement, MockVirtuosoProps>(function MockVirtuoso(props) {
+  const MockVirtuoso = forwardRef<HTMLDivElement, MockVirtuosoProps>(function MockVirtuoso(props, _ref) {
     const { data, itemContent, components, rangeChanged } = props
     const Footer = components?.Footer
 
@@ -28,7 +28,9 @@ vi.mock('react-virtuoso', async () => {
 
     return (
       <div data-testid="mock-virtuoso">
-        {data.map((item, index) => itemContent(index, item))}
+        {data.map((item, index) => (
+          <Fragment key={item.id}>{itemContent(index, item)}</Fragment>
+        ))}
         {Footer ? <Footer /> : null}
       </div>
     )
@@ -85,6 +87,7 @@ describe('Timeline', () => {
 
     expect(screen.getByTestId('mini-timeline')).toBeInTheDocument()
     expect(screen.getByText('03.31')).toBeInTheDocument()
+    expect(screen.getByText('2026年3月31日周二')).toBeInTheDocument()
   })
 
   it('does not render the mini timeline when disabled', () => {

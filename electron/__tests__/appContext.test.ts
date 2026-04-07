@@ -7,7 +7,7 @@ import { tmpdir } from 'node:os'
 
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { BLOCK_ENRICH_SETTINGS_KEY, DOC_GENERATION_SETTINGS_KEY } from '../../shared/config'
+import { BLOCK_ENRICH_SETTINGS_KEY, CALENDAR_SETTINGS_KEY, DOC_GENERATION_SETTINGS_KEY } from '../../shared/config'
 import type { AIConfig, BlockChangedEvent, DocGenerationChunk, MetaChangedEvent, NotebookChangedEvent } from '../../shared/types'
 import { createAppContext, type AppContext, type AppContextOptions } from '../appContext'
 import { createConfigFingerprint } from '../services/ai'
@@ -687,7 +687,48 @@ describe('app context', () => {
     expect(meta.lastAiError).toBeNull()
     expect(meta.modelCallCounts).toEqual({ llm: 2, embedding: 1 })
     expect(meta.tokenUsage?.requestCount).toBe(3)
+    expect(meta.lifetimeTokenUsage?.requestCount).toBe(3)
     expect(global.fetch).toHaveBeenCalledTimes(3)
+
+    global.fetch = originalFetch
+  })
+
+  it('persists lifetime token usage across app restarts while resetting the current session stats', async () => {
+    const originalFetch = global.fetch
+    const { context: firstContext, directory } = makeContextWithDirectory()
+
+    await configureLiveMode(firstContext)
+
+    global.fetch = vi.fn(async (input: string | URL) => {
+      const url = String(input)
+
+      if (url.includes('/chat/completions')) {
+        return makeLlmResponse('Token 统计验证')
+      }
+
+      return makeEmbeddingResponse([[0.11, 0.21, 0.31, 0.41]])
+    }) as typeof global.fetch
+
+    await firstContext.createBlock('验证 token 累计是否会持久化。')
+    await firstContext.whenIdle()
+
+    const firstMeta = await firstContext.getMeta()
+    expect(firstMeta.tokenUsage).not.toBeNull()
+    expect(firstMeta.tokenUsage?.requestCount).toBeGreaterThan(0)
+    expect(firstMeta.tokenUsage?.totalTokens).toBeGreaterThan(0)
+    expect(firstMeta.lifetimeTokenUsage).toEqual(firstMeta.tokenUsage)
+
+    firstContext.dispose()
+
+    const secondContext = createAppContext({
+      dataDirectory: directory,
+      openPath: async () => '',
+    })
+    createdContexts.push(secondContext)
+
+    const secondMeta = await secondContext.getMeta()
+    expect(secondMeta.tokenUsage).toBeNull()
+    expect(secondMeta.lifetimeTokenUsage).toEqual(firstMeta.tokenUsage)
 
     global.fetch = originalFetch
   })
@@ -1555,6 +1596,73 @@ describe('app context', () => {
 
     const years = await context.listCalendarYears()
     expect(years).toContain(2026)
+
+    global.fetch = originalFetch
+  })
+
+  it('auto-accepts AI calendar suggestions into formal entries when enabled', async () => {
+    const originalFetch = global.fetch
+    const context = makeContext()
+
+    global.fetch = vi.fn(async (input, init) => {
+      const url = String(input)
+
+      if (url.endsWith('/embeddings')) {
+        return makeEmbeddingResponse([[0.21, 0.22, 0.23, 0.24]])
+      }
+
+      if (url.endsWith('/chat/completions')) {
+        const body = JSON.parse(String(init?.body ?? '{}')) as {
+          messages?: Array<{ content?: string }>
+        }
+        const systemPrompt = body.messages?.[0]?.content ?? ''
+
+        if (typeof systemPrompt === 'string' && systemPrompt.includes('日历计划提取助手')) {
+          return makeCalendarSuggestionResponse([
+            {
+              title: '和产品确认信息架构',
+              date: '2026-04-15',
+              startTime: '11:00',
+              allDay: false,
+              notes: '同步新的导航结构',
+              evidenceText: '4月15日上午11点和产品确认信息架构',
+              confidence: 0.94,
+            },
+          ])
+        }
+
+        return makeLlmResponse('排期记录', ['工作'], ['日历'])
+      }
+
+      throw new Error(`Unexpected fetch url: ${url}`)
+    }) as typeof global.fetch
+
+    await configureLiveMode(context)
+    await context.setSetting(CALENDAR_SETTINGS_KEY, JSON.stringify({
+      aiSuggestionsEnabled: true,
+      autoAcceptAiSuggestions: true,
+      maxSuggestionsPerBlock: 3,
+      upcomingDays: 30,
+    }))
+
+    const created = await context.createBlock('4月15日上午11点和产品确认信息架构。')
+    await context.whenIdle()
+
+    const suggestionDay = await context.getCalendarDayDetail('2026-04-15')
+    expect(suggestionDay.suggestions).toHaveLength(0)
+    expect(suggestionDay.entries).toHaveLength(1)
+    expect(suggestionDay.entries[0]).toMatchObject({
+      title: '和产品确认信息架构',
+      startTime: '11:00',
+      source: 'ai-accepted',
+      linkedBlockId: created.id,
+    })
+
+    await context.updateBlock(created.id, '4月15日上午11点和产品确认信息架构。')
+    await context.whenIdle()
+
+    const repeatedDay = await context.getCalendarDayDetail('2026-04-15')
+    expect(repeatedDay.entries).toHaveLength(1)
 
     global.fetch = originalFetch
   })

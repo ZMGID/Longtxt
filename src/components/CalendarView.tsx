@@ -22,7 +22,7 @@ interface CalendarEntryDraft {
   notes: string
 }
 
-type CalendarLayoutMode = 'three-pane' | 'two-pane' | 'stacked'
+type CalendarLayoutMode = 'two-pane' | 'single-pane'
 type CalendarDetailTab = 'entries' | 'suggestions' | 'blocks'
 type CalendarSidebarTab = 'create' | 'upcoming'
 
@@ -34,16 +34,19 @@ const INTENSITY_CLASSES = [
   'bg-emerald-700',
 ] as const
 
-const THREE_PANE_BREAKPOINT = 1500
-const STACKED_BREAKPOINT = 920
-const SIDEBAR_TABS_BREAKPOINT = 1280
+function clampIndicatorSize(value: number, min: number, max: number): number {
+  return Math.min(max, Math.max(min, value))
+}
+
+const SIDEBAR_COLLAPSE_BREAKPOINT = 1120
+const INLINE_SIDEBAR_TAB_BREAKPOINT = 760
 
 function resolveLayoutMode(width: number): CalendarLayoutMode {
-  return width < STACKED_BREAKPOINT ? 'stacked' : width < THREE_PANE_BREAKPOINT ? 'two-pane' : 'three-pane'
+  return width < SIDEBAR_COLLAPSE_BREAKPOINT ? 'single-pane' : 'two-pane'
 }
 
 function shouldUseSidebarTabs(width: number): boolean {
-  return width < SIDEBAR_TABS_BREAKPOINT
+  return width < INLINE_SIDEBAR_TAB_BREAKPOINT
 }
 
 function todayDateKey(): string {
@@ -83,6 +86,10 @@ function formatBlockTime(value: string): string {
   }).format(new Date(value))
 }
 
+function SectionEyebrow({ children }: { children: ReactNode }) {
+  return <p className="text-[11px] font-medium uppercase tracking-[0.24em] text-stone-400">{children}</p>
+}
+
 export function CalendarView({ settings, onJumpToBlock }: CalendarViewProps) {
   const { toast } = useToast()
   const queryClient = useQueryClient()
@@ -90,6 +97,7 @@ export function CalendarView({ settings, onJumpToBlock }: CalendarViewProps) {
   const scrollRootRef = useRef<HTMLElement | null>(null)
   const scrollResetFrameRef = useRef<number | null>(null)
   const viewportSizeRef = useRef({ width: 0, height: 0 })
+  const previousLayoutModeRef = useRef<CalendarLayoutMode | null>(null)
   const today = todayDateKey()
   const currentYear = Number(today.slice(0, 4))
   const [activeYear, setActiveYear] = useState(currentYear)
@@ -100,10 +108,13 @@ export function CalendarView({ settings, onJumpToBlock }: CalendarViewProps) {
   const [heatmapGapSize, setHeatmapGapSize] = useState(4)
   const [showWeekLabels, setShowWeekLabels] = useState(true)
   const [layoutMode, setLayoutMode] = useState<CalendarLayoutMode>(() =>
-    typeof window === 'undefined' ? 'three-pane' : resolveLayoutMode(window.innerWidth),
+    typeof window === 'undefined' ? 'two-pane' : resolveLayoutMode(window.innerWidth),
   )
   const [showSidebarTabs, setShowSidebarTabs] = useState(() =>
     typeof window === 'undefined' ? false : shouldUseSidebarTabs(window.innerWidth),
+  )
+  const [sidebarOpen, setSidebarOpen] = useState(() =>
+    typeof window === 'undefined' ? true : resolveLayoutMode(window.innerWidth) === 'two-pane',
   )
   const [detailTab, setDetailTab] = useState<CalendarDetailTab>('entries')
   const [sidebarTab, setSidebarTab] = useState<CalendarSidebarTab>('create')
@@ -189,6 +200,21 @@ export function CalendarView({ settings, onJumpToBlock }: CalendarViewProps) {
   }, [])
 
   useEffect(() => {
+    const previousLayout = previousLayoutModeRef.current
+    previousLayoutModeRef.current = layoutMode
+
+    if (layoutMode === 'two-pane') {
+      setSidebarOpen(true)
+      return
+    }
+
+    if (previousLayout === 'two-pane') {
+      setSidebarOpen(false)
+      setSidebarTab('create')
+    }
+  }, [layoutMode])
+
+  useEffect(() => {
     if (typeof window === 'undefined') {
       return
     }
@@ -221,7 +247,7 @@ export function CalendarView({ settings, onJumpToBlock }: CalendarViewProps) {
 
   useLayoutEffect(() => {
     scheduleScrollReset()
-  }, [layoutMode, scheduleScrollReset, showSidebarTabs])
+  }, [layoutMode, scheduleScrollReset, showSidebarTabs, sidebarOpen])
 
   useEffect(() => {
     return () => {
@@ -286,7 +312,7 @@ export function CalendarView({ settings, onJumpToBlock }: CalendarViewProps) {
     return () => {
       observer.disconnect()
     }
-  }, [columns.length, layoutMode])
+  }, [columns.length, layoutMode, sidebarOpen])
 
   async function refreshCalendar(): Promise<void> {
     await queryClient.invalidateQueries({ queryKey: queryKeys.calendarRoot() })
@@ -317,8 +343,23 @@ export function CalendarView({ settings, onJumpToBlock }: CalendarViewProps) {
       }) as CSSProperties,
     [heatmapCellSize, heatmapGapSize],
   )
+  const heatmapEntryIndicatorStyle = useMemo(
+    () => ({
+      width: `${clampIndicatorSize(Math.round(heatmapCellSize * 0.62), 3, 10)}px`,
+      height: `${clampIndicatorSize(Math.round(heatmapCellSize * 0.18), 2, 3)}px`,
+    }),
+    [heatmapCellSize],
+  )
+  const heatmapSuggestionIndicatorStyle = useMemo(() => {
+    const size = clampIndicatorSize(Math.round(heatmapCellSize * 0.34), 3, 6)
 
-
+    return {
+      height: `${size}px`,
+      width: `${size}px`,
+    }
+  }, [heatmapCellSize])
+  const showHeatmapEntryIndicator = heatmapCellSize >= 8
+  const showHeatmapSuggestionIndicator = heatmapCellSize >= 7
 
   const detailSections: Array<{
     key: CalendarDetailTab
@@ -332,14 +373,16 @@ export function CalendarView({ settings, onJumpToBlock }: CalendarViewProps) {
       label: '安排',
       title: '当天安排',
       count: dayDetail?.entries.length ?? 0,
-      emptyText: '这一天还没有正式安排。可以在右侧手动添加，或把 AI 建议采纳进来。',
+      emptyText: '这一天还没有正式安排。可以在侧边栏手动添加，或把 AI 建议采纳进来。',
     },
     {
       key: 'suggestions',
       label: 'AI 建议',
-      title: '待确认建议',
+      title: settings.autoAcceptAiSuggestions ? 'AI 建议（自动加入已开启）' : '待确认建议',
       count: dayDetail?.suggestions.length ?? 0,
-      emptyText: '当前没有待确认的日期建议。含有明确日期的块在 enrich 完成后会出现在这里。',
+      emptyText: settings.autoAcceptAiSuggestions
+        ? '已开启自动加入日历。新识别到的明确安排会直接进入“安排”，这里只会保留尚未被自动处理的旧建议。'
+        : '当前没有待确认的日期建议。含有明确日期的块在 enrich 完成后会出现在这里。',
     },
     {
       key: 'blocks',
@@ -358,27 +401,27 @@ export function CalendarView({ settings, onJumpToBlock }: CalendarViewProps) {
     detailContent = <p className="text-sm text-stone-400">正在加载当天详情…</p>
   } else if (detailTab === 'entries') {
     detailContent = dayDetail && dayDetail.entries.length > 0 ? (
-      <div className="space-y-3">
+      <div className="divide-y divide-stone-200">
         {dayDetail.entries.map((entry) => (
           <EditableEntryCard key={entry.id} entry={entry} onSaved={refreshCalendar} />
         ))}
       </div>
     ) : (
-      <p className="text-sm leading-6 text-stone-400">{activeDetailSection.emptyText}</p>
+      <p className="text-sm leading-6 text-stone-500">{activeDetailSection.emptyText}</p>
     )
   } else if (detailTab === 'suggestions') {
     detailContent = dayDetail && dayDetail.suggestions.length > 0 ? (
-      <div className="space-y-3">
+      <div className="divide-y divide-stone-200">
         {dayDetail.suggestions.map((suggestion) => (
           <SuggestionCard key={suggestion.id} suggestion={suggestion} onUpdated={refreshCalendar} />
         ))}
       </div>
     ) : (
-      <p className="text-sm leading-6 text-stone-400">{activeDetailSection.emptyText}</p>
+      <p className="text-sm leading-6 text-stone-500">{activeDetailSection.emptyText}</p>
     )
   } else {
     detailContent = dayDetail && dayDetail.blocks.length > 0 ? (
-      <div className="space-y-3">
+      <div className="divide-y divide-stone-200">
         {dayDetail.blocks.map((block) => (
           <button
             key={block.id}
@@ -386,49 +429,49 @@ export function CalendarView({ settings, onJumpToBlock }: CalendarViewProps) {
             onClick={() => {
               void onJumpToBlock(block.id)
             }}
-            className="w-full rounded-2xl border border-stone-200 bg-stone-50/80 px-4 py-3 text-left transition hover:border-stone-300 hover:bg-white"
+            className="flex w-full flex-col gap-2 py-4 text-left transition first:pt-0 hover:text-stone-950"
           >
-            <div className="flex items-center justify-between gap-3">
-              <span className="text-xs font-medium uppercase tracking-[0.18em] text-stone-400">{formatBlockTime(block.createdAt)}</span>
-              <span className="min-w-0 truncate text-xs text-stone-400">{block.tags.slice(0, 3).map((tag) => tag.name).join(' · ')}</span>
+            <div className="flex items-center justify-between gap-3 text-xs text-stone-400">
+              <span className="font-medium uppercase tracking-[0.18em]">{formatBlockTime(block.createdAt)}</span>
+              <span className="min-w-0 truncate">{block.tags.slice(0, 3).map((tag) => tag.name).join(' · ')}</span>
             </div>
-            <div className="mt-2 break-words text-sm font-medium leading-6 text-stone-900">{block.summary || block.content.slice(0, 120)}</div>
-            <div className="mt-2 line-clamp-2 break-words text-sm leading-6 text-stone-500">{block.content}</div>
+            <div className="break-words text-sm font-medium leading-6 text-stone-900">{block.summary || block.content.slice(0, 120)}</div>
+            <div className="line-clamp-2 break-words text-sm leading-6 text-stone-500">{block.content}</div>
           </button>
         ))}
       </div>
     ) : (
-      <p className="text-sm leading-6 text-stone-400">{activeDetailSection.emptyText}</p>
+      <p className="text-sm leading-6 text-stone-500">{activeDetailSection.emptyText}</p>
     )
   }
 
   const createSection = (
-    <section className="rounded-2xl border border-stone-200 bg-stone-50/80 p-4">
+    <section>
       <div className="min-w-0">
-        <p className="text-xs font-semibold uppercase tracking-[0.28em] text-stone-400">New Entry</p>
-        <h4 className="mt-2 break-words text-lg font-semibold text-stone-900">为 {selectedDate} 添加安排</h4>
+        <SectionEyebrow>New Entry</SectionEyebrow>
+        <h4 className="mt-3 break-words text-lg font-semibold text-stone-900">为 {selectedDate} 添加安排</h4>
         <p className="mt-2 text-sm leading-6 text-stone-500">默认围绕当前选中日期创建，也可以在提交前改到别的日期。</p>
       </div>
-      <div className="mt-4 space-y-3">
-        <label className="block space-y-1">
-          <span className="text-xs font-medium uppercase tracking-wider text-stone-400">标题</span>
+      <div className="mt-5 space-y-4">
+        <label className="block space-y-1.5">
+          <span className="text-xs font-medium text-stone-500">标题</span>
           <input
             value={draft.title}
             onChange={(event) => setDraft((current) => ({ ...current, title: event.target.value }))}
             placeholder="例如：和设计师过一遍首屏"
-            className="w-full rounded-xl border border-stone-200 bg-white px-3 py-2 text-sm text-stone-900 outline-none transition focus:border-stone-400"
+            className="w-full rounded-lg border border-stone-200 bg-stone-50 px-3 py-2.5 text-sm text-stone-900 outline-none transition focus:border-stone-400 focus:bg-white"
           />
         </label>
-        <label className="block space-y-1">
-          <span className="text-xs font-medium uppercase tracking-wider text-stone-400">日期</span>
+        <label className="block space-y-1.5">
+          <span className="text-xs font-medium text-stone-500">日期</span>
           <input
             type="date"
             value={draft.date}
             onChange={(event) => setDraft((current) => ({ ...current, date: event.target.value }))}
-            className="w-full rounded-xl border border-stone-200 bg-white px-3 py-2 text-sm text-stone-900 outline-none transition focus:border-stone-400"
+            className="w-full rounded-lg border border-stone-200 bg-stone-50 px-3 py-2.5 text-sm text-stone-900 outline-none transition focus:border-stone-400 focus:bg-white"
           />
         </label>
-        <label className="flex items-center gap-2 rounded-xl border border-stone-200 bg-white px-3 py-2 text-sm text-stone-700">
+        <label className="flex items-center gap-2 text-sm text-stone-700">
           <input
             type="checkbox"
             checked={draft.allDay}
@@ -438,24 +481,24 @@ export function CalendarView({ settings, onJumpToBlock }: CalendarViewProps) {
           全天安排
         </label>
         {!draft.allDay ? (
-          <label className="block space-y-1">
-            <span className="text-xs font-medium uppercase tracking-wider text-stone-400">开始时间</span>
+          <label className="block space-y-1.5">
+            <span className="text-xs font-medium text-stone-500">开始时间</span>
             <input
               type="time"
               value={draft.startTime}
               onChange={(event) => setDraft((current) => ({ ...current, startTime: event.target.value }))}
-              className="w-full rounded-xl border border-stone-200 bg-white px-3 py-2 text-sm text-stone-900 outline-none transition focus:border-stone-400"
+              className="w-full rounded-lg border border-stone-200 bg-stone-50 px-3 py-2.5 text-sm text-stone-900 outline-none transition focus:border-stone-400 focus:bg-white"
             />
           </label>
         ) : null}
-        <label className="block space-y-1">
-          <span className="text-xs font-medium uppercase tracking-wider text-stone-400">备注</span>
+        <label className="block space-y-1.5">
+          <span className="text-xs font-medium text-stone-500">备注</span>
           <textarea
             value={draft.notes}
             onChange={(event) => setDraft((current) => ({ ...current, notes: event.target.value }))}
             rows={3}
             placeholder="可选，补充上下文。"
-            className="w-full rounded-xl border border-stone-200 bg-white px-3 py-2 text-sm text-stone-900 outline-none transition focus:border-stone-400"
+            className="w-full rounded-lg border border-stone-200 bg-stone-50 px-3 py-2.5 text-sm text-stone-900 outline-none transition focus:border-stone-400 focus:bg-white"
           />
         </label>
         <button
@@ -464,7 +507,7 @@ export function CalendarView({ settings, onJumpToBlock }: CalendarViewProps) {
             void handleCreateEntry()
           }}
           disabled={creating}
-          className="w-full rounded-xl bg-stone-900 px-4 py-2.5 text-sm font-medium text-white transition hover:bg-stone-800 disabled:opacity-50"
+          className="w-full rounded-lg bg-stone-900 px-4 py-2.5 text-sm font-medium text-white transition hover:bg-stone-800 disabled:opacity-50"
         >
           {creating ? '创建中…' : '创建安排'}
         </button>
@@ -473,20 +516,20 @@ export function CalendarView({ settings, onJumpToBlock }: CalendarViewProps) {
   )
 
   const upcomingSection = (
-    <section className="rounded-2xl border border-stone-200 bg-stone-50/80 p-4">
+    <section>
       <div className="min-w-0">
-        <p className="text-xs font-semibold uppercase tracking-[0.28em] text-stone-400">Upcoming</p>
-        <h4 className="mt-2 text-lg font-semibold text-stone-900">未来 {settings.upcomingDays} 天</h4>
-        <p className="mt-2 text-sm leading-6 text-stone-500">缩小时这里会优先收进切换区，避免右侧长列表持续挤压主区。</p>
+        <SectionEyebrow>Upcoming</SectionEyebrow>
+        <h4 className="mt-3 text-lg font-semibold text-stone-900">未来 {settings.upcomingDays} 天</h4>
+        <p className="mt-2 text-sm leading-6 text-stone-500">保留未来安排概览，方便从日视图直接切过去处理。</p>
       </div>
-      <div className="mt-4 space-y-4">
+      <div className="mt-5 space-y-5">
         {upcomingQuery.isPending ? (
           <p className="text-sm text-stone-400">正在加载未来安排…</p>
         ) : groupedUpcoming.length > 0 ? (
           groupedUpcoming.map((group) => (
             <div key={group.date}>
               <div className="mb-2 text-xs font-medium uppercase tracking-[0.18em] text-stone-400">{formatCalendarDateLabel(group.date)}</div>
-              <div className="space-y-2">
+              <div className="divide-y divide-stone-200">
                 {group.items.map((entry) => (
                   <button
                     key={entry.id}
@@ -495,15 +538,15 @@ export function CalendarView({ settings, onJumpToBlock }: CalendarViewProps) {
                       setSelectedDate(entry.date)
                       setDetailTab('entries')
                     }}
-                    className="w-full rounded-2xl border border-stone-200 bg-white px-3 py-3 text-left transition hover:border-stone-300 hover:bg-stone-50"
+                    className="flex w-full items-start justify-between gap-3 py-3 text-left first:pt-0 hover:text-stone-950"
                   >
-                    <div className="flex items-center justify-between gap-3">
-                      <span className="min-w-0 break-words text-sm font-medium text-stone-900">{entry.title}</span>
-                      <span className="shrink-0 text-xs text-stone-400">{formatCalendarTimeLabel(entry.startTime)}</span>
+                    <div className="min-w-0">
+                      <div className="break-words text-sm font-medium text-stone-900">{entry.title}</div>
+                      <div className="mt-1 text-xs text-stone-500">
+                        {entry.status === 'planned' ? '待办' : entry.status === 'done' ? '已完成' : '已取消'}
+                      </div>
                     </div>
-                    <div className="mt-1 text-xs text-stone-500">
-                      {entry.status === 'planned' ? '待办' : entry.status === 'done' ? '已完成' : '已取消'}
-                    </div>
+                    <span className="shrink-0 text-xs text-stone-400">{formatCalendarTimeLabel(entry.startTime)}</span>
                   </button>
                 ))}
               </div>
@@ -516,22 +559,65 @@ export function CalendarView({ settings, onJumpToBlock }: CalendarViewProps) {
     </section>
   )
 
-  const heatmapPanel = (
-    <section className="min-w-0 shrink-0 overflow-hidden rounded-[28px] border border-stone-200 bg-white/80 p-5 shadow-[0_20px_60px_rgba(68,48,22,0.06)]">
-      <div className="flex flex-wrap items-start justify-between gap-3 border-b border-stone-200/80 pb-4">
+  const renderSidebarContent = (compact = false) => (
+    <div className={compact ? '' : 'space-y-8'}>
+      {compact ? (
+        <>
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <p className="text-[11px] font-semibold tracking-[0.18em] text-stone-400">侧边栏</p>
+              <h3 className="mt-1 text-base font-semibold text-stone-900">安排与未来</h3>
+            </div>
+            <div className="flex items-center gap-4 text-sm" data-testid="calendar-sidebar-tablist">
+              <button
+                type="button"
+                onClick={() => setSidebarTab('create')}
+                aria-pressed={sidebarTab === 'create'}
+                className={`border-b pb-1 transition ${sidebarTab === 'create' ? 'border-stone-900 text-stone-900' : 'border-transparent text-stone-400 hover:text-stone-700'}`}
+              >
+                新建安排
+              </button>
+              <button
+                type="button"
+                onClick={() => setSidebarTab('upcoming')}
+                aria-pressed={sidebarTab === 'upcoming'}
+                className={`border-b pb-1 transition ${sidebarTab === 'upcoming' ? 'border-stone-900 text-stone-900' : 'border-transparent text-stone-400 hover:text-stone-700'}`}
+              >
+                未来安排
+              </button>
+            </div>
+          </div>
+          <div className="mt-6 border-t border-stone-200 pt-6">
+            {sidebarTab === 'create' ? createSection : upcomingSection}
+          </div>
+        </>
+      ) : (
+        <>
+          <div>
+            <p className="text-[11px] font-semibold tracking-[0.18em] text-stone-400">侧边栏</p>
+            <h3 className="mt-1 text-base font-semibold text-stone-900">安排与未来</h3>
+          </div>
+          <div className="border-t border-stone-200 pt-6">{createSection}</div>
+          <div className="border-t border-stone-200 pt-6">{upcomingSection}</div>
+        </>
+      )}
+    </div>
+  )
+
+  const heatmapSection = (
+    <section className="min-w-0 shrink-0 border-b border-stone-200 pb-6">
+      <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="min-w-0">
-          <h2 className="text-2xl font-semibold text-stone-900 sm:text-3xl">{activeYear} 年记录密度</h2>
+          <p className="text-[11px] font-semibold tracking-[0.18em] text-stone-400">全年热力图</p>
         </div>
 
-        <div className="flex flex-wrap gap-2">
+        <div className="flex flex-wrap items-center gap-4 text-sm">
           {availableYears.map((year) => (
             <button
               key={year}
               type="button"
               onClick={() => setActiveYear(year)}
-              className={`rounded-2xl px-4 py-2.5 text-sm font-medium transition ${
-                year === activeYear ? 'bg-blue-600 text-white' : 'bg-stone-100 text-stone-700 hover:bg-stone-200'
-              }`}
+              className={`border-b pb-1 transition ${year === activeYear ? 'border-stone-900 text-stone-900' : 'border-transparent text-stone-400 hover:text-stone-700'}`}
             >
               {year}
             </button>
@@ -540,11 +626,9 @@ export function CalendarView({ settings, onJumpToBlock }: CalendarViewProps) {
       </div>
 
       {heatmapQuery.isPending ? (
-        <div className="mt-5 flex min-h-[200px] items-center justify-center rounded-2xl border border-dashed border-stone-200 bg-stone-50/80 text-sm text-stone-400">
-          正在加载年度热力图…
-        </div>
+        <div className="mt-4 py-10 text-sm text-stone-400">正在加载年度热力图…</div>
       ) : columns.length > 0 ? (
-        <div ref={heatmapContainerRef} className="mt-5 min-w-0 overflow-hidden" style={heatmapStyles}>
+        <div ref={heatmapContainerRef} className="mt-4 min-w-0 overflow-hidden" style={heatmapStyles}>
           <div className="flex min-w-0 items-start gap-3">
             {showWeekLabels ? (
               <div className="flex shrink-0 flex-col pt-8 text-[11px] text-stone-500">
@@ -596,13 +680,41 @@ export function CalendarView({ settings, onJumpToBlock }: CalendarViewProps) {
                           type="button"
                           title={dayLabel}
                           aria-label={dayLabel}
+                          data-selected={selected ? 'true' : 'false'}
+                          data-has-entries={day.hasEntries ? 'true' : 'false'}
+                          data-has-suggestions={day.hasSuggestions ? 'true' : 'false'}
                           onClick={() => setSelectedDate(day.date)}
-                          className={`relative rounded-[4px] transition ${INTENSITY_CLASSES[day.intensityLevel]} ${
-                            selected ? 'ring-2 ring-stone-900 ring-offset-1 ring-offset-white' : ''
-                          } ${day.hasEntries ? 'border border-stone-400/60' : 'border border-black/5'}`}
-                          style={{ height: `${heatmapCellSize}px`, width: `${heatmapCellSize}px` }}
+                          className={`relative isolate rounded-[4px] border transition ${
+                            INTENSITY_CLASSES[day.intensityLevel]
+                          } ${selected
+                            ? 'z-10 border-stone-900/75'
+                            : day.hasEntries
+                              ? 'border-stone-700/70'
+                              : day.hasSuggestions
+                                ? 'border-amber-400/75'
+                                : 'border-black/5'}`}
+                          style={{
+                            height: `${heatmapCellSize}px`,
+                            width: `${heatmapCellSize}px`,
+                            boxShadow: selected ? 'inset 0 0 0 2px #1c1917' : undefined,
+                          }}
                         >
-                          {day.hasSuggestions ? <span className="absolute -right-0.5 -top-0.5 h-1.5 w-1.5 rounded-full bg-amber-500" /> : null}
+                          {day.hasEntries && showHeatmapEntryIndicator ? (
+                            <span
+                              aria-hidden="true"
+                              data-testid={`calendar-entry-indicator-${day.date}`}
+                              className="pointer-events-none absolute bottom-[2px] left-1/2 -translate-x-1/2 rounded-full bg-stone-900/85"
+                              style={heatmapEntryIndicatorStyle}
+                            />
+                          ) : null}
+                          {day.hasSuggestions && showHeatmapSuggestionIndicator ? (
+                            <span
+                              aria-hidden="true"
+                              data-testid={`calendar-suggestion-indicator-${day.date}`}
+                              className="pointer-events-none absolute right-[1px] top-[1px] rounded-full border border-white/85 bg-amber-500 shadow-[0_0_0_1px_rgba(120,53,15,0.12)]"
+                              style={heatmapSuggestionIndicatorStyle}
+                            />
+                          ) : null}
                         </button>
                       )
                     })}
@@ -613,38 +725,45 @@ export function CalendarView({ settings, onJumpToBlock }: CalendarViewProps) {
           </div>
         </div>
       ) : (
-        <div className="mt-5 rounded-2xl border border-dashed border-stone-200 bg-stone-50/80 px-4 py-5 text-sm leading-6 text-stone-500">
-          当前年份还没有可展示的日历记录。
-        </div>
+        <div className="mt-6 py-10 text-sm leading-6 text-stone-500">当前年份还没有可展示的日历记录。</div>
       )}
 
-      <div className="mt-4 flex items-center gap-2 text-xs text-stone-500 sm:justify-end">
-        <span>Less</span>
-        {INTENSITY_CLASSES.map((className) => (
-          <span key={className} className={`h-4 w-4 rounded-[4px] border border-black/5 ${className}`} />
-        ))}
-        <span>More</span>
+      <div className="mt-4 flex flex-wrap items-center gap-x-5 gap-y-2 text-xs text-stone-500">
+        <div className="flex items-center gap-2">
+          <span>密度</span>
+          <span>Less</span>
+          {INTENSITY_CLASSES.map((className) => (
+            <span key={className} className={`h-4 w-4 rounded-[4px] border border-black/5 ${className}`} />
+          ))}
+          <span>More</span>
+        </div>
+        <div className="flex items-center gap-2">
+          <span className="relative block h-4 w-4 rounded-[4px] border border-stone-700/70 bg-stone-100">
+            <span className="absolute bottom-[2px] left-1/2 h-[2px] w-[8px] -translate-x-1/2 rounded-full bg-stone-900/85" />
+          </span>
+          <span>已有安排</span>
+        </div>
+        <div className="flex items-center gap-2">
+          <span className="relative block h-4 w-4 rounded-[4px] border border-black/5 bg-stone-100">
+            <span className="absolute right-[1px] top-[1px] h-[5px] w-[5px] rounded-full border border-white/85 bg-amber-500" />
+          </span>
+          <span>AI 建议</span>
+        </div>
       </div>
-
-
     </section>
   )
 
-  const detailPanel = (
-    <section className="min-w-0 shrink-0 rounded-[28px] border border-stone-200 bg-white/80 p-5 shadow-[0_20px_60px_rgba(68,48,22,0.06)]">
-      <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+  const detailSection = (
+    <section className="min-w-0 shrink-0 pt-6">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
         <div className="min-w-0">
-          <p className="text-xs font-semibold uppercase tracking-[0.28em] text-stone-400">Day Detail</p>
+          <p className="text-[11px] font-semibold tracking-[0.18em] text-stone-400">当天详情</p>
           <h3 className="mt-2 break-words text-2xl font-semibold text-stone-900">{formatCalendarDateLabel(selectedDate)}</h3>
-          <p className="mt-2 text-sm leading-6 text-stone-500">当天详情只保留一个主内容区，切换时不再让安排、建议、块三段一起向下拉长页面。</p>
         </div>
-        <div className="flex flex-wrap gap-2 text-xs">
-          <span className="rounded-full bg-stone-100 px-3 py-1 text-stone-700">{activeDetailSection.count} 项</span>
-          <span className="rounded-full bg-stone-100 px-3 py-1 text-stone-500">当前面板：{activeDetailSection.label}</span>
-        </div>
+        <p className="text-sm text-stone-400">当前 {activeDetailSection.title} · {activeDetailSection.count} 项</p>
       </div>
 
-      <div className="mt-4 flex flex-wrap gap-2">
+      <div className="mt-4 flex flex-wrap items-center gap-5 border-b border-stone-200 pb-3 text-sm">
         {detailSections.map((section) => {
           const active = section.key === detailTab
 
@@ -654,72 +773,17 @@ export function CalendarView({ settings, onJumpToBlock }: CalendarViewProps) {
               type="button"
               onClick={() => setDetailTab(section.key)}
               aria-pressed={active}
-              className={`rounded-full px-3 py-2 text-sm font-medium transition ${
-                active ? 'bg-stone-900 text-white' : 'border border-stone-200 bg-stone-50 text-stone-600 hover:bg-stone-100'
-              }`}
+              className={`border-b pb-1 transition ${active ? 'border-stone-900 text-stone-900' : 'border-transparent text-stone-400 hover:text-stone-700'}`}
             >
               {section.label}
-              <span className={`ml-2 text-xs ${active ? 'text-white/70' : 'text-stone-400'}`}>{section.count}</span>
+              <span className="ml-2 text-xs text-stone-400">{section.count}</span>
             </button>
           )
         })}
       </div>
 
-      <div className="mt-5 min-w-0">
-        <div className="mb-4 flex items-center justify-between gap-3">
-          <div className="min-w-0">
-            <p className="text-xs font-semibold uppercase tracking-[0.28em] text-stone-400">Current Panel</p>
-            <h4 className="mt-1 break-words text-xl font-semibold text-stone-900">{activeDetailSection.title}</h4>
-          </div>
-        </div>
-        {detailContent}
-      </div>
+      <div className="mt-5 min-w-0">{detailContent}</div>
     </section>
-  )
-
-  const contextPanel = (
-    <aside className="min-w-0 shrink-0 rounded-[28px] border border-stone-200 bg-white/80 p-5 shadow-[0_20px_60px_rgba(68,48,22,0.06)]">
-      <div className="flex flex-col gap-3 border-b border-stone-200/80 pb-4 sm:flex-row sm:items-start sm:justify-between">
-        <div className="min-w-0">
-          <p className="text-xs font-semibold uppercase tracking-[0.28em] text-stone-400">Context</p>
-          <h3 className="mt-2 text-xl font-semibold text-stone-900">侧边上下文</h3>
-          <p className="mt-2 text-sm leading-6 text-stone-500">默认承载新建安排与未来安排；窗口缩小时先压缩这里，而不是继续压热力图主区。</p>
-        </div>
-        {showSidebarTabs ? (
-          <div className="flex flex-wrap gap-2" data-testid="calendar-sidebar-tablist">
-            <button
-              type="button"
-              onClick={() => setSidebarTab('create')}
-              aria-pressed={sidebarTab === 'create'}
-              className={`rounded-full px-3 py-2 text-sm font-medium transition ${
-                sidebarTab === 'create' ? 'bg-stone-900 text-white' : 'border border-stone-200 bg-stone-50 text-stone-600 hover:bg-stone-100'
-              }`}
-            >
-              新建安排
-            </button>
-            <button
-              type="button"
-              onClick={() => setSidebarTab('upcoming')}
-              aria-pressed={sidebarTab === 'upcoming'}
-              className={`rounded-full px-3 py-2 text-sm font-medium transition ${
-                sidebarTab === 'upcoming' ? 'bg-stone-900 text-white' : 'border border-stone-200 bg-stone-50 text-stone-600 hover:bg-stone-100'
-              }`}
-            >
-              未来安排
-            </button>
-          </div>
-        ) : null}
-      </div>
-
-      <div className="mt-4 space-y-4">
-        {showSidebarTabs ? (sidebarTab === 'create' ? createSection : upcomingSection) : (
-          <>
-            {createSection}
-            {upcomingSection}
-          </>
-        )}
-      </div>
-    </aside>
   )
 
   return (
@@ -728,45 +792,50 @@ export function CalendarView({ settings, onJumpToBlock }: CalendarViewProps) {
         scrollRootRef.current = node
       }}
       data-testid="calendar-scroll-root"
-      className="flex min-h-0 min-w-0 flex-1 flex-col gap-4 overflow-x-hidden overflow-y-auto pr-1"
+      className="flex min-h-0 min-w-0 flex-1 flex-col overflow-x-hidden overflow-y-auto pr-2"
       style={{ overflowAnchor: 'none' }}
     >
-      {layoutMode === 'three-pane' ? (
-        <div
-          data-testid="calendar-layout"
-          data-layout={layoutMode}
-          data-sidebar-mode={showSidebarTabs ? 'tabs' : 'stacked'}
-          className="grid min-h-0 min-w-0 shrink-0 gap-4 grid-cols-[minmax(0,1.25fr)_minmax(20rem,24rem)_minmax(18rem,20rem)]"
-        >
-          {heatmapPanel}
-          {detailPanel}
-          {contextPanel}
+      <div
+        data-testid="calendar-layout"
+        data-layout={layoutMode}
+        data-sidebar-mode={layoutMode === 'two-pane' ? 'docked' : sidebarOpen ? 'inline' : 'collapsed'}
+        className={layoutMode === 'two-pane'
+          ? 'grid min-h-0 min-w-0 shrink-0 gap-10 xl:grid-cols-[minmax(0,1fr)_17.5rem] 2xl:grid-cols-[minmax(0,1fr)_19rem]'
+          : 'min-h-0 min-w-0 shrink-0'}
+      >
+        <div className="min-w-0 shrink-0">
+          {layoutMode === 'single-pane' ? (
+            <div className="mb-5 flex items-center justify-between border-b border-stone-200 pb-4">
+              <div>
+                <p className="text-[11px] font-semibold tracking-[0.18em] text-stone-400">侧边栏</p>
+              </div>
+              <button
+                type="button"
+                data-testid="calendar-sidebar-toggle"
+                onClick={() => setSidebarOpen((current) => !current)}
+                className="rounded-lg border border-stone-200 px-3 py-2 text-sm font-medium text-stone-700 transition hover:bg-stone-50"
+              >
+                {sidebarOpen ? '收起侧边栏' : '打开侧边栏'}
+              </button>
+            </div>
+          ) : null}
+
+          {layoutMode === 'single-pane' && sidebarOpen ? (
+            <aside data-testid="calendar-inline-sidebar" className="mb-8 border-b border-stone-200 pb-8">
+              {renderSidebarContent(showSidebarTabs)}
+            </aside>
+          ) : null}
+
+          {heatmapSection}
+          {detailSection}
         </div>
-      ) : layoutMode === 'two-pane' ? (
-        <div
-          data-testid="calendar-layout"
-          data-layout={layoutMode}
-          data-sidebar-mode={showSidebarTabs ? 'tabs' : 'stacked'}
-          className="grid min-h-0 min-w-0 shrink-0 gap-4 xl:grid-cols-[minmax(0,1fr)_minmax(18rem,21rem)]"
-        >
-          <div className="min-w-0 shrink-0 space-y-4">
-            {heatmapPanel}
-            {detailPanel}
-          </div>
-          {contextPanel}
-        </div>
-      ) : (
-        <div
-          data-testid="calendar-layout"
-          data-layout={layoutMode}
-          data-sidebar-mode={showSidebarTabs ? 'tabs' : 'stacked'}
-          className="flex min-h-0 min-w-0 shrink-0 flex-col gap-4"
-        >
-          {heatmapPanel}
-          {detailPanel}
-          {contextPanel}
-        </div>
-      )}
+
+        {layoutMode === 'two-pane' ? (
+          <aside data-testid="calendar-sidebar" className="min-w-0 shrink-0 border-l border-stone-200 pl-6">
+            {renderSidebarContent(false)}
+          </aside>
+        ) : null}
+      </div>
     </section>
   )
 }
@@ -833,31 +902,31 @@ function EditableEntryCard({
   }
 
   return (
-    <div className="rounded-2xl border border-stone-200 bg-stone-50/80 p-4">
-      <div className="grid gap-3">
+    <div className="py-4 first:pt-0">
+      <div className="grid gap-4">
         <input
           value={draft.title}
           onChange={(event) => setDraft((current) => ({ ...current, title: event.target.value }))}
-          className="w-full rounded-xl border border-stone-200 bg-white px-3 py-2 text-sm text-stone-900 outline-none transition focus:border-stone-400"
+          className="w-full border-b border-stone-200 bg-transparent px-0 py-2 text-base font-medium text-stone-900 outline-none transition focus:border-stone-400"
         />
         <div className="grid gap-3 md:grid-cols-[1fr_130px_120px]">
           <input
             type="date"
             value={draft.date}
             onChange={(event) => setDraft((current) => ({ ...current, date: event.target.value }))}
-            className="w-full rounded-xl border border-stone-200 bg-white px-3 py-2 text-sm text-stone-900 outline-none transition focus:border-stone-400"
+            className="w-full rounded-lg border border-stone-200 bg-stone-50 px-3 py-2 text-sm text-stone-900 outline-none transition focus:border-stone-400 focus:bg-white"
           />
           <input
             type="time"
             value={draft.startTime}
             disabled={draft.allDay}
             onChange={(event) => setDraft((current) => ({ ...current, startTime: event.target.value }))}
-            className="w-full rounded-xl border border-stone-200 bg-white px-3 py-2 text-sm text-stone-900 outline-none transition focus:border-stone-400 disabled:bg-stone-100"
+            className="w-full rounded-lg border border-stone-200 bg-stone-50 px-3 py-2 text-sm text-stone-900 outline-none transition focus:border-stone-400 focus:bg-white disabled:bg-stone-100"
           />
           <select
             value={status}
             onChange={(event) => setStatus(event.target.value as CalendarEntry['status'])}
-            className="w-full rounded-xl border border-stone-200 bg-white px-3 py-2 text-sm text-stone-900 outline-none transition focus:border-stone-400"
+            className="w-full rounded-lg border border-stone-200 bg-stone-50 px-3 py-2 text-sm text-stone-900 outline-none transition focus:border-stone-400 focus:bg-white"
           >
             <option value="planned">待办</option>
             <option value="done">已完成</option>
@@ -878,9 +947,9 @@ function EditableEntryCard({
           onChange={(event) => setDraft((current) => ({ ...current, notes: event.target.value }))}
           rows={2}
           placeholder="备注"
-          className="w-full rounded-xl border border-stone-200 bg-white px-3 py-2 text-sm text-stone-900 outline-none transition focus:border-stone-400"
+          className="w-full rounded-lg border border-stone-200 bg-stone-50 px-3 py-2 text-sm text-stone-900 outline-none transition focus:border-stone-400 focus:bg-white"
         />
-        <div className="flex flex-wrap justify-between gap-2">
+        <div className="flex flex-wrap items-center justify-between gap-2">
           <span className="text-xs text-stone-400">{entry.source === 'manual' ? '手动创建' : 'AI 建议已采纳'}</span>
           <div className="flex gap-2">
             <button
@@ -889,7 +958,7 @@ function EditableEntryCard({
                 void handleSave()
               }}
               disabled={saving}
-              className="rounded-xl bg-stone-900 px-3 py-2 text-sm font-medium text-white transition hover:bg-stone-800 disabled:opacity-50"
+              className="rounded-lg bg-stone-900 px-3 py-2 text-sm font-medium text-white transition hover:bg-stone-800 disabled:opacity-50"
             >
               {saving ? '保存中…' : '保存'}
             </button>
@@ -899,7 +968,7 @@ function EditableEntryCard({
                 void handleRemove()
               }}
               disabled={removing}
-              className="rounded-xl border border-stone-200 bg-white px-3 py-2 text-sm font-medium text-stone-700 transition hover:bg-stone-50 disabled:opacity-50"
+              className="rounded-lg border border-stone-200 bg-white px-3 py-2 text-sm font-medium text-stone-700 transition hover:bg-stone-50 disabled:opacity-50"
             >
               {removing ? '删除中…' : '删除'}
             </button>
@@ -966,70 +1035,72 @@ function SuggestionCard({
   }
 
   return (
-    <div className="rounded-2xl border border-amber-200 bg-amber-50/70 p-4">
-      <div className="mb-3 flex items-center justify-between gap-3">
-        <span className="text-xs font-medium uppercase tracking-[0.18em] text-amber-700">来自块 {suggestion.sourceBlockId.slice(0, 8)}</span>
-        <span className="text-xs text-amber-700">置信度 {Math.round(suggestion.confidence * 100)}%</span>
-      </div>
-      <div className="grid gap-3">
-        <input
-          value={draft.title}
-          onChange={(event) => setDraft((current) => ({ ...current, title: event.target.value }))}
-          className="w-full rounded-xl border border-amber-200 bg-white px-3 py-2 text-sm text-stone-900 outline-none transition focus:border-amber-400"
-        />
-        <div className="grid gap-3 md:grid-cols-[1fr_130px]">
-          <input
-            type="date"
-            value={draft.date}
-            onChange={(event) => setDraft((current) => ({ ...current, date: event.target.value }))}
-            className="w-full rounded-xl border border-amber-200 bg-white px-3 py-2 text-sm text-stone-900 outline-none transition focus:border-amber-400"
-          />
-          <input
-            type="time"
-            value={draft.startTime}
-            disabled={draft.allDay}
-            onChange={(event) => setDraft((current) => ({ ...current, startTime: event.target.value }))}
-            className="w-full rounded-xl border border-amber-200 bg-white px-3 py-2 text-sm text-stone-900 outline-none transition focus:border-amber-400 disabled:bg-amber-100/60"
-          />
+    <div className="py-4 first:pt-0">
+      <div className="border-l-2 border-amber-400 pl-4">
+        <div className="mb-3 flex items-center justify-between gap-3 text-xs text-amber-700">
+          <span className="font-medium uppercase tracking-[0.18em]">来自块 {suggestion.sourceBlockId.slice(0, 8)}</span>
+          <span>置信度 {Math.round(suggestion.confidence * 100)}%</span>
         </div>
-        <label className="flex items-center gap-2 text-sm text-amber-800">
+        <div className="grid gap-3">
           <input
-            type="checkbox"
-            checked={draft.allDay}
-            onChange={(event) => setDraft((current) => ({ ...current, allDay: event.target.checked, startTime: event.target.checked ? '' : current.startTime }))}
-            className="h-4 w-4 rounded border-amber-300"
+            value={draft.title}
+            onChange={(event) => setDraft((current) => ({ ...current, title: event.target.value }))}
+            className="w-full border-b border-amber-200 bg-transparent px-0 py-2 text-base font-medium text-stone-900 outline-none transition focus:border-amber-400"
           />
-          全天安排
-        </label>
-        <textarea
-          value={draft.notes}
-          onChange={(event) => setDraft((current) => ({ ...current, notes: event.target.value }))}
-          rows={2}
-          placeholder="备注"
-          className="w-full rounded-xl border border-amber-200 bg-white px-3 py-2 text-sm text-stone-900 outline-none transition focus:border-amber-400"
-        />
-        {suggestion.evidenceText ? <p className="text-xs leading-5 text-amber-800">证据：{suggestion.evidenceText}</p> : null}
-        <div className="flex gap-2">
-          <button
-            type="button"
-            onClick={() => {
-              void handleAccept()
-            }}
-            disabled={busy}
-            className="rounded-xl bg-amber-600 px-3 py-2 text-sm font-medium text-white transition hover:bg-amber-500 disabled:opacity-50"
-          >
-            {busy ? '处理中…' : '采纳为正式安排'}
-          </button>
-          <button
-            type="button"
-            onClick={() => {
-              void handleDismiss()
-            }}
-            disabled={busy}
-            className="rounded-xl border border-amber-200 bg-white px-3 py-2 text-sm font-medium text-amber-800 transition hover:bg-amber-100/60 disabled:opacity-50"
-          >
-            忽略
-          </button>
+          <div className="grid gap-3 md:grid-cols-[1fr_130px]">
+            <input
+              type="date"
+              value={draft.date}
+              onChange={(event) => setDraft((current) => ({ ...current, date: event.target.value }))}
+              className="w-full rounded-lg border border-amber-200 bg-amber-50/40 px-3 py-2 text-sm text-stone-900 outline-none transition focus:border-amber-400 focus:bg-white"
+            />
+            <input
+              type="time"
+              value={draft.startTime}
+              disabled={draft.allDay}
+              onChange={(event) => setDraft((current) => ({ ...current, startTime: event.target.value }))}
+              className="w-full rounded-lg border border-amber-200 bg-amber-50/40 px-3 py-2 text-sm text-stone-900 outline-none transition focus:border-amber-400 focus:bg-white disabled:bg-amber-100/60"
+            />
+          </div>
+          <label className="flex items-center gap-2 text-sm text-amber-900">
+            <input
+              type="checkbox"
+              checked={draft.allDay}
+              onChange={(event) => setDraft((current) => ({ ...current, allDay: event.target.checked, startTime: event.target.checked ? '' : current.startTime }))}
+              className="h-4 w-4 rounded border-amber-300"
+            />
+            全天安排
+          </label>
+          <textarea
+            value={draft.notes}
+            onChange={(event) => setDraft((current) => ({ ...current, notes: event.target.value }))}
+            rows={2}
+            placeholder="备注"
+            className="w-full rounded-lg border border-amber-200 bg-amber-50/40 px-3 py-2 text-sm text-stone-900 outline-none transition focus:border-amber-400 focus:bg-white"
+          />
+          {suggestion.evidenceText ? <p className="text-xs leading-5 text-amber-800">证据：{suggestion.evidenceText}</p> : null}
+          <div className="flex gap-2">
+            <button
+              type="button"
+              onClick={() => {
+                void handleAccept()
+              }}
+              disabled={busy}
+              className="rounded-lg bg-amber-600 px-3 py-2 text-sm font-medium text-white transition hover:bg-amber-500 disabled:opacity-50"
+            >
+              {busy ? '处理中…' : '采纳为正式安排'}
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                void handleDismiss()
+              }}
+              disabled={busy}
+              className="rounded-lg border border-amber-200 bg-white px-3 py-2 text-sm font-medium text-amber-800 transition hover:bg-amber-50 disabled:opacity-50"
+            >
+              忽略
+            </button>
+          </div>
         </div>
       </div>
     </div>

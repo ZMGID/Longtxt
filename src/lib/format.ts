@@ -30,3 +30,32 @@ export function formatTimeLabel(value: string): string {
     minute: '2-digit',
   }).format(date)
 }
+
+export function formatLocalDateKey(value: string): string {
+  const date = new Date(value)
+
+  return [
+    date.getFullYear(),
+    String(date.getMonth() + 1).padStart(2, '0'),
+    String(date.getDate()).padStart(2, '0'),
+  ].join('-')
+}
+
+export function formatDateKeyLabel(dateKey: string, options: { weekday?: boolean } = {}): string {
+  const date = new Date(`${dateKey}T00:00:00`)
+
+  return new Intl.DateTimeFormat('zh-CN', {
+    year: 'numeric',
+    month: 'long',
+    day: 'numeric',
+    ...(options.weekday ? { weekday: 'short' } : {}),
+  }).format(date)
+}
+
+export function formatClockTime(value: string): string {
+  return new Intl.DateTimeFormat('zh-CN', {
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  }).format(new Date(value))
+}

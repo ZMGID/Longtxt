@@ -11,10 +11,12 @@ import { registerIpcHandlers } from './ipc/register'
 
 const isDevelopment = Boolean(process.env.VITE_DEV_SERVER_URL)
 const APP_NAME = '长布'
+const DEFAULT_ZOOM_FACTOR = 1.1
 const APP_IDLE_TIMEOUT_MS = 15_000
 const preloadPath = join(__dirname, 'preload.cjs')
 const ATTACHMENT_PROTOCOL = 'changbu-attachment'
 let mainWindow: BrowserWindow | null = null
+let settingsWindow: BrowserWindow | null = null
 let appContext: AppContext | null = null
 let unregisterHandlers: (() => void) | null = null
 let isQuitting = false
@@ -37,11 +39,11 @@ function sendEvent(
   channel: string,
   payload: BlockChangedEvent | NotebookChangedEvent | MetaChangedEvent | CalendarChangedEvent | DocGenerationChunk | { waiting: boolean },
 ): void {
-  if (!mainWindow || mainWindow.isDestroyed()) {
-    return
+  for (const window of BrowserWindow.getAllWindows()) {
+    if (!window.isDestroyed()) {
+      window.webContents.send(channel, payload)
+    }
   }
-
-  mainWindow.webContents.send(channel, payload)
 }
 
 function sendQuitState(waiting: boolean): void {
@@ -190,6 +192,8 @@ function finishQuit(): void {
   appContext = null
   unregisterHandlers?.()
   unregisterHandlers = null
+  settingsWindow?.destroy()
+  settingsWindow = null
   mainWindow?.destroy()
   app.quit()
 }
@@ -209,6 +213,31 @@ function requestAppQuit(): void {
       finishQuit()
     }
   })()
+}
+
+function loadRendererWindow(window: BrowserWindow, mode: 'main' | 'settings' = 'main'): void {
+  if (isDevelopment && process.env.VITE_DEV_SERVER_URL) {
+    if (mode === 'settings') {
+      const url = new URL(process.env.VITE_DEV_SERVER_URL)
+      url.searchParams.set('window', 'settings')
+      void window.loadURL(url.toString())
+      return
+    }
+
+    void window.loadURL(process.env.VITE_DEV_SERVER_URL)
+    return
+  }
+
+  if (mode === 'settings') {
+    void window.loadFile(join(__dirname, '..', 'dist', 'index.html'), {
+      query: {
+        window: 'settings',
+      },
+    })
+    return
+  }
+
+  void window.loadFile(join(__dirname, '..', 'dist', 'index.html'))
 }
 
 function createMainWindow(): BrowserWindow {
@@ -233,14 +262,10 @@ function createMainWindow(): BrowserWindow {
     },
   })
 
-  if (isDevelopment && process.env.VITE_DEV_SERVER_URL) {
-    void window.loadURL(process.env.VITE_DEV_SERVER_URL)
-  } else {
-    void window.loadFile(join(__dirname, '..', 'dist', 'index.html'))
-  }
+  loadRendererWindow(window, 'main')
 
   window.webContents.on('did-finish-load', () => {
-    window.webContents.setZoomFactor(1)
+    window.webContents.setZoomFactor(DEFAULT_ZOOM_FACTOR)
   })
 
   window.webContents.setWindowOpenHandler(({ url }) => {
@@ -260,12 +285,68 @@ function createMainWindow(): BrowserWindow {
   return window
 }
 
+function createSettingsWindow(): BrowserWindow {
+  const icon = resolveWindowIcon()
+  const window = new BrowserWindow({
+    width: 980,
+    height: 700,
+    minWidth: 820,
+    minHeight: 560,
+    backgroundColor: '#f7f5f2',
+    title: '设置 - 长布',
+    titleBarStyle: process.platform === 'darwin' ? 'hidden' : 'default',
+    ...(icon ? { icon } : {}),
+    webPreferences: {
+      preload: preloadPath,
+      contextIsolation: true,
+      sandbox: false,
+    },
+  })
+
+  loadRendererWindow(window, 'settings')
+
+  if (process.platform === 'darwin') {
+    window.setWindowButtonVisibility(false)
+  }
+
+  window.webContents.on('did-finish-load', () => {
+    window.webContents.setZoomFactor(DEFAULT_ZOOM_FACTOR)
+  })
+
+  window.webContents.setWindowOpenHandler(({ url }) => {
+    void shell.openExternal(url)
+    return { action: 'deny' }
+  })
+
+  return window
+}
+
 function openMainWindow(): BrowserWindow {
   const window = createMainWindow()
   mainWindow = window
   window.on('closed', () => {
     if (mainWindow === window) {
       mainWindow = null
+    }
+  })
+  return window
+}
+
+function openSettingsWindow(): BrowserWindow {
+  if (settingsWindow && !settingsWindow.isDestroyed()) {
+    if (settingsWindow.isMinimized()) {
+      settingsWindow.restore()
+    }
+
+    settingsWindow.focus()
+    return settingsWindow
+  }
+
+  const window = createSettingsWindow()
+  settingsWindow = window
+  window.on('closed', () => {
+    if (settingsWindow === window) {
+      settingsWindow = null
     }
   })
   return window
@@ -316,7 +397,11 @@ async function bootstrap(): Promise<void> {
     onDocGenerationChunk: (chunk) => sendEvent(IPC_CHANNELS.events.docGenerationChunk, chunk),
   })
 
-  unregisterHandlers = registerIpcHandlers(appContext)
+  unregisterHandlers = registerIpcHandlers(appContext, {
+    [IPC_CHANNELS.settings.openWindow]: () => {
+      openSettingsWindow()
+    },
+  })
   openMainWindow()
 }
 
@@ -325,9 +410,16 @@ app.whenReady().then(() => {
   void bootstrap()
 
   app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) {
+    if (!mainWindow || mainWindow.isDestroyed()) {
       openMainWindow()
+      return
     }
+
+    if (mainWindow.isMinimized()) {
+      mainWindow.restore()
+    }
+
+    mainWindow.focus()
   })
 })
 

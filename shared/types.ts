@@ -39,6 +39,11 @@ export interface Block {
   errorMessage?: string | null
 }
 
+export interface BlockBatchRemoveResult {
+  removed: number
+  removedIds: string[]
+}
+
 export interface RelatedBlockResult {
   block: Block
   score: number
@@ -71,6 +76,7 @@ export interface Snapshot {
   topic: string
   content: string
   blockIds: string[]
+  tags?: Tag[]
   notebookId?: string | null
   notebookTitle?: string | null
   createdAt: string
@@ -239,6 +245,7 @@ export interface UISettings {
 
 export interface CalendarSettings {
   aiSuggestionsEnabled: boolean
+  autoAcceptAiSuggestions: boolean
   maxSuggestionsPerBlock: number
   upcomingDays: number
 }
@@ -288,9 +295,45 @@ export interface AppMeta {
   lastAiTestResult: ApiTestResult | null
   modelCallCounts: ModelCallCounts
   tokenUsage: TokenUsage | null
+  lifetimeTokenUsage: TokenUsage | null
   failedVectorCount: number
   pendingVectorCount: number
   vectorQueueProcessing: boolean
+}
+
+export interface DataManagementOverview {
+  dataDirectory: string
+  databasePath: string
+  settingsDirectory: string
+  settingsFilePath: string
+  totalBlockCount: number
+  totalNotebookCount: number
+  totalSnapshotCount: number
+  totalAttachmentCount: number
+  totalVectorCount: number
+  vectorReady: boolean
+  aiConfigured: boolean
+  activeAiMode: AIExecutionMode
+  vectorDimension: number | null
+  vectorSchemaReady: boolean
+  failedVectorCount: number
+  pendingVectorCount: number
+  vectorQueueProcessing: boolean
+  tokenUsage: TokenUsage | null
+}
+
+export interface AttachmentCleanupResult {
+  removedCount: number
+}
+
+export interface AttachmentIndexRebuildResult {
+  indexedBlockCount: number
+  attachmentCount: number
+  removedOrphanCount: number
+}
+
+export interface VectorRebuildResult {
+  queuedBlockCount: number
 }
 
 export interface CalendarDaySummary {
@@ -382,7 +425,7 @@ export interface NotebookChangedEvent {
 }
 
 export interface MetaChangedEvent {
-  reason: 'settings' | 'ai-test' | 'vector-queue' | 'vector-failure' | 'vector-retry' | 'doc-generation' | 'usage' | 'calendar-suggestion' | 'quit'
+  reason: 'settings' | 'ai-test' | 'vector-queue' | 'vector-failure' | 'vector-retry' | 'doc-generation' | 'usage' | 'calendar-suggestion' | 'data-management' | 'quit'
 }
 
 export interface AppQuitStateChangedEvent {
@@ -418,8 +461,10 @@ export interface ChangbuApi {
     create(content: string): Promise<Block>
     get(id: string): Promise<Block>
     list(params?: PaginationInput): Promise<Block[]>
+    listByDate(date: string): Promise<Block[]>
     update(id: string, content: string): Promise<Block>
     remove(id: string): Promise<void>
+    removeMany(ids: string[]): Promise<BlockBatchRemoveResult>
     findRelated(blockId: string, limit?: number): Promise<RelatedBlockResult[]>
   }
   attachments: {
@@ -480,6 +525,12 @@ export interface ChangbuApi {
     previewJson(): Promise<ImportPreview | null>
     confirm(importId: string, conflictStrategy: ImportConflictStrategy): Promise<{ imported: number }>
   }
+  data: {
+    getOverview(): Promise<DataManagementOverview>
+    cleanupOrphanAttachments(): Promise<AttachmentCleanupResult>
+    rebuildAttachmentIndex(): Promise<AttachmentIndexRebuildResult>
+    rebuildAllVectors(): Promise<VectorRebuildResult>
+  }
   tags: {
     add(blockId: string, tagName: string): Promise<Block>
     remove(blockId: string, tagId: string): Promise<Block>
@@ -489,6 +540,7 @@ export interface ChangbuApi {
     get(key: string): Promise<string | null>
     set(key: string, value: string): Promise<void>
     testApi(config: AIConfig): Promise<ApiTestResult>
+    openWindow(): Promise<void>
     openDataDirectory(): Promise<void>
     openSettingsDirectory(): Promise<void>
     getMeta(): Promise<AppMeta>

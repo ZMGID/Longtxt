@@ -508,6 +508,83 @@ export function replaceCalendarSuggestionsForBlock(
   transaction()
 }
 
+export function autoAcceptCalendarSuggestionsForBlock(
+  db: Database.Database,
+  blockId: string,
+  suggestions: CalendarSuggestionRecordInput[],
+  now: string,
+): CalendarEntry[] {
+  const existingEntryRows = db
+    .prepare(
+      `
+        SELECT title, date, start_time AS startTime
+        FROM calendar_entries
+        WHERE linked_block_id = ?
+      `,
+    )
+    .all(blockId) as Array<{ title: string; date: string; startTime: string | null }>
+
+  const existingKeys = new Set(existingEntryRows.map((row) => normalizeComparisonKey(row)))
+  const deduped = suggestions.filter((suggestion, index, items) => {
+    const key = normalizeComparisonKey(suggestion)
+
+    if (existingKeys.has(key)) {
+      return false
+    }
+
+    return items.findIndex((item) => normalizeComparisonKey(item) === key) === index
+  })
+
+  const transaction = db.transaction(() => {
+    db.prepare(`DELETE FROM calendar_suggestions WHERE source_block_id = ?`).run(blockId)
+
+    if (deduped.length === 0) {
+      return [] as CalendarEntry[]
+    }
+
+    const insert = db.prepare(
+      `
+        INSERT INTO calendar_entries (
+          id,
+          title,
+          notes,
+          date,
+          start_time,
+          all_day,
+          status,
+          source,
+          linked_block_id,
+          created_at,
+          updated_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, 'planned', ?, ?, ?, ?)
+      `,
+    )
+    const createdIds: string[] = []
+
+    for (const suggestion of deduped) {
+      const id = uuid()
+      insert.run(
+        id,
+        suggestion.title,
+        suggestion.notes ?? null,
+        suggestion.date,
+        suggestion.startTime ?? null,
+        suggestion.allDay ? 1 : 0,
+        'ai-accepted',
+        blockId,
+        now,
+        now,
+      )
+      createdIds.push(id)
+    }
+
+    return createdIds.map((id) => findEntryById(db, id))
+  })
+
+  return transaction()
+}
+
 export function acceptCalendarSuggestion(
   db: Database.Database,
   suggestionId: string,
