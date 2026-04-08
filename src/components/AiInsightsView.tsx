@@ -1,11 +1,13 @@
+import { useQueryClient } from '@tanstack/react-query'
 import { useEffect, useMemo, useRef, useState } from 'react'
 
 import { AI_INSIGHT_METHODS, getAiInsightMethodDefinition, isAiInsightMethodId, type AiInsightIconKey } from '../../shared/aiInsights'
-import type { AiInsightMethodId, AiInsightResult } from '../../shared/types'
+import type { AiInsightHistoryRecord, AiInsightMethodId, AiInsightResult } from '../../shared/types'
 import { changbu } from '../lib/changbu'
 import { useAppMeta } from '../hooks/useAppMeta'
-import { useAiInsight, useDocGenerationSettings, useSaveAiInsightSnapshot } from '../hooks/useReview'
+import { useAiInsight, useAiInsightHistory, useDocGenerationSettings, useSaveAiInsightSnapshot } from '../hooks/useReview'
 import { formatDateKeyLabel, formatTimeLabel } from '../lib/format'
+import { queryKeys } from '../lib/queryKeys'
 import { shiftDateKey } from '../lib/timelineReview'
 import { MarkdownContent } from './MarkdownContent'
 import { ActionButton } from './ui/ActionButton'
@@ -15,6 +17,17 @@ interface AiInsightsViewProps {
   initialDateKey: string
 }
 
+interface AiInsightStreamState {
+  requestId: string | null
+  content: string
+  loading: boolean
+  error: Error | null
+  result: AiInsightResult | null
+  mode: 'mock' | 'live' | null
+}
+
+const HISTORY_LIMIT = 30
+
 function resolveInitialMethodId(): AiInsightMethodId | null {
   const method = new URLSearchParams(window.location.search).get('method')
   return isAiInsightMethodId(method) ? method : null
@@ -22,6 +35,10 @@ function resolveInitialMethodId(): AiInsightMethodId | null {
 
 function formatRangeLabel(start: string, end: string): string {
   return `${formatDateKeyLabel(start)} — ${formatDateKeyLabel(end)}`
+}
+
+function getAiInsightMethodLabel(methodId: AiInsightMethodId): string {
+  return getAiInsightMethodDefinition(methodId)?.label ?? 'AI 洞察'
 }
 
 function InsightIcon({ iconKey }: { iconKey: AiInsightIconKey }) {
@@ -107,17 +124,9 @@ function AiInsightSkeleton() {
   )
 }
 
-interface AiInsightStreamState {
-  requestId: string | null
-  content: string
-  loading: boolean
-  error: Error | null
-  result: AiInsightResult | null
-  mode: 'mock' | 'live' | null
-}
-
 export function AiInsightsView({ initialDateKey }: AiInsightsViewProps) {
   const { toast } = useToast()
+  const queryClient = useQueryClient()
   const metaQuery = useAppMeta()
   const docGenerationSettingsQuery = useDocGenerationSettings()
   const scrollRef = useRef<HTMLDivElement | null>(null)
@@ -126,8 +135,11 @@ export function AiInsightsView({ initialDateKey }: AiInsightsViewProps) {
     dateKey: initialDateKey,
     methodId: resolveInitialMethodId(),
   })
+  const lastHistoryInvalidateKeyRef = useRef<string | null>(null)
   const [selectedMethodId, setSelectedMethodId] = useState<AiInsightMethodId | null>(resolveInitialMethodId)
   const [requestState, setRequestState] = useState({ version: 0, forceRefresh: false })
+  const [historyOpen, setHistoryOpen] = useState(false)
+  const [selectedHistoryId, setSelectedHistoryId] = useState<string | null>(null)
   const [streamState, setStreamState] = useState<AiInsightStreamState>({
     requestId: null,
     content: '',
@@ -146,17 +158,36 @@ export function AiInsightsView({ initialDateKey }: AiInsightsViewProps) {
     requestState.forceRefresh,
     settingsResolved && Boolean(selectedMethodId) && !streamOutputEnabled,
   )
+  const showingGlobalHistory = historyOpen && !selectedMethodId
+  const historyQuery = useAiInsightHistory(null, showingGlobalHistory, HISTORY_LIMIT)
   const saveSnapshotMutation = useSaveAiInsightSnapshot()
-  const result = streamOutputEnabled ? streamState.result : insightQuery.data
-  const isGenerating = streamOutputEnabled ? streamState.loading : insightQuery.isPending
-  const activeError = streamOutputEnabled ? streamState.error : insightQuery.error
-  const streamedContent = streamOutputEnabled ? streamState.content : ''
-  const providerMode = result?.mode ?? streamState.mode ?? metaQuery.data?.activeAiMode ?? 'mock'
+  const generatedResult = streamOutputEnabled ? streamState.result : insightQuery.data
+  const currentResult = selectedMethodId ? generatedResult : null
+  const isGenerating = selectedMethodId ? (streamOutputEnabled ? streamState.loading : insightQuery.isPending) : false
+  const activeError = selectedMethodId ? (streamOutputEnabled ? streamState.error : insightQuery.error) : null
+  const streamedContent = selectedMethodId && streamOutputEnabled ? streamState.content : ''
+  const currentProviderMode = selectedMethodId
+    ? (currentResult?.mode ?? streamState.mode ?? metaQuery.data?.activeAiMode ?? 'mock')
+    : (metaQuery.data?.activeAiMode ?? 'mock')
   const fallbackRangeStart = shiftDateKey(initialDateKey, -13)
   const methodsInColumns = useMemo(() => [
     AI_INSIGHT_METHODS.filter((_, index) => index % 2 === 0),
     AI_INSIGHT_METHODS.filter((_, index) => index % 2 === 1),
   ], [])
+  const historyRecords = historyQuery.data ?? []
+  const selectedHistoryRecord = showingGlobalHistory
+    ? (historyRecords.find((record) => record.id === selectedHistoryId) ?? historyRecords[0] ?? null)
+    : null
+  const displayedMode = showingGlobalHistory ? (selectedHistoryRecord?.mode ?? currentProviderMode) : currentProviderMode
+  const displayedGeneratedAt = showingGlobalHistory ? selectedHistoryRecord?.createdAt : currentResult?.generatedAt
+  const displayedRangeLabel = showingGlobalHistory && selectedHistoryRecord
+    ? formatRangeLabel(selectedHistoryRecord.rangeStart, selectedHistoryRecord.rangeEnd)
+    : currentResult
+      ? formatRangeLabel(currentResult.rangeStart, currentResult.rangeEnd)
+      : selectedMethodId
+        ? formatRangeLabel(fallbackRangeStart, initialDateKey)
+        : null
+  const saveableInsight = showingGlobalHistory ? selectedHistoryRecord : currentResult
 
   useEffect(() => {
     const url = new URL(window.location.href)
@@ -169,7 +200,40 @@ export function AiInsightsView({ initialDateKey }: AiInsightsViewProps) {
 
     window.history.replaceState(null, '', url.toString())
     scrollRef.current?.scrollTo({ top: 0 })
-  }, [selectedMethodId, requestState.version])
+  }, [historyOpen, requestState.version, selectedMethodId])
+
+  useEffect(() => {
+    if (!showingGlobalHistory) {
+      return
+    }
+
+    if (historyRecords.length === 0) {
+      if (selectedHistoryId !== null) {
+        setSelectedHistoryId(null)
+      }
+      return
+    }
+
+    if (!selectedHistoryId || !historyRecords.some((record) => record.id === selectedHistoryId)) {
+      setSelectedHistoryId(historyRecords[0].id)
+    }
+  }, [historyRecords, selectedHistoryId, showingGlobalHistory])
+
+  useEffect(() => {
+    if (!selectedMethodId || !currentResult) {
+      return
+    }
+
+    const invalidateKey = `${currentResult.methodId}:${currentResult.generatedAt}:${currentResult.empty ? '1' : '0'}`
+    if (lastHistoryInvalidateKeyRef.current === invalidateKey) {
+      return
+    }
+
+    lastHistoryInvalidateKeyRef.current = invalidateKey
+    void queryClient.invalidateQueries({
+      queryKey: queryKeys.reviewInsightHistoryRoot(),
+    })
+  }, [currentResult, queryClient, selectedMethodId])
 
   useEffect(() => {
     if (!settingsResolved) {
@@ -358,31 +422,45 @@ export function AiInsightsView({ initialDateKey }: AiInsightsViewProps) {
   function handleSelectMethod(methodId: AiInsightMethodId) {
     setSelectedMethodId(methodId)
     setRequestState({ version: 0, forceRefresh: false })
+    setHistoryOpen(false)
+    setSelectedHistoryId(null)
   }
 
   function handleBackToLibrary() {
     setSelectedMethodId(null)
     setRequestState({ version: 0, forceRefresh: false })
+    setHistoryOpen(false)
+    setSelectedHistoryId(null)
   }
 
   function handleRegenerate() {
     setRequestState((current) => ({ version: current.version + 1, forceRefresh: true }))
   }
 
+  function handleOpenHistory() {
+    setHistoryOpen(true)
+    setSelectedHistoryId(null)
+  }
+
+  function handleCloseHistory() {
+    setHistoryOpen(false)
+    setSelectedHistoryId(null)
+  }
+
   async function handleSaveSnapshot() {
-    if (!result) {
+    if (!saveableInsight) {
       return
     }
 
     try {
       await saveSnapshotMutation.mutateAsync({
-        methodId: result.methodId,
-        date: result.date,
-        rangeStart: result.rangeStart,
-        rangeEnd: result.rangeEnd,
-        title: result.title,
-        content: result.content,
-        blockIds: result.blockIds,
+        methodId: saveableInsight.methodId,
+        date: saveableInsight.date,
+        rangeStart: saveableInsight.rangeStart,
+        rangeEnd: saveableInsight.rangeEnd,
+        title: saveableInsight.title,
+        content: saveableInsight.content,
+        blockIds: saveableInsight.blockIds,
       })
       toast('success', '已保存为文档快照。')
     } catch (error) {
@@ -390,43 +468,117 @@ export function AiInsightsView({ initialDateKey }: AiInsightsViewProps) {
     }
   }
 
+  function renderHistoryListItem(record: AiInsightHistoryRecord) {
+    const selected = record.id === selectedHistoryRecord?.id
+    const methodLabel = getAiInsightMethodLabel(record.methodId)
+
+    return (
+      <button
+        key={record.id}
+        type="button"
+        onClick={() => setSelectedHistoryId(record.id)}
+        className={[
+          'w-full rounded-lg border px-3 py-3 text-left transition',
+          selected
+            ? 'border-stone-900 bg-stone-900 text-white'
+            : 'border-stone-200 bg-white text-stone-700 hover:border-stone-300 hover:bg-stone-50',
+        ].join(' ')}
+      >
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div className={selected ? 'text-[11px] uppercase tracking-[0.12em] text-stone-300' : 'text-[11px] uppercase tracking-[0.12em] text-stone-400'}>
+            {formatTimeLabel(record.createdAt)}
+          </div>
+          <div className={selected ? 'rounded-full border border-stone-700 px-2 py-0.5 text-[10px] font-semibold tracking-[0.12em] text-stone-200' : 'rounded-full border border-stone-200 px-2 py-0.5 text-[10px] font-semibold tracking-[0.12em] text-stone-500'}>
+            {methodLabel}
+          </div>
+        </div>
+        <div className="mt-1.5 text-sm font-medium leading-6">{record.title}</div>
+        <div className={selected ? 'mt-2 text-[12px] leading-5 text-stone-300' : 'mt-2 text-[12px] leading-5 text-stone-500'}>
+          {formatDateKeyLabel(record.date, { weekday: true })}
+          {' · '}
+          {record.mode === 'live' ? 'Live AI' : 'Mock AI'}
+          {record.empty ? ' · 空结果' : ''}
+        </div>
+      </button>
+    )
+  }
+
+  const headerEyebrow = showingGlobalHistory ? '历史洞察' : selectedMethodId ? '分析结果' : '分析库'
+  const headerTitle = showingGlobalHistory
+    ? 'AI 洞察历史'
+    : selectedMethodId
+      ? getAiInsightMethodLabel(selectedMethodId)
+      : '选择分析方法'
+
   return (
     <section className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden text-stone-900">
       <div className="border-b border-stone-200 px-6 py-4">
         <div className="flex flex-wrap items-start justify-between gap-4">
           <div className="min-w-0 flex-1">
-            <div className="flex flex-wrap items-center gap-3 text-[11px] font-semibold uppercase tracking-[0.18em] text-stone-400">
-              <span>AI 洞察</span>
-              <span className={`rounded-full border px-2 py-1 text-[10px] tracking-[0.14em] ${providerMode === 'live' ? 'border-emerald-200 text-emerald-700' : 'border-stone-200 text-stone-500'}`}>
-                {providerMode === 'live' ? 'Live AI' : 'Mock AI'}
+            <div className="flex flex-wrap items-center gap-2 text-[11px] font-semibold uppercase tracking-[0.18em] text-stone-400">
+              <span className={`rounded-full border px-2 py-1 text-[10px] tracking-[0.14em] ${displayedMode === 'live' ? 'border-emerald-200 text-emerald-700' : 'border-stone-200 text-stone-500'}`}>
+                {displayedMode === 'live' ? 'Live AI' : 'Mock AI'}
               </span>
+              <span>{headerEyebrow}</span>
             </div>
-            <h3 className="mt-2 text-[26px] font-semibold tracking-[-0.03em] text-stone-900">
-              {selectedMethodId ? (getAiInsightMethodDefinition(selectedMethodId)?.label ?? 'AI 洞察') : '选择一种分析方法'}
-            </h3>
+            <h3 className="mt-2 text-[26px] font-semibold tracking-[-0.03em] text-stone-900">{headerTitle}</h3>
             <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-sm text-stone-500">
-              <span>锚点日期：{formatDateKeyLabel(initialDateKey, { weekday: true })}</span>
-              <span className="text-stone-400">观察窗口：{result ? formatRangeLabel(result.rangeStart, result.rangeEnd) : formatRangeLabel(fallbackRangeStart, initialDateKey)}</span>
-              {result?.generatedAt ? <span className="text-stone-400">生成于 {formatTimeLabel(result.generatedAt)}</span> : null}
+              {showingGlobalHistory ? (
+                selectedHistoryRecord ? (
+                  <>
+                    <span>{getAiInsightMethodLabel(selectedHistoryRecord.methodId)}</span>
+                    <span className="text-stone-400">锚点日期：{formatDateKeyLabel(selectedHistoryRecord.date, { weekday: true })}</span>
+                    {displayedRangeLabel ? <span className="text-stone-400">观察窗口：{displayedRangeLabel}</span> : null}
+                    {displayedGeneratedAt ? <span className="text-stone-400">生成于 {formatTimeLabel(displayedGeneratedAt)}</span> : null}
+                  </>
+                ) : (
+                  <>
+                    <span>最近 {HISTORY_LIMIT} 条 AI 洞察记录</span>
+                    <span className="text-stone-400">按生成时间倒序展示全部方法</span>
+                  </>
+                )
+              ) : selectedMethodId ? (
+                <>
+                  <span>{formatDateKeyLabel(initialDateKey, { weekday: true })}</span>
+                  {displayedRangeLabel ? <span className="text-stone-400">观察窗口：{displayedRangeLabel}</span> : null}
+                  {displayedGeneratedAt ? <span className="text-stone-400">生成于 {formatTimeLabel(displayedGeneratedAt)}</span> : null}
+                </>
+              ) : (
+                <>
+                  <span>{formatDateKeyLabel(initialDateKey, { weekday: true })}</span>
+                  <span className="text-stone-400">选择一个分析方法，生成最近两周的 AI 洞察</span>
+                </>
+              )}
             </div>
           </div>
 
-          {selectedMethodId ? (
+          {showingGlobalHistory ? (
+            <div className="flex flex-wrap items-center gap-2">
+              <ActionButton onClick={handleCloseHistory} disabled={saveSnapshotMutation.isPending}>返回分析库</ActionButton>
+              <ActionButton accent onClick={() => { void handleSaveSnapshot() }} disabled={!saveableInsight || saveSnapshotMutation.isPending}>
+                {saveSnapshotMutation.isPending ? '保存中…' : '保存为快照'}
+              </ActionButton>
+            </div>
+          ) : selectedMethodId ? (
             <div className="flex flex-wrap items-center gap-2">
               <ActionButton onClick={handleBackToLibrary} disabled={isGenerating || saveSnapshotMutation.isPending}>切换方法</ActionButton>
               <ActionButton onClick={handleRegenerate} disabled={isGenerating || saveSnapshotMutation.isPending}>
                 {isGenerating ? '生成中…' : '重新生成'}
               </ActionButton>
-              <ActionButton accent onClick={() => { void handleSaveSnapshot() }} disabled={!result || isGenerating || saveSnapshotMutation.isPending}>
+              <ActionButton accent onClick={() => { void handleSaveSnapshot() }} disabled={!saveableInsight || isGenerating || saveSnapshotMutation.isPending}>
                 {saveSnapshotMutation.isPending ? '保存中…' : '保存为快照'}
               </ActionButton>
             </div>
-          ) : null}
+          ) : (
+            <div className="flex flex-wrap items-center gap-2">
+              <ActionButton onClick={handleOpenHistory}>历史记录</ActionButton>
+            </div>
+          )}
         </div>
       </div>
 
       <div ref={scrollRef} className="min-h-0 flex-1 overflow-y-auto">
-        {!selectedMethodId ? (
+        {!selectedMethodId && !showingGlobalHistory ? (
           <div className="mx-auto w-full max-w-[1080px] px-6 py-6">
             <div className="grid gap-x-12 gap-y-2 md:grid-cols-2">
               {methodsInColumns.map((column, columnIndex) => (
@@ -436,6 +588,74 @@ export function AiInsightsView({ initialDateKey }: AiInsightsViewProps) {
                   ))}
                 </div>
               ))}
+            </div>
+          </div>
+        ) : null}
+
+        {showingGlobalHistory ? (
+          <div className="mx-auto w-full max-w-[1080px] px-6 py-6">
+            <div className="grid gap-8 md:grid-cols-[minmax(0,1fr)_240px] md:gap-10">
+              <div className="min-w-0 border-t border-stone-200 pt-6">
+                {selectedHistoryRecord ? (
+                  <>
+                    <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-sm text-stone-500">
+                      <span>{getAiInsightMethodLabel(selectedHistoryRecord.methodId)}</span>
+                      <span>{selectedHistoryRecord.mode === 'live' ? 'Live AI' : 'Mock AI'}</span>
+                      <span>{selectedHistoryRecord.empty ? '空结果' : '历史正文'}</span>
+                      <span>生成于 {formatTimeLabel(selectedHistoryRecord.createdAt)}</span>
+                    </div>
+                    <div className="mt-2 text-sm leading-6 text-stone-400">{formatRangeLabel(selectedHistoryRecord.rangeStart, selectedHistoryRecord.rangeEnd)}</div>
+                    <div className="mt-3 text-lg font-medium tracking-[-0.02em] text-stone-900">{selectedHistoryRecord.title}</div>
+                    <div className="mt-6 max-w-[760px]">
+                      <MarkdownContent content={selectedHistoryRecord.content} />
+                    </div>
+                  </>
+                ) : historyQuery.isPending ? (
+                  <AiInsightSkeleton />
+                ) : historyQuery.error ? (
+                  <div>
+                    <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-rose-400">历史加载失败</div>
+                    <p className="mt-3 max-w-[680px] text-sm leading-7 text-stone-500">
+                      {historyQuery.error instanceof Error ? historyQuery.error.message : '历史记录加载失败。'}
+                    </p>
+                  </div>
+                ) : (
+                  <div>
+                    <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-stone-400">暂无历史</div>
+                    <div className="mt-2 text-[22px] font-semibold tracking-[-0.02em] text-stone-900">还没有 AI 洞察历史记录</div>
+                    <p className="mt-3 max-w-[680px] text-sm leading-7 text-stone-500">
+                      先生成一次任意方法的 AI 洞察，历史列表就会自动记录并出现在这里。
+                    </p>
+                  </div>
+                )}
+              </div>
+
+              <aside className="min-w-0 border-t border-stone-200 pt-6 text-sm text-stone-600">
+                <div className="space-y-4">
+                  <div>
+                    <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-stone-400">历史列表</div>
+                    <div className="mt-1 leading-6">显示全部方法最近 {HISTORY_LIMIT} 条记录。</div>
+                  </div>
+
+                  <div className="border-t border-stone-200 pt-4">
+                    {historyQuery.isPending ? (
+                      <div className="space-y-3">
+                        <div className="h-16 animate-pulse rounded-lg bg-stone-100" />
+                        <div className="h-16 animate-pulse rounded-lg bg-stone-100" />
+                        <div className="h-16 animate-pulse rounded-lg bg-stone-100" />
+                      </div>
+                    ) : historyQuery.error ? (
+                      <div className="text-sm leading-6 text-stone-500">历史记录暂时加载失败。</div>
+                    ) : historyRecords.length > 0 ? (
+                      <div className="space-y-3">
+                        {historyRecords.map(renderHistoryListItem)}
+                      </div>
+                    ) : (
+                      <div className="text-sm leading-6 text-stone-500">还没有可浏览的历史记录。</div>
+                    )}
+                  </div>
+                </div>
+              </aside>
             </div>
           </div>
         ) : null}
@@ -456,21 +676,21 @@ export function AiInsightsView({ initialDateKey }: AiInsightsViewProps) {
           </div>
         ) : null}
 
-        {selectedMethodId && settingsResolved && !isGenerating && !activeError && result ? (
+        {selectedMethodId && settingsResolved && !isGenerating && !activeError && currentResult ? (
           <div className="mx-auto w-full max-w-[1080px] px-6 py-6">
             <div className="grid gap-8 md:grid-cols-[minmax(0,1fr)_240px] md:gap-10">
               <div className="min-w-0 border-t border-stone-200 pt-6">
                 <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-sm text-stone-500">
-                  <span>{result.blockCount} 条块</span>
-                  <span>{result.plannedEntryCount} 项安排</span>
-                  <span>{result.doneEntryCount} 项完成</span>
-                  {result.canceledEntryCount > 0 ? <span>{result.canceledEntryCount} 项取消</span> : null}
+                  <span>{currentResult.blockCount} 条块</span>
+                  <span>{currentResult.plannedEntryCount} 项安排</span>
+                  <span>{currentResult.doneEntryCount} 项完成</span>
+                  {currentResult.canceledEntryCount > 0 ? <span>{currentResult.canceledEntryCount} 项取消</span> : null}
                 </div>
-                {result.topTags.length > 0 ? (
-                  <div className="mt-2 text-sm leading-6 text-stone-400">{result.topTags.map((tag) => `#${tag}`).join(' · ')}</div>
+                {currentResult.topTags.length > 0 ? (
+                  <div className="mt-2 text-sm leading-6 text-stone-400">{currentResult.topTags.map((tag) => `#${tag}`).join(' · ')}</div>
                 ) : null}
                 <div className="mt-6 max-w-[760px]">
-                  <MarkdownContent content={result.content} />
+                  <MarkdownContent content={currentResult.content} />
                 </div>
               </div>
 
@@ -478,20 +698,20 @@ export function AiInsightsView({ initialDateKey }: AiInsightsViewProps) {
                 <div className="space-y-4">
                   <div>
                     <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-stone-400">范围</div>
-                    <div className="mt-1 leading-6">{formatRangeLabel(result.rangeStart, result.rangeEnd)}</div>
+                    <div className="mt-1 leading-6">{formatRangeLabel(currentResult.rangeStart, currentResult.rangeEnd)}</div>
                   </div>
 
                   <div className="border-t border-stone-200 pt-4">
                     <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-stone-400">数据来源</div>
-                    <div className="mt-1 leading-6">引用 {result.sourceBlocks.length} 条块，关联 {result.calendarEntryIds.length} 项安排</div>
+                    <div className="mt-1 leading-6">引用 {currentResult.sourceBlocks.length} 条块，关联 {currentResult.calendarEntryIds.length} 项安排</div>
                   </div>
 
-                  <details open={result.sourceBlocks.length > 0} className="border-t border-stone-200 pt-4">
+                  <details open={currentResult.sourceBlocks.length > 0} className="border-t border-stone-200 pt-4">
                     <summary className="cursor-pointer list-none text-sm font-medium text-stone-800 marker:hidden">
                       查看引用内容
                     </summary>
                     <div className="mt-3 divide-y divide-stone-200">
-                      {result.sourceBlocks.length > 0 ? result.sourceBlocks.map((block) => (
+                      {currentResult.sourceBlocks.length > 0 ? currentResult.sourceBlocks.map((block) => (
                         <div key={block.id} className="py-3 first:pt-0">
                           <div className="text-[11px] uppercase tracking-[0.12em] text-stone-400">{block.date}</div>
                           <div className="mt-1.5 text-sm leading-6 text-stone-800">{block.preview}</div>

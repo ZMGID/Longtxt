@@ -160,6 +160,20 @@ export interface AiInsightSnapshotInput {
   blockIds: string[]
 }
 
+export interface AiInsightHistoryRecord {
+  id: string
+  methodId: AiInsightMethodId
+  date: string
+  rangeStart: string
+  rangeEnd: string
+  title: string
+  content: string
+  blockIds: string[]
+  mode: AIExecutionMode
+  empty: boolean
+  createdAt: string
+}
+
 export interface NotebookSummary {
   id: string
   title: string
@@ -671,6 +685,7 @@ export interface ChangbuApi {
     openWindow(mode: ReviewMode, dateKey?: string): Promise<void>
     generateDaily(dateKey: string, forceRefresh?: boolean): Promise<DailyReviewResult>
     generateInsight(methodId: AiInsightMethodId, dateKey: string, forceRefresh?: boolean): Promise<AiInsightResult>
+    listInsightHistory(methodId?: AiInsightMethodId | null, limit?: number): Promise<AiInsightHistoryRecord[]>
     startDailyGeneration(dateKey: string, forceRefresh?: boolean): Promise<ReviewGenerationStart>
     startInsightGeneration(methodId: AiInsightMethodId, dateKey: string, forceRefresh?: boolean): Promise<ReviewGenerationStart>
     saveDailySnapshot(input: DailyReviewSnapshotInput): Promise<Snapshot>

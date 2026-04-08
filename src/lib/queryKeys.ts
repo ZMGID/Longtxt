@@ -18,6 +18,8 @@ export const queryKeys = {
   reviewRoot: () => ['review'] as const,
   reviewDaily: (date: string, requestVersion = 0) => ['review', 'daily', date, requestVersion] as const,
   reviewInsight: (methodId: string, date: string, requestVersion = 0) => ['review', 'insight', methodId, date, requestVersion] as const,
+  reviewInsightHistoryRoot: () => ['review', 'insight-history'] as const,
+  reviewInsightHistory: (methodId: string | null = null, limit = 30) => ['review', 'insight-history', methodId ?? 'all', limit] as const,
   settingsRoot: () => ['settings'] as const,
   setting: (key: string) => ['settings', key] as const,
   dataManagement: () => ['data-management'] as const,

@@ -1,7 +1,7 @@
 import { useMutation, useQuery } from '@tanstack/react-query'
 
 import { DOC_GENERATION_SETTINGS_KEY, parseDocGenerationSettings } from '../../shared/config'
-import type { AiInsightMethodId, AiInsightSnapshotInput, DailyReviewSnapshotInput } from '../../shared/types'
+import type { AiInsightHistoryRecord, AiInsightMethodId, AiInsightSnapshotInput, DailyReviewSnapshotInput } from '../../shared/types'
 import { changbu } from '../lib/changbu'
 import { queryKeys } from '../lib/queryKeys'
 
@@ -24,6 +24,14 @@ export function useAiInsight(
     queryKey: queryKeys.reviewInsight(methodId, dateKey, requestVersion),
     queryFn: () => changbu.review.generateInsight(methodId, dateKey, forceRefresh),
     enabled: enabled && Boolean(methodId) && Boolean(dateKey),
+  })
+}
+
+export function useAiInsightHistory(methodId: AiInsightMethodId | null = null, enabled = true, limit = 30) {
+  return useQuery<AiInsightHistoryRecord[]>({
+    queryKey: queryKeys.reviewInsightHistory(methodId, limit),
+    queryFn: () => changbu.review.listInsightHistory(methodId, limit),
+    enabled,
   })
 }
 

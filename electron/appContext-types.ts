@@ -4,6 +4,7 @@ import type {
   AttachmentIndexRebuildResult,
   ApiTestResult,
   AppMeta,
+  AiInsightHistoryRecord,
   AiInsightMethodId,
   AiInsightResult,
   AiInsightSnapshotInput,
@@ -112,6 +113,7 @@ export interface AppContext {
   getCalendarDayDetail(date: string): Promise<CalendarDayDetail>
   generateDailyReview(dateKey: string, forceRefresh?: boolean): Promise<DailyReviewResult>
   generateAiInsight(methodId: AiInsightMethodId, dateKey: string, forceRefresh?: boolean): Promise<AiInsightResult>
+  listAiInsightHistory(methodId?: AiInsightMethodId | null, limit?: number): Promise<AiInsightHistoryRecord[]>
   startDailyReviewGeneration(dateKey: string, forceRefresh?: boolean): Promise<ReviewGenerationStart>
   startAiInsightGeneration(methodId: AiInsightMethodId, dateKey: string, forceRefresh?: boolean): Promise<ReviewGenerationStart>
   saveDailyReviewSnapshot(input: DailyReviewSnapshotInput): Promise<Snapshot>

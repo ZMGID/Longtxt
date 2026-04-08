@@ -8,7 +8,7 @@ import { tmpdir } from 'node:os'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { BLOCK_ENRICH_SETTINGS_KEY, CALENDAR_SETTINGS_KEY, DOC_GENERATION_SETTINGS_KEY } from '../../shared/config'
-import type { AIConfig, BlockChangedEvent, DocGenerationChunk, MetaChangedEvent, NotebookChangedEvent } from '../../shared/types'
+import type { AIConfig, BlockChangedEvent, DocGenerationChunk, MetaChangedEvent, NotebookChangedEvent, ReviewGenerationChunk } from '../../shared/types'
 import { createAppContext, type AppContext, type AppContextOptions } from '../appContext'
 import { createConfigFingerprint } from '../services/ai'
 
@@ -1626,6 +1626,7 @@ describe('app context', () => {
     await context.whenIdle()
 
     const result = await context.generateAiInsight('values-clarification', anchorDate)
+    const history = await context.listAiInsightHistory('values-clarification')
 
     global.fetch = originalFetch
 
@@ -1639,6 +1640,112 @@ describe('app context', () => {
     expect(result.content).toContain('这两周主要被什么占据')
     expect(result.blockIds).toHaveLength(2)
     expect(result.sourceBlocks.length).toBeGreaterThan(0)
+    expect(history).toHaveLength(1)
+    expect(history[0]).toMatchObject({
+      methodId: 'values-clarification',
+      date: anchorDate,
+      title: result.title,
+      content: result.content,
+      blockIds: result.blockIds,
+      mode: 'live',
+      empty: false,
+    })
+  })
+
+  it('records streamed ai insight history after generation completes', async () => {
+    const chunks: ReviewGenerationChunk[] = []
+    const context = makeContext({
+      onReviewGenerationChunk: (chunk) => {
+        chunks.push(chunk)
+      },
+    })
+    const anchorDate = formatLocalDate(new Date().toISOString())
+
+    await context.createBlock('这周主要在推进发布窗口、排查异常和补文档。')
+    await context.createCalendarEntry({
+      title: '发布窗口检查',
+      date: anchorDate,
+      startTime: '09:30',
+      allDay: false,
+    })
+    await context.whenIdle()
+
+    const started = await context.startAiInsightGeneration('reverse-thinking', anchorDate)
+    await context.whenIdle()
+
+    const history = await context.listAiInsightHistory('reverse-thinking')
+
+    expect(started.kind).toBe('ai-insight')
+    expect(started.methodId).toBe('reverse-thinking')
+    expect(chunks.some((chunk) => chunk.requestId === started.requestId && chunk.kind === 'ai-insight' && chunk.done)).toBe(true)
+    expect(history).toHaveLength(1)
+    expect(history[0]).toMatchObject({
+      methodId: 'reverse-thinking',
+      date: anchorDate,
+      empty: false,
+    })
+    expect(history[0].content.trim().length).toBeGreaterThan(0)
+  })
+
+  it('records empty ai insight history and skips duplicates on cache hits', async () => {
+    const context = makeContext()
+    const anchorDate = '2026-04-08'
+
+    const first = await context.generateAiInsight('cbt-patterns', anchorDate)
+    const second = await context.generateAiInsight('cbt-patterns', anchorDate)
+    const history = await context.listAiInsightHistory('cbt-patterns')
+
+    expect(second).toBe(first)
+    expect(first.empty).toBe(true)
+    expect(history).toHaveLength(1)
+    expect(history[0]).toMatchObject({
+      methodId: 'cbt-patterns',
+      date: anchorDate,
+      empty: true,
+      content: first.content,
+      blockIds: [],
+    })
+  })
+
+  it('lists ai insight history by method in reverse chronological order', async () => {
+    const context = makeContext()
+    const anchorDate = formatLocalDate(new Date().toISOString())
+
+    await context.createBlock('最近持续推进团队协作、复盘和发布准备。')
+    await context.whenIdle()
+
+    await context.generateAiInsight('mbti-analysis', anchorDate)
+    await new Promise((resolve) => setTimeout(resolve, 5))
+    await context.generateAiInsight('mbti-analysis', anchorDate, true)
+    await new Promise((resolve) => setTimeout(resolve, 5))
+    await context.generateAiInsight('default-insight', anchorDate, true)
+
+    const history = await context.listAiInsightHistory('mbti-analysis')
+
+    expect(history).toHaveLength(2)
+    expect(history.map((record) => record.methodId)).toEqual(['mbti-analysis', 'mbti-analysis'])
+    expect(new Set(history.map((record) => record.id)).size).toBe(2)
+    expect(new Date(history[0].createdAt).getTime()).toBeGreaterThanOrEqual(new Date(history[1].createdAt).getTime())
+    expect(history[0].content).not.toHaveLength(0)
+    expect(history[1].content).not.toHaveLength(0)
+  })
+
+  it('lists ai insight history across all methods in reverse chronological order', async () => {
+    const context = makeContext()
+    const anchorDate = formatLocalDate(new Date().toISOString())
+
+    await context.createBlock('最近反复在写发布说明、跟进风险和补会议纪要。')
+    await context.whenIdle()
+
+    await context.generateAiInsight('default-insight', anchorDate)
+    await new Promise((resolve) => setTimeout(resolve, 5))
+    await context.generateAiInsight('reverse-thinking', anchorDate, true)
+
+    const history = await context.listAiInsightHistory()
+
+    expect(history).toHaveLength(2)
+    expect(history.map((record) => record.methodId)).toEqual(['reverse-thinking', 'default-insight'])
+    expect(new Date(history[0].createdAt).getTime()).toBeGreaterThanOrEqual(new Date(history[1].createdAt).getTime())
   })
 
   it('saves ai insight snapshots as document snapshots', async () => {

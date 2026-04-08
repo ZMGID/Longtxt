@@ -76,6 +76,23 @@ CREATE TABLE IF NOT EXISTS snapshots (
 
 CREATE INDEX IF NOT EXISTS idx_snapshots_created_at ON snapshots (created_at);
 
+CREATE TABLE IF NOT EXISTS ai_insight_history (
+  id TEXT PRIMARY KEY,
+  method_id TEXT NOT NULL,
+  anchor_date TEXT NOT NULL,
+  range_start TEXT NOT NULL,
+  range_end TEXT NOT NULL,
+  title TEXT NOT NULL,
+  content TEXT NOT NULL,
+  block_ids TEXT NOT NULL,
+  mode TEXT NOT NULL,
+  empty INTEGER NOT NULL DEFAULT 0 CHECK (empty IN (0, 1)),
+  created_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_ai_insight_history_method_created_at ON ai_insight_history (method_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_ai_insight_history_created_at ON ai_insight_history (created_at DESC);
+
 CREATE TABLE IF NOT EXISTS calendar_entries (
   id TEXT PRIMARY KEY,
   title TEXT NOT NULL,

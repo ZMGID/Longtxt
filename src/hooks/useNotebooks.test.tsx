@@ -275,6 +275,7 @@ function createNotebookApiMock() {
         sourceBlocks: [],
         empty: true,
       }),
+      listInsightHistory: async () => [],
       startDailyGeneration: async () => ({
         requestId: 'review-request-1',
         kind: 'daily-review',

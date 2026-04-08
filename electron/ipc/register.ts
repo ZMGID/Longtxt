@@ -94,6 +94,8 @@ export function createIpcHandlers(context: AppContext, extraHandlers: Record<str
       context.generateDailyReview(dateKey, forceRefresh),
     [IPC_CHANNELS.review.generateInsight]: (_event: unknown, methodId: Parameters<AppContext['generateAiInsight']>[0], dateKey: string, forceRefresh?: boolean) =>
       context.generateAiInsight(methodId, dateKey, forceRefresh),
+    [IPC_CHANNELS.review.listInsightHistory]: (_event: unknown, methodId: Parameters<AppContext['listAiInsightHistory']>[0], limit?: number) =>
+      context.listAiInsightHistory(methodId, limit),
     [IPC_CHANNELS.review.startDailyGeneration]: (_event: unknown, dateKey: string, forceRefresh?: boolean) =>
       context.startDailyReviewGeneration(dateKey, forceRefresh),
     [IPC_CHANNELS.review.startInsightGeneration]: (

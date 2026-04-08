@@ -153,6 +153,7 @@ const api: ChangbuApi = {
     openWindow: (mode, dateKey) => ipcRenderer.invoke(IPC_CHANNELS.review.openWindow, mode, dateKey),
     generateDaily: (dateKey, forceRefresh) => ipcRenderer.invoke(IPC_CHANNELS.review.generateDaily, dateKey, forceRefresh),
     generateInsight: (methodId, dateKey, forceRefresh) => ipcRenderer.invoke(IPC_CHANNELS.review.generateInsight, methodId, dateKey, forceRefresh),
+    listInsightHistory: (methodId, limit) => ipcRenderer.invoke(IPC_CHANNELS.review.listInsightHistory, methodId, limit),
     startDailyGeneration: (dateKey, forceRefresh) => ipcRenderer.invoke(IPC_CHANNELS.review.startDailyGeneration, dateKey, forceRefresh),
     startInsightGeneration: (methodId, dateKey, forceRefresh) =>
       ipcRenderer.invoke(IPC_CHANNELS.review.startInsightGeneration, methodId, dateKey, forceRefresh),

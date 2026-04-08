@@ -62,6 +62,7 @@ import {
   replaceCalendarSuggestionsForBlock,
   updateCalendarEntry,
 } from './db/calendar'
+import { createAiInsightHistoryRecord, listAiInsightHistoryRecords } from './db/aiInsightHistory'
 import { initializeDatabase } from './db'
 import { getGraphData as loadGraphData } from './db/graph'
 import {
@@ -271,6 +272,20 @@ export function createAppContext(options: AppContextOptions): AppContext {
   function clearDailyReviewCache(): void {
     dailyReviewCache.clear()
     aiInsightCache.clear()
+  }
+
+  function recordAiInsightHistory(result: Awaited<ReturnType<typeof generateAiInsightContent>>): void {
+    createAiInsightHistoryRecord(db, {
+      methodId: result.methodId,
+      date: result.date,
+      rangeStart: result.rangeStart,
+      rangeEnd: result.rangeEnd,
+      title: result.title,
+      content: result.content,
+      blockIds: result.blockIds,
+      mode: result.mode,
+      empty: result.empty,
+    })
   }
 
   function getExternalAccessOptions() {
@@ -1679,6 +1694,7 @@ export function createAppContext(options: AppContextOptions): AppContext {
           })
 
           aiInsightCache.set(cacheKey, result)
+          recordAiInsightHistory(result)
 
           if (mode === 'live' && clearRuntimeAiError()) {
             emitMetaChanged({
@@ -1700,6 +1716,14 @@ export function createAppContext(options: AppContextOptions): AppContext {
       })()
 
       return trackTask(task)
+    },
+
+    async listAiInsightHistory(methodId = null, limit = 30) {
+      if (methodId !== null && methodId !== undefined && !isAiInsightMethodId(methodId)) {
+        throw new Error('未知的 AI 洞察方法。')
+      }
+
+      return listAiInsightHistoryRecords(db, methodId ?? null, limit)
     },
 
     async startDailyReviewGeneration(dateKey, forceRefresh = false) {
@@ -1832,6 +1856,7 @@ export function createAppContext(options: AppContextOptions): AppContext {
 
         if (prepared.emptyResult) {
           aiInsightCache.set(cacheKey, prepared.emptyResult)
+          recordAiInsightHistory(prepared.emptyResult)
           emitAiInsightResultChunk(start, prepared.emptyResult)
           return
         }
@@ -1870,6 +1895,7 @@ export function createAppContext(options: AppContextOptions): AppContext {
           })
 
           aiInsightCache.set(cacheKey, result)
+          recordAiInsightHistory(result)
 
           if (mode === 'live' && clearRuntimeAiError()) {
             emitMetaChanged({

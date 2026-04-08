@@ -77,6 +77,7 @@ export const IPC_CHANNELS = {
     openWindow: 'review:open-window',
     generateDaily: 'review:generate-daily',
     generateInsight: 'review:generate-insight',
+    listInsightHistory: 'review:list-insight-history',
     startDailyGeneration: 'review:start-daily-generation',
     startInsightGeneration: 'review:start-insight-generation',
     saveDailySnapshot: 'review:save-daily-snapshot',
