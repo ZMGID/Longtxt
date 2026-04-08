@@ -5,8 +5,9 @@ import { fileURLToPath } from 'node:url'
 import { app, BrowserWindow, dialog, nativeImage, protocol, shell } from 'electron'
 
 import { IPC_CHANNELS } from '../shared/ipc'
-import type { BlockChangedEvent, CalendarChangedEvent, DocGenerationChunk, MetaChangedEvent, NotebookChangedEvent } from '../shared/types'
+import type { BlockChangedEvent, CalendarChangedEvent, DocGenerationChunk, MetaChangedEvent, NotebookChangedEvent, ReviewGenerationChunk } from '../shared/types'
 import { createAppContext, type AppContext } from './appContext'
+import { runChangbuCli } from './cli'
 import { registerIpcHandlers } from './ipc/register'
 
 const isDevelopment = Boolean(process.env.VITE_DEV_SERVER_URL)
@@ -17,10 +18,16 @@ const preloadPath = join(__dirname, 'preload.cjs')
 const ATTACHMENT_PROTOCOL = 'changbu-attachment'
 let mainWindow: BrowserWindow | null = null
 let settingsWindow: BrowserWindow | null = null
+let reviewWindow: BrowserWindow | null = null
 let appContext: AppContext | null = null
 let unregisterHandlers: (() => void) | null = null
 let isQuitting = false
 let quitTask: Promise<void> | null = null
+const cliArgs = (() => {
+  const cliIndex = process.argv.indexOf('--cli')
+  return cliIndex === -1 ? null : process.argv.slice(cliIndex + 1)
+})()
+const isCliMode = cliArgs !== null
 
 protocol.registerSchemesAsPrivileged([
   {
@@ -37,7 +44,7 @@ protocol.registerSchemesAsPrivileged([
 
 function sendEvent(
   channel: string,
-  payload: BlockChangedEvent | NotebookChangedEvent | MetaChangedEvent | CalendarChangedEvent | DocGenerationChunk | { waiting: boolean },
+  payload: BlockChangedEvent | NotebookChangedEvent | MetaChangedEvent | CalendarChangedEvent | DocGenerationChunk | ReviewGenerationChunk | { waiting: boolean },
 ): void {
   for (const window of BrowserWindow.getAllWindows()) {
     if (!window.isDestroyed()) {
@@ -194,6 +201,8 @@ function finishQuit(): void {
   unregisterHandlers = null
   settingsWindow?.destroy()
   settingsWindow = null
+  reviewWindow?.destroy()
+  reviewWindow = null
   mainWindow?.destroy()
   app.quit()
 }
@@ -215,11 +224,26 @@ function requestAppQuit(): void {
   })()
 }
 
-function loadRendererWindow(window: BrowserWindow, mode: 'main' | 'settings' = 'main'): void {
+function loadRendererWindow(
+  window: BrowserWindow,
+  mode: 'main' | 'settings' | 'review' = 'main',
+  options: { reviewMode?: string; dateKey?: string } = {},
+): void {
   if (isDevelopment && process.env.VITE_DEV_SERVER_URL) {
-    if (mode === 'settings') {
+    if (mode === 'settings' || mode === 'review') {
       const url = new URL(process.env.VITE_DEV_SERVER_URL)
-      url.searchParams.set('window', 'settings')
+      url.searchParams.set('window', mode)
+
+      if (mode === 'review') {
+        if (options.reviewMode) {
+          url.searchParams.set('mode', options.reviewMode)
+        }
+
+        if (options.dateKey) {
+          url.searchParams.set('date', options.dateKey)
+        }
+      }
+
       void window.loadURL(url.toString())
       return
     }
@@ -228,10 +252,12 @@ function loadRendererWindow(window: BrowserWindow, mode: 'main' | 'settings' = '
     return
   }
 
-  if (mode === 'settings') {
+  if (mode === 'settings' || mode === 'review') {
     void window.loadFile(join(__dirname, '..', 'dist', 'index.html'), {
       query: {
-        window: 'settings',
+        window: mode,
+        ...(mode === 'review' && options.reviewMode ? { mode: options.reviewMode } : {}),
+        ...(mode === 'review' && options.dateKey ? { date: options.dateKey } : {}),
       },
     })
     return
@@ -245,7 +271,7 @@ function createMainWindow(): BrowserWindow {
   const window = new BrowserWindow({
     width: 1220,
     height: 820,
-    minWidth: 760,
+    minWidth: 620,
     minHeight: 560,
     backgroundColor: '#f5f5f5',
     title: '长布',
@@ -321,6 +347,47 @@ function createSettingsWindow(): BrowserWindow {
   return window
 }
 
+function createReviewWindow(reviewMode: string, dateKey?: string): BrowserWindow {
+  const icon = resolveWindowIcon()
+  const reviewWindowTitle = reviewMode === 'ai-insights'
+    ? 'AI 洞察 - 长布'
+    : reviewMode === 'recent-shifts'
+      ? '近期变化 - 长布'
+      : '每日回顾 - 长布'
+  const window = new BrowserWindow({
+    width: 920,
+    height: 700,
+    minWidth: 760,
+    minHeight: 560,
+    backgroundColor: '#f7f5f2',
+    title: reviewWindowTitle,
+    titleBarStyle: process.platform === 'darwin' ? 'hidden' : 'default',
+    ...(icon ? { icon } : {}),
+    webPreferences: {
+      preload: preloadPath,
+      contextIsolation: true,
+      sandbox: false,
+    },
+  })
+
+  loadRendererWindow(window, 'review', { reviewMode, dateKey })
+
+  if (process.platform === 'darwin') {
+    window.setWindowButtonVisibility(false)
+  }
+
+  window.webContents.on('did-finish-load', () => {
+    window.webContents.setZoomFactor(DEFAULT_ZOOM_FACTOR)
+  })
+
+  window.webContents.setWindowOpenHandler(({ url }) => {
+    void shell.openExternal(url)
+    return { action: 'deny' }
+  })
+
+  return window
+}
+
 function openMainWindow(): BrowserWindow {
   const window = createMainWindow()
   mainWindow = window
@@ -352,6 +419,35 @@ function openSettingsWindow(): BrowserWindow {
   return window
 }
 
+function openReviewWindow(reviewMode: string, dateKey?: string): BrowserWindow {
+  if (reviewWindow && !reviewWindow.isDestroyed()) {
+    reviewWindow.setTitle(
+      reviewMode === 'ai-insights'
+        ? 'AI 洞察 - 长布'
+        : reviewMode === 'recent-shifts'
+          ? '近期变化 - 长布'
+          : '每日回顾 - 长布',
+    )
+    loadRendererWindow(reviewWindow, 'review', { reviewMode, dateKey })
+
+    if (reviewWindow.isMinimized()) {
+      reviewWindow.restore()
+    }
+
+    reviewWindow.focus()
+    return reviewWindow
+  }
+
+  const window = createReviewWindow(reviewMode, dateKey)
+  reviewWindow = window
+  window.on('closed', () => {
+    if (reviewWindow === window) {
+      reviewWindow = null
+    }
+  })
+  return window
+}
+
 async function bootstrap(): Promise<void> {
   const userDataDirectory = app.getPath('userData')
   const dataDirectory = join(userDataDirectory, 'data')
@@ -363,6 +459,10 @@ async function bootstrap(): Promise<void> {
   appContext = createAppContext({
     dataDirectory,
     settingsFilePath,
+    cliLaunchSpec: {
+      executablePath: process.execPath,
+      args: app.isPackaged ? [] : [join(__dirname, 'main.cjs')],
+    },
     openPath: shell.openPath,
     chooseOpenPaths: async ({ title, filters, properties }) => {
       const result = await dialog.showOpenDialog({
@@ -395,18 +495,57 @@ async function bootstrap(): Promise<void> {
     onMetaChanged: (event) => sendEvent(IPC_CHANNELS.events.metaChanged, event),
     onCalendarChanged: (event) => sendEvent(IPC_CHANNELS.events.calendarChanged, event),
     onDocGenerationChunk: (chunk) => sendEvent(IPC_CHANNELS.events.docGenerationChunk, chunk),
+    onReviewGenerationChunk: (chunk) => sendEvent(IPC_CHANNELS.events.reviewGenerationChunk, chunk),
   })
 
   unregisterHandlers = registerIpcHandlers(appContext, {
     [IPC_CHANNELS.settings.openWindow]: () => {
       openSettingsWindow()
     },
+    [IPC_CHANNELS.review.openWindow]: (_event: unknown, ...args: unknown[]) => {
+      const [reviewMode, dateKey] = args as [string, string | undefined]
+      openReviewWindow(reviewMode, dateKey)
+    },
   })
   openMainWindow()
 }
 
+async function runCliMode(args: string[]): Promise<void> {
+  const userDataDirectory = app.getPath('userData')
+  const dataDirectory = join(userDataDirectory, 'data')
+  const settingsFilePath = join(userDataDirectory, 'changbu-settings.json')
+  const context = createAppContext({
+    dataDirectory,
+    settingsFilePath,
+    cliLaunchSpec: {
+      executablePath: process.execPath,
+      args: app.isPackaged ? [] : [join(__dirname, 'main.cjs')],
+    },
+  })
+
+  let exitCode = 0
+
+  try {
+    exitCode = await runChangbuCli(context, args)
+    await context.whenIdle()
+  } catch (error) {
+    exitCode = 1
+    process.stderr.write(`${error instanceof Error ? error.message : 'CLI 执行失败。'}\n`)
+  } finally {
+    context.dispose()
+    isQuitting = true
+    app.exit(exitCode)
+  }
+}
+
 app.whenReady().then(() => {
   app.setName(APP_NAME)
+
+  if (isCliMode) {
+    void runCliMode(cliArgs ?? [])
+    return
+  }
+
   void bootstrap()
 
   app.on('activate', () => {
@@ -424,12 +563,20 @@ app.whenReady().then(() => {
 })
 
 app.on('window-all-closed', () => {
+  if (isCliMode) {
+    return
+  }
+
   if (process.platform !== 'darwin') {
     app.quit()
   }
 })
 
 app.on('before-quit', (event) => {
+  if (isCliMode) {
+    return
+  }
+
   if (isQuitting || !appContext) {
     return
   }

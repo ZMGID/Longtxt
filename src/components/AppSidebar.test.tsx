@@ -71,4 +71,25 @@ describe('AppSidebar', () => {
     expect(handleSelectView).toHaveBeenCalledWith('notebooks')
     expect(handleSelectView).toHaveBeenCalledWith('data-management')
   })
+
+  it('opens settings through the dedicated callback', () => {
+    const handleOpenSettings = vi.fn()
+    const handleSelectView = vi.fn()
+
+    render(
+      <AppSidebar
+        activeView="timeline"
+        blockCount={20}
+        aiStatusLabel="已启用 live AI"
+        meta={sampleMeta}
+        onSelectView={handleSelectView}
+        onOpenSettings={handleOpenSettings}
+      />,
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: '设置' }))
+
+    expect(handleOpenSettings).toHaveBeenCalledTimes(1)
+    expect(handleSelectView).not.toHaveBeenCalled()
+  })
 })

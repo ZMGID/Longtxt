@@ -4,6 +4,9 @@ import type {
   AttachmentIndexRebuildResult,
   ApiTestResult,
   AppMeta,
+  AiInsightMethodId,
+  AiInsightResult,
+  AiInsightSnapshotInput,
   Block,
   BlockBatchRemoveResult,
   BlockChangedEvent,
@@ -14,9 +17,12 @@ import type {
   CalendarEntryPatch,
   CalendarHeatmap,
   CalendarSuggestionAcceptInput,
+  DailyReviewResult,
+  DailyReviewSnapshotInput,
   DocGenerationChunk,
   DocGenerationStart,
   ExportOptions,
+  ExternalAccessStatus,
   GraphEdge,
   GraphNode,
   ImportConflictStrategy,
@@ -33,6 +39,8 @@ import type {
   DataManagementOverview,
   PaginationInput,
   RelatedBlockResult,
+  ReviewGenerationChunk,
+  ReviewGenerationStart,
   SearchResult,
   Snapshot,
   TagSuggestion,
@@ -53,11 +61,17 @@ export interface VectorIndexState {
 export interface AppContextOptions {
   dataDirectory: string
   settingsFilePath?: string
+  cliLaunchSpec?: {
+    executablePath: string
+    args?: string[]
+  }
+  externalSkillRootDirectory?: string
   onBlockChanged?: (event: BlockChangedEvent) => void
   onNotebooksChanged?: (event: NotebookChangedEvent) => void
   onMetaChanged?: (event: MetaChangedEvent) => void
   onCalendarChanged?: (event: CalendarChangedEvent) => void
   onDocGenerationChunk?: (chunk: DocGenerationChunk) => void
+  onReviewGenerationChunk?: (chunk: ReviewGenerationChunk) => void
   openPath?: (path: string) => Promise<string>
   chooseOpenPaths?: (options: {
     title: string
@@ -96,6 +110,12 @@ export interface AppContext {
   listCalendarYears(): Promise<number[]>
   getCalendarHeatmap(year: number): Promise<CalendarHeatmap>
   getCalendarDayDetail(date: string): Promise<CalendarDayDetail>
+  generateDailyReview(dateKey: string, forceRefresh?: boolean): Promise<DailyReviewResult>
+  generateAiInsight(methodId: AiInsightMethodId, dateKey: string, forceRefresh?: boolean): Promise<AiInsightResult>
+  startDailyReviewGeneration(dateKey: string, forceRefresh?: boolean): Promise<ReviewGenerationStart>
+  startAiInsightGeneration(methodId: AiInsightMethodId, dateKey: string, forceRefresh?: boolean): Promise<ReviewGenerationStart>
+  saveDailyReviewSnapshot(input: DailyReviewSnapshotInput): Promise<Snapshot>
+  saveAiInsightSnapshot(input: AiInsightSnapshotInput): Promise<Snapshot>
   listUpcomingCalendarEntries(limitDays?: number): Promise<CalendarEntry[]>
   createCalendarEntry(input: CalendarEntryInput): Promise<CalendarEntry>
   updateCalendarEntry(id: string, patch: CalendarEntryPatch): Promise<CalendarEntry>
@@ -136,6 +156,12 @@ export interface AppContext {
   getMeta(): Promise<AppMeta>
   openDataDirectory(): Promise<void>
   openSettingsDirectory(): Promise<void>
+  getExternalAccessStatus(): Promise<ExternalAccessStatus>
+  enableExternalAccess(): Promise<ExternalAccessStatus>
+  generateExternalAccessBundle(): Promise<ExternalAccessStatus>
+  setupExternalAccess(): Promise<ExternalAccessStatus>
+  disableExternalAccess(): Promise<ExternalAccessStatus>
+  openExternalAccessDirectory(): Promise<void>
   retryFailedVectors(): Promise<number>
   whenIdle(): Promise<void>
   dispose(): void

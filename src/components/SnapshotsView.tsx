@@ -363,6 +363,11 @@ export function SnapshotsView({
                 {importPreview.format.toUpperCase()} · {importPreview.totalFiles} 个文件 / {importPreview.totalBlocks} 个块
                 {` · 冲突 ${importPreview.conflicts}`}
               </div>
+              {importPreview.includesSettings ? (
+                <div className="mt-1 text-xs leading-5 text-amber-800">
+                  含设置快照 · {importPreview.settingsEntryCount ?? 0} 项设置会在导入时一并恢复
+                </div>
+              ) : null}
               <div className="mt-3 space-y-1 text-xs leading-5 text-amber-800">
                 {importPreview.samples.map((sample) => (
                   <p key={`${sample.filename}-${sample.preview}`}>{sample.filename}：{sample.preview}</p>

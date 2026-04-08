@@ -1,7 +1,7 @@
 import { ipcMain } from 'electron'
 
 import { IPC_CHANNELS } from '../../shared/ipc'
-import type { RendererExportOptions } from '../../shared/types'
+import type { AiInsightSnapshotInput, DailyReviewSnapshotInput, RendererExportOptions } from '../../shared/types'
 import type { AppContext } from '../appContext'
 
 type IpcHandler = (event: unknown, ...args: unknown[]) => unknown
@@ -9,6 +9,7 @@ type IpcHandler = (event: unknown, ...args: unknown[]) => unknown
 function sanitizeExportOptions(options: Partial<RendererExportOptions> | undefined): RendererExportOptions {
   return {
     includeAttachments: Boolean(options?.includeAttachments),
+    includeSettings: Boolean(options?.includeSettings),
     tagFilter: options?.tagFilter,
     dateRange: options?.dateRange,
   }
@@ -89,12 +90,34 @@ export function createIpcHandlers(context: AppContext, extraHandlers: Record<str
     [IPC_CHANNELS.data.cleanupOrphanAttachments]: () => context.cleanupOrphanAttachments(),
     [IPC_CHANNELS.data.rebuildAttachmentIndex]: () => context.rebuildAttachmentIndex(),
     [IPC_CHANNELS.data.rebuildAllVectors]: () => context.rebuildAllVectors(),
+    [IPC_CHANNELS.review.generateDaily]: (_event: unknown, dateKey: string, forceRefresh?: boolean) =>
+      context.generateDailyReview(dateKey, forceRefresh),
+    [IPC_CHANNELS.review.generateInsight]: (_event: unknown, methodId: Parameters<AppContext['generateAiInsight']>[0], dateKey: string, forceRefresh?: boolean) =>
+      context.generateAiInsight(methodId, dateKey, forceRefresh),
+    [IPC_CHANNELS.review.startDailyGeneration]: (_event: unknown, dateKey: string, forceRefresh?: boolean) =>
+      context.startDailyReviewGeneration(dateKey, forceRefresh),
+    [IPC_CHANNELS.review.startInsightGeneration]: (
+      _event: unknown,
+      methodId: Parameters<AppContext['generateAiInsight']>[0],
+      dateKey: string,
+      forceRefresh?: boolean,
+    ) => context.startAiInsightGeneration(methodId, dateKey, forceRefresh),
+    [IPC_CHANNELS.review.saveDailySnapshot]: (_event: unknown, input: DailyReviewSnapshotInput) =>
+      context.saveDailyReviewSnapshot(input),
+    [IPC_CHANNELS.review.saveInsightSnapshot]: (_event: unknown, input: AiInsightSnapshotInput) =>
+      context.saveAiInsightSnapshot(input),
     [IPC_CHANNELS.settings.get]: (_event: unknown, key: string) => context.getSetting(key),
     [IPC_CHANNELS.settings.set]: (_event: unknown, key: string, value: string) => context.setSetting(key, value),
     [IPC_CHANNELS.settings.testApi]: (_event: unknown, config: Parameters<AppContext['testApi']>[0]) => context.testApi(config),
     [IPC_CHANNELS.settings.openDataDirectory]: () => context.openDataDirectory(),
     [IPC_CHANNELS.settings.openSettingsDirectory]: () => context.openSettingsDirectory(),
     [IPC_CHANNELS.settings.getMeta]: () => context.getMeta(),
+    [IPC_CHANNELS.settings.getExternalAccessStatus]: () => context.getExternalAccessStatus(),
+    [IPC_CHANNELS.settings.enableExternalAccess]: () => context.enableExternalAccess(),
+    [IPC_CHANNELS.settings.generateExternalAccessBundle]: () => context.generateExternalAccessBundle(),
+    [IPC_CHANNELS.settings.setupExternalAccess]: () => context.setupExternalAccess(),
+    [IPC_CHANNELS.settings.disableExternalAccess]: () => context.disableExternalAccess(),
+    [IPC_CHANNELS.settings.openExternalAccessDirectory]: () => context.openExternalAccessDirectory(),
     [IPC_CHANNELS.vectors.retryFailed]: () => context.retryFailedVectors(),
     ...extraHandlers,
   }

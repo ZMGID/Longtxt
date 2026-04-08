@@ -1,9 +1,12 @@
-import { render, screen } from '@testing-library/react'
-import { Fragment, forwardRef, type ComponentProps, type ReactNode } from 'react'
-import { describe, expect, it, vi } from 'vitest'
+import { render, screen, waitFor } from '@testing-library/react'
+import { Fragment, forwardRef, useImperativeHandle, type ComponentProps, type ReactNode } from 'react'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import type { VirtuosoHandle } from 'react-virtuoso'
 
 import type { Block } from '../../shared/types'
 import { Timeline } from './Timeline'
+
+const scrollToIndexMock = vi.fn()
 
 vi.mock('react-virtuoso', async () => {
   type MockVirtuosoProps = ComponentProps<typeof Timeline>['blocks'] extends Block[]
@@ -17,9 +20,11 @@ vi.mock('react-virtuoso', async () => {
       }
     : never
 
-  const MockVirtuoso = forwardRef<HTMLDivElement, MockVirtuosoProps>(function MockVirtuoso(props, _ref) {
+  const MockVirtuoso = forwardRef<VirtuosoHandle, MockVirtuosoProps>(function MockVirtuoso(props, _ref) {
     const { data, itemContent, components, rangeChanged } = props
     const Footer = components?.Footer
+
+    useImperativeHandle(_ref, () => ({ scrollToIndex: scrollToIndexMock }) as unknown as VirtuosoHandle)
 
     rangeChanged?.({
       startIndex: 0,
@@ -81,6 +86,15 @@ function renderTimeline(showMiniTimeline: boolean) {
   )
 }
 
+afterEach(() => {
+  Object.defineProperty(window, 'innerWidth', {
+    configurable: true,
+    writable: true,
+    value: 1024,
+  })
+  vi.clearAllMocks()
+})
+
 describe('Timeline', () => {
   it('renders the mini timeline when enabled', () => {
     renderTimeline(true)
@@ -94,5 +108,67 @@ describe('Timeline', () => {
     renderTimeline(false)
 
     expect(screen.queryByTestId('mini-timeline')).not.toBeInTheDocument()
+  })
+
+  it('automatically hides the mini timeline on narrow viewports to avoid layout crowding', () => {
+    Object.defineProperty(window, 'innerWidth', {
+      configurable: true,
+      writable: true,
+      value: 640,
+    })
+
+    renderTimeline(true)
+
+    expect(screen.queryByTestId('mini-timeline')).not.toBeInTheDocument()
+  })
+
+  it('scrolls to the matching date when focusedDateKey changes', async () => {
+    render(
+      <Timeline
+        blocks={sampleBlocks}
+        loading={false}
+        loadingMore={false}
+        hasMore={false}
+        showMiniTimeline
+        tagSuggestions={[]}
+        onSave={vi.fn()}
+        onDelete={vi.fn()}
+        onAddTag={vi.fn()}
+        onRemoveTag={vi.fn()}
+        onTagClick={vi.fn()}
+        onLoadMore={vi.fn()}
+        focusedDateKey="2026-03-30"
+      />,
+    )
+
+    await waitFor(() => {
+      expect(scrollToIndexMock).toHaveBeenCalledWith({ index: 1, align: 'start', behavior: 'auto' })
+    })
+  })
+
+  it('reports the visible active date back to the workspace', async () => {
+    const onActiveDateKeyChange = vi.fn()
+
+    render(
+      <Timeline
+        blocks={sampleBlocks}
+        loading={false}
+        loadingMore={false}
+        hasMore={false}
+        showMiniTimeline
+        tagSuggestions={[]}
+        onSave={vi.fn()}
+        onDelete={vi.fn()}
+        onAddTag={vi.fn()}
+        onRemoveTag={vi.fn()}
+        onTagClick={vi.fn()}
+        onLoadMore={vi.fn()}
+        onActiveDateKeyChange={onActiveDateKeyChange}
+      />,
+    )
+
+    await waitFor(() => {
+      expect(onActiveDateKeyChange).toHaveBeenCalledWith('2026-03-31')
+    })
   })
 })

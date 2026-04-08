@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto'
 
-import type { AIConfig, AIEndpointConfig, AIExecutionMode, ApiTestResult, Block } from '../../shared/types'
+import { getAiInsightMethodDefinition } from '../../shared/aiInsights'
+import type { AIConfig, AIEndpointConfig, AIExecutionMode, AiInsightMethodId, ApiTestResult, Block, CalendarEntryStatus } from '../../shared/types'
 
 const EMBEDDING_TIMEOUT_MS = 30_000
 const CHAT_TIMEOUT_MS = 90_000
@@ -96,6 +97,72 @@ export interface CalendarSuggestionExtractionResult {
   evidenceText: string | null
 }
 
+export interface DailyReviewGenerationInput {
+  date: string
+  blockCount: number
+  plannedEntryCount: number
+  doneEntryCount: number
+  canceledEntryCount: number
+  topTags: string[]
+  blocks: Array<{
+    id: string
+    createdAt: string
+    preview: string
+    content: string
+    summary?: string | null
+    tags: string[]
+  }>
+  entries: Array<{
+    id: string
+    title: string
+    notes: string | null
+    startTime: string | null
+    allDay: boolean
+    status: CalendarEntryStatus
+  }>
+}
+
+export interface AiInsightGenerationInput {
+  methodId: AiInsightMethodId
+  methodLabel: string
+  promptPreset: string
+  anchorDate: string
+  rangeStart: string
+  rangeEnd: string
+  blockCount: number
+  plannedEntryCount: number
+  doneEntryCount: number
+  canceledEntryCount: number
+  topTags: string[]
+  dayDigests: Array<{
+    date: string
+    blockCount: number
+    topTags: string[]
+    previews: string[]
+    plannedEntryCount: number
+    doneEntryCount: number
+    canceledEntryCount: number
+  }>
+  blocks: Array<{
+    id: string
+    date: string
+    createdAt: string
+    preview: string
+    content: string
+    summary?: string | null
+    tags: string[]
+  }>
+  entries: Array<{
+    id: string
+    date: string
+    title: string
+    notes: string | null
+    startTime: string | null
+    allDay: boolean
+    status: CalendarEntryStatus
+  }>
+}
+
 interface ChatMessage {
   role: 'system' | 'user' | 'assistant'
   content: string
@@ -127,9 +194,13 @@ export interface LLMProvider {
     blocks: Block[],
     context?: { writingGuide?: string | null; temperature?: number; maxTokens?: number },
   ): AsyncGenerator<string>
+  streamDailyReview(input: DailyReviewGenerationInput): AsyncGenerator<string>
+  streamAiInsight(input: AiInsightGenerationInput): AsyncGenerator<string>
   suggestTags(input: TagSuggestionInput): Promise<TagSuggestionResult>
   suggestTagsBatch(inputs: TagSuggestionInput[], options?: TagSuggestionBatchOptions): Promise<TagSuggestionResult[]>
   extractCalendarSuggestions(input: CalendarSuggestionExtractionInput): Promise<CalendarSuggestionExtractionResult[]>
+  generateDailyReview(input: DailyReviewGenerationInput): Promise<string>
+  generateAiInsight(input: AiInsightGenerationInput): Promise<string>
 }
 
 function textToVector(text: string, dimension: number): number[] {
@@ -560,6 +631,191 @@ function buildMockDocument(topic: string, blocks: Block[], writingGuide?: string
   ].join('\n')
 }
 
+function formatEntryTimeLabel(entry: DailyReviewGenerationInput['entries'][number]): string {
+  if (entry.allDay || !entry.startTime) {
+    return '全天'
+  }
+
+  return entry.startTime
+}
+
+function buildMockDailyReview(input: DailyReviewGenerationInput): string {
+  const tagText = input.topTags.length > 0 ? input.topTags.map((tag) => `#${tag}`).join('、') : '暂时还没有形成特别稳定的主题'
+  const firstParagraph = [
+    `${input.date} 这一天一共留下了 ${input.blockCount} 条记录，`,
+    input.entries.length > 0
+      ? `同时还有 ${input.plannedEntryCount} 项待办、${input.doneEntryCount} 项完成、${input.canceledEntryCount} 项取消的安排。`
+      : '这一天没有额外的日历安排，节奏主要体现在笔记本身。',
+    `从内容上看，今天更靠近 ${tagText} 这些线索。`,
+  ].join('')
+
+  const entryParagraph = input.entries.length > 0
+    ? `日历上的安排把这一天切成了几个清晰的节点：${input.entries
+      .slice(0, 5)
+      .map((entry) => `${formatEntryTimeLabel(entry)}的「${entry.title}」${entry.status === 'done' ? '已经完成' : entry.status === 'canceled' ? '后来取消了' : '仍然是今天的重要安排'}`)
+      .join('，')}。`
+    : '因为没有排定的日历事项，这一天更像是一种连续推进：想到什么、记下什么，再慢慢把零散的线头拢到一起。'
+
+  const blockParagraphs = input.blocks.slice(0, 4).map((block, index) => {
+    const tagLabel = block.tags.length > 0 ? `，也能看出它和 ${block.tags.slice(0, 3).join('、')} 这些主题相关` : ''
+    return `${index === 0 ? '回看内容，最先浮出来的是' : '接着是'}“${block.preview}”${tagLabel}。这条记录把今天的一段具体注意力留了下来，也让整天的脉络不只是安排表上的几个时间点。`
+  })
+
+  const closingParagraph = input.blockCount > 0
+    ? `把这些块串起来看，今天并不是被单一事件定义的一天，而是几条线索并行推进的一天。它们有的已经落地，有的还停在草稿和提醒的阶段，但合在一起，已经能看出这一天真正被什么占据。`
+    : '今天还没有留下具体块内容，所以现在更像是一个空白的页脚：结构已经在，真正的叙述还要等你把这一天写下来。'
+
+  return [
+    firstParagraph,
+    entryParagraph,
+    ...blockParagraphs,
+    closingParagraph,
+  ]
+    .filter(Boolean)
+    .join('\n\n')
+}
+
+function sanitizeLongformMarkdownResponse(text: string): string {
+  const withoutFence = text
+    .replace(/^```(?:markdown|md)?\s*/i, '')
+    .replace(/\s*```$/i, '')
+    .trim()
+  const lines = withoutFence.split('\n')
+
+  if (lines[0]?.trim().match(/^#\s+/)) {
+    return lines.slice(1).join('\n').trim()
+  }
+
+  return withoutFence
+}
+
+export function sanitizeDailyReviewResponse(text: string): string {
+  return sanitizeLongformMarkdownResponse(text)
+}
+
+function buildAiInsightLead(input: AiInsightGenerationInput): {
+  methodLabel: string
+  tagsLabel: string
+  busiestDayLabel: string
+  newestPreview: string
+  entryLabel: string
+  reviewSpanLabel: string
+} {
+  const method = getAiInsightMethodDefinition(input.methodId)
+  const tagsLabel = input.topTags.length > 0 ? input.topTags.map((tag) => `#${tag}`).join('、') : '还没有稳定成型的主题'
+  const busiestDay = [...input.dayDigests].sort((left, right) => right.blockCount - left.blockCount || right.date.localeCompare(left.date))[0]
+  const newestPreview = input.blocks[0]?.preview ?? '这段时间还没有留下明显的块线索'
+  const entryLabel = input.entries.length > 0
+    ? `安排 ${input.plannedEntryCount} 项，完成 ${input.doneEntryCount} 项，取消 ${input.canceledEntryCount} 项`
+    : '这段时间没有额外的日历安排'
+
+  return {
+    methodLabel: method?.label ?? input.methodLabel,
+    tagsLabel,
+    busiestDayLabel: busiestDay ? `${busiestDay.date}（${busiestDay.blockCount} 条块）` : '暂无明显高峰日',
+    newestPreview,
+    entryLabel,
+    reviewSpanLabel: `${input.rangeStart} 至 ${input.rangeEnd}`,
+  }
+}
+
+function buildMockAiInsight(input: AiInsightGenerationInput): string {
+  const lead = buildAiInsightLead(input)
+  const previewList = input.blocks.slice(0, 3).map((block) => `- ${block.date} · ${block.preview}`).join('\n') || '- 暂无重点块'
+
+  switch (input.methodId) {
+    case 'values-clarification':
+      return [
+        '## 反复投入说明了什么',
+        `在「${lead.methodLabel}」视角下看，${lead.reviewSpanLabel} 这段时间里，注意力最稳定地落在 ${lead.tagsLabel} 这些主题上。比起一次性的突发任务，更值得注意的是你愿意持续回到这些线索上，说明它们更接近“真正重要”的事项，而不只是顺手处理。`,
+        '',
+        '## 哪些事情更像被动消耗',
+        `从节奏上看，最容易把注意力拖散的不是单个任务，而是来回切换带来的残留负担。${lead.entryLabel} 让时间被切成几个节点，但真正占住脑力的往往还是块里反复出现的主题。当前最醒目的例子是「${lead.newestPreview}」。`,
+        '',
+        '## 现在更值得保护的投入',
+        '如果接下来只能保住少数几条线索，优先级应该给那些既反复出现、又已经形成具体记录的方向，而不是临时冒出来却没有延续的事项。可以把它们理解为：你已经用时间投票过的主题。',
+        '',
+        '## 这两周的样本依据',
+        previewList,
+      ].join('\n')
+    case 'reverse-thinking':
+      return [
+        '## 如果要让接下来更糟',
+        `最直接的办法就是继续让 ${lead.tagsLabel} 这些线索处在“想到了就记一笔，但不做收束”的状态。这样短期看似没有停下，长期却会让每条线都停在半完成。`,
+        '',
+        '## 风险其实已经露头',
+        `从最近样本看，最典型的风险不是完全没做，而是做了很多局部推进，却没有及时把高频主题并轨。高峰日出现在 ${lead.busiestDayLabel}，说明注意力并不缺，缺的是把推进结果压缩成下一步动作的动作。`,
+        '',
+        '## 反过来最有效的做法',
+        '与其追求再多加几条新线，不如每次只选一条已经反复出现的主题，把它推进到“可交付、可回顾、可继续”的状态。逆向来看，能避免变糟的关键不是更努力，而是减少并行扩张。',
+        '',
+        '## 当前最值得先收束的线索',
+        previewList,
+      ].join('\n')
+    case 'second-order-thinking':
+      return [
+        '## 短期上看起来有效的动作',
+        `最近两周里，你已经把不少时间投入到 ${lead.tagsLabel} 上，短期收益是推进感更强、上下文更完整，尤其是像「${lead.newestPreview}」这样的记录，会立刻带来清晰感。`,
+        '',
+        '## 二阶影响更值得看',
+        `但二阶后果不只取决于有没有推进，还取决于推进方式。如果这些事项总在高峰日集中爆发、平时缺少收束，它们后面会持续制造切换成本。${lead.entryLabel} 本身不是问题，真正的问题是它们是否把后续行动组织出来。`,
+        '',
+        '## 哪些动作正在积累复利',
+        '凡是同时满足“反复出现”“有明确块记录”“能接到下一步”的动作，都在积累复利。它们会让未来的检索、回顾和安排越来越省力；相反，只留下碎片而没有承接的动作，会把成本推迟到以后。',
+        '',
+        '## 接下来值得提前布置的后手',
+        previewList,
+      ].join('\n')
+    case 'cbt-patterns':
+      return [
+        '## 这批记录里常见的触发点',
+        `仅从最近两周样本看，触发写作和安排的核心还是 ${lead.tagsLabel} 这些主题。它们不像偶发情绪，更像稳定存在的任务压力或关注对象。`,
+        '',
+        '## 可能反复出现的自动化解释',
+        '当同一类事情反复出现、却又没有及时收束时，人很容易产生“我一直在推进，但好像总差一点”的自动化判断。这个判断未必准确，却会让注意力继续被未完成感牵着走。',
+        '',
+        '## 更稳的替代动作',
+        '比起继续扩大输入，更有效的做法可能是给每条高频线索补一个“现在算推进到哪里”的明确句子。这样能把模糊压力转换成可操作的下一步，也更能中断那种一直悬着的感觉。',
+        '',
+        '## 当前样本里的依据',
+        previewList,
+      ].join('\n')
+    case 'mbti-analysis':
+      return [
+        '## 这批样本显出的工作偏好',
+        '以下只是根据最近两周文字样本做的偏好观察，不是人格定论。整体看，你更像是通过持续记录来维持思路清晰的人：先把线索捕捉下来，再慢慢压缩成更稳定的结构。',
+        '',
+        '## 什么环境会更顺手',
+        `当主题相对集中、上下文能被连续保留时，你的推进质量会更高。${lead.entryLabel} 说明外部节奏是存在的，但真正决定产出的，仍然是有没有足够连续的整理空间。`,
+        '',
+        '## 需要搭配的补位方式',
+        '如果说这类偏好最大的风险，就是容易把很多线索都先收进来，再慢慢处理。补位方式不是压掉记录欲，而是更早做取舍：哪些线索要继续喂养，哪些只需要留档就好。',
+        '',
+        '## 最近最能代表偏好的记录',
+        previewList,
+      ].join('\n')
+    case 'default-insight':
+    default:
+      return [
+        '## 这两周主要被什么占据',
+        `从整体样本看，最近两周最稳定的主线仍然是 ${lead.tagsLabel}。这些主题不是偶尔出现，而是在不同日期里持续回流，说明它们已经构成了当前阶段真正的注意力骨架。`,
+        '',
+        '## 节奏在哪些地方被推快或拖慢',
+        `高峰日出现在 ${lead.busiestDayLabel}，说明推进并不缺爆发力。真正影响节奏的，更像是是否有足够时间把爆发后的内容收束成下一步。${lead.entryLabel} 为这段时间提供了节拍，但块里的内容才决定了节拍是否变成结果。`,
+        '',
+        '## 现在最值得继续追的线索',
+        `如果只看一个最应该继续追的方向，那会是已经多次出现、又开始形成具体表述的线索。像「${lead.newestPreview}」这样的内容，已经不只是灵感，而是接近可以继续深化的工作单元。`,
+        '',
+        '## 当前样本里的重点依据',
+        previewList,
+      ].join('\n')
+  }
+}
+
+export function sanitizeAiInsightResponse(text: string): string {
+  return sanitizeLongformMarkdownResponse(text)
+}
+
 function buildDocumentMessages(topic: string, blocks: Block[], writingGuide?: string | null): ChatMessage[] {
   const grouped = new Map<string, string[]>()
 
@@ -607,6 +863,136 @@ function buildDocumentMessages(topic: string, blocks: Block[], writingGuide?: st
           : []),
         '以下是已召回并按标签聚类后的原始块，请基于它们整理文档。请优先复述和组织块中的事实，不要自己补背景：',
         sections || '没有召回到块，请输出一份说明信息不足的短文档。',
+      ].join('\n'),
+    },
+  ]
+}
+
+function buildDailyReviewMessages(input: DailyReviewGenerationInput): ChatMessage[] {
+  const blockSection = input.blocks.length > 0
+    ? input.blocks.map((block, index) => [
+      `块 ${index + 1}`,
+      `时间：${block.createdAt}`,
+      `标签：${block.tags.join('、') || '无'}`,
+      `摘要：${block.summary?.trim() || '无'}`,
+      `预览：${block.preview}`,
+      '正文：',
+      block.content,
+    ].join('\n')).join('\n\n---\n\n')
+    : '今天没有块内容。'
+
+  const entrySection = input.entries.length > 0
+    ? input.entries.map((entry, index) => [
+      `安排 ${index + 1}`,
+      `标题：${entry.title}`,
+      `时间：${entry.allDay ? '全天' : entry.startTime ?? '未写时间'}`,
+      `状态：${entry.status}`,
+      `备注：${entry.notes ?? '无'}`,
+    ].join('\n')).join('\n\n')
+    : '今天没有日历安排。'
+
+  return [
+    {
+      role: 'system',
+      content: [
+        '你是长布的每日回顾助手。',
+        '你的任务是严格根据当天块内容和当天日历安排，写一篇中文 Markdown 每日回顾正文。',
+        '风格应自然、克制、像一篇可阅读的长文日记，不要写成汇报模板、问卷、清单或空洞鸡汤。',
+        '只能整理、串联、概括用户已经写下来的事实与安排，不允许补充原始内容中不存在的事件、结论、心情、动机或结果。',
+        '如果信息不足，就明确写出信息不足，不要编造细节。',
+        '允许使用少量二级或三级标题，但不要套模板，不要把标签列表原样照抄成正文。',
+        '不要输出代码块围栏，不要输出 JSON，不要写“以下是每日回顾”之类说明语。',
+        '正文需要兼顾两部分：一是这一天实际记下了什么，二是日历安排如何影响这一天的节奏。',
+      ].join('\n'),
+    },
+    {
+      role: 'user',
+      content: [
+        `日期：${input.date}`,
+        `当天块数：${input.blockCount}`,
+        `日历安排：计划 ${input.plannedEntryCount} 项，完成 ${input.doneEntryCount} 项，取消 ${input.canceledEntryCount} 项`,
+        `当天主题：${input.topTags.join('、') || '暂无明显主题'}`,
+        '',
+        '以下是当天日历：',
+        entrySection,
+        '',
+        '以下是当天块内容：',
+        blockSection,
+      ].join('\n'),
+    },
+  ]
+}
+
+
+function buildAiInsightMessages(input: AiInsightGenerationInput): ChatMessage[] {
+  const daySection = input.dayDigests.length > 0
+    ? input.dayDigests.map((day, index) => [
+      `日期 ${index + 1}`,
+      `日期：${day.date}`,
+      `块数：${day.blockCount}`,
+      `主题：${day.topTags.join('、') || '暂无明显主题'}`,
+      `预览：${day.previews.join('；') || '无'}`,
+      `安排：计划 ${day.plannedEntryCount} 项，完成 ${day.doneEntryCount} 项，取消 ${day.canceledEntryCount} 项`,
+    ].join('\n')).join('\n\n')
+    : '最近两周没有日级记录。'
+
+  const blockSection = input.blocks.length > 0
+    ? input.blocks.map((block, index) => [
+      `引用块 ${index + 1}`,
+      `日期：${block.date}`,
+      `时间：${block.createdAt}`,
+      `标签：${block.tags.join('、') || '无'}`,
+      `摘要：${block.summary?.trim() || '无'}`,
+      `预览：${block.preview}`,
+      '正文：',
+      block.content,
+    ].join('\n')).join('\n\n---\n\n')
+    : '最近两周没有可引用块。'
+
+  const entrySection = input.entries.length > 0
+    ? input.entries.map((entry, index) => [
+      `安排 ${index + 1}`,
+      `日期：${entry.date}`,
+      `标题：${entry.title}`,
+      `时间：${entry.allDay ? '全天' : entry.startTime ?? '未写时间'}`,
+      `状态：${entry.status}`,
+      `备注：${entry.notes ?? '无'}`,
+    ].join('\n')).join('\n\n')
+    : '最近两周没有日历安排。'
+
+  return [
+    {
+      role: 'system',
+      content: [
+        '你是长布的 AI 洞察分析助手。',
+        '你的任务是严格根据最近两周的块内容和日历安排，按指定分析方法写一篇中文 Markdown 洞察正文。',
+        '风格应自然、克制、像一页可阅读的分析文章，不要写成汇报模板、咨询表格、心理测评结果单或空洞鸡汤。',
+        '只能整理、串联和解释用户已经写下来的事实，不允许补充原始内容中不存在的事件、结论、关系或结果。',
+        '允许做解释性推断，但必须明确写成“可能”“更像”“看起来”“倾向于”之类的表述，不要把推断写成确定事实。',
+        '如果使用 CBT 或 MBTI 语言，只能作为观察视角，禁止诊断化、病理化、贴标签或给出确定的人格结论。',
+        '允许使用 3 到 5 个二级标题，也可以带少量列表，但不要套固定模板。',
+        '不要输出代码块围栏，不要输出 JSON，不要写“以下是分析结果”之类说明语。',
+      ].join('\n'),
+    },
+    {
+      role: 'user',
+      content: [
+        `分析方法：${input.methodLabel}`,
+        `方法要求：${input.promptPreset}`,
+        `锚点日期：${input.anchorDate}`,
+        `时间范围：${input.rangeStart} 至 ${input.rangeEnd}`,
+        `范围内块数：${input.blockCount}`,
+        `范围内日历：计划 ${input.plannedEntryCount} 项，完成 ${input.doneEntryCount} 项，取消 ${input.canceledEntryCount} 项`,
+        `高频主题：${input.topTags.join('、') || '暂无明显主题'}`,
+        '',
+        '以下是 14 天内的日级概览：',
+        daySection,
+        '',
+        '以下是重点引用块：',
+        blockSection,
+        '',
+        '以下是范围内日历安排：',
+        entrySection,
       ].join('\n'),
     },
   ]
@@ -998,6 +1384,26 @@ export function createMockLLMProvider(mode: AIExecutionMode): LLMProvider {
       }
     },
 
+    async *streamDailyReview(input) {
+      const prelude = mode === 'live' ? '当前 live provider 不可用，以下内容由模拟编排器生成。\n\n' : ''
+      const content = `${prelude}${buildMockDailyReview(input)}`.trim()
+
+      for (const chunk of chunkText(content, 60)) {
+        await new Promise((resolve) => setTimeout(resolve, 18))
+        yield chunk
+      }
+    },
+
+    async *streamAiInsight(input) {
+      const prelude = mode === 'live' ? '当前 live provider 不可用，以下内容由模拟编排器生成。\n\n' : ''
+      const content = `${prelude}${buildMockAiInsight(input)}`.trim()
+
+      for (const chunk of chunkText(content, 60)) {
+        await new Promise((resolve) => setTimeout(resolve, 18))
+        yield chunk
+      }
+    },
+
     async suggestTags(input) {
       return {
         categories: [],
@@ -1016,6 +1422,16 @@ export function createMockLLMProvider(mode: AIExecutionMode): LLMProvider {
 
     async extractCalendarSuggestions() {
       return []
+    },
+
+    async generateDailyReview(input) {
+      const prelude = mode === 'live' ? '当前 live provider 不可用，以下内容由模拟编排器生成。\n\n' : ''
+      return `${prelude}${buildMockDailyReview(input)}`.trim()
+    },
+
+    async generateAiInsight(input) {
+      const prelude = mode === 'live' ? '当前 live provider 不可用，以下内容由模拟编排器生成。\n\n' : ''
+      return `${prelude}${buildMockAiInsight(input)}`.trim()
     },
   }
 }
@@ -1039,6 +1455,28 @@ export function createLiveLLMProvider(config: AIConfig, sink?: TokenUsageSink): 
       for await (const chunk of streamChatCompletion(resolved.llm, messages, {
         temperature: context?.temperature ?? 0.1,
         maxTokens: context?.maxTokens ?? 1_200,
+      }, sink)) {
+        yield chunk
+      }
+    },
+
+    async *streamDailyReview(input) {
+      const messages = buildDailyReviewMessages(input)
+
+      for await (const chunk of streamChatCompletion(resolved.llm, messages, {
+        temperature: 0.45,
+        maxTokens: 1_500,
+      }, sink)) {
+        yield chunk
+      }
+    },
+
+    async *streamAiInsight(input) {
+      const messages = buildAiInsightMessages(input)
+
+      for await (const chunk of streamChatCompletion(resolved.llm, messages, {
+        temperature: 0.55,
+        maxTokens: 1_800,
       }, sink)) {
         yield chunk
       }
@@ -1082,6 +1520,36 @@ export function createLiveLLMProvider(config: AIConfig, sink?: TokenUsageSink): 
       }, sink)
       const parsed = extractJsonObject(text)
       return sanitizeStructuredCalendarSuggestions(parsed, Math.max(0, Math.round(input.maxSuggestions ?? 3)))
+    },
+
+    async generateDailyReview(input) {
+      const messages = buildDailyReviewMessages(input)
+      const text = await completeText(resolved.llm, messages, {
+        temperature: 0.45,
+        maxTokens: 1_500,
+      }, sink)
+      const sanitized = sanitizeDailyReviewResponse(text)
+
+      if (!sanitized) {
+        throw formatProviderError('每日回顾响应为空')
+      }
+
+      return sanitized
+    },
+
+    async generateAiInsight(input) {
+      const messages = buildAiInsightMessages(input)
+      const text = await completeText(resolved.llm, messages, {
+        temperature: 0.55,
+        maxTokens: 1_800,
+      }, sink)
+      const sanitized = sanitizeAiInsightResponse(text)
+
+      if (!sanitized) {
+        throw formatProviderError('AI 洞察响应为空')
+      }
+
+      return sanitized
     },
   }
 }

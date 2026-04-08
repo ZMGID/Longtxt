@@ -4,6 +4,7 @@ import type {
   DocGenerationChunk,
   MetaChangedEvent,
   NotebookChangedEvent,
+  ReviewGenerationChunk,
   TokenUsage,
 } from '../shared/types'
 import type { TokenUsageSink } from './services/ai'
@@ -98,6 +99,10 @@ export function createContextEventEmitters(options: AppContextOptions) {
     options.onDocGenerationChunk?.(chunk)
   }
 
+  function emitReviewGenerationChunk(chunk: ReviewGenerationChunk): void {
+    options.onReviewGenerationChunk?.(chunk)
+  }
+
   function emitTouchedNotebooks(notebookIds: string[], reason: NotebookChangedEvent['reason']): void {
     if (notebookIds.length === 0) {
       return
@@ -115,6 +120,7 @@ export function createContextEventEmitters(options: AppContextOptions) {
     emitMetaChanged,
     emitCalendarChanged,
     emitDocGenerationChunk,
+    emitReviewGenerationChunk,
     emitTouchedNotebooks,
   }
 }

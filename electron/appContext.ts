@@ -9,15 +9,19 @@ import {
   CALENDAR_SETTINGS_KEY,
   DEFAULT_PAGE_SIZE,
   DOC_GENERATION_SETTINGS_KEY,
+  EXTERNAL_ACCESS_SETTINGS_KEY,
   UI_SETTINGS_KEY,
   parseBlockEnrichSettings,
   parseCalendarSettings,
   parseDocGenerationSettings,
+  parseExternalAccessSettings,
 } from '../shared/config'
+import { isAiInsightMethodId } from '../shared/aiInsights'
 import type {
   AIConfig,
   AIExecutionMode,
   ApiTestResult,
+  AiInsightMethodId,
   BlockEnrichSettings,
   Block,
   CalendarSettings,
@@ -25,6 +29,8 @@ import type {
   Notebook,
   NotebookReferencePreview,
   RelatedBlockResult,
+  ReviewGenerationChunk,
+  ReviewGenerationStart,
 } from '../shared/types'
 import {
   addManualTagToBlock,
@@ -120,6 +126,17 @@ import {
   syncBlockAttachmentRecords,
 } from './services/attachments'
 import { confirmImportJob, exportJsonBundle, exportMarkdownBundle, previewJsonImport, previewMarkdownImport } from './services/importExport'
+import {
+  buildAiInsightSnapshotContent,
+  buildDailyReviewSnapshotContent,
+  buildReviewDateRange,
+  finalizeAiInsightResult,
+  finalizeDailyReviewResult,
+  generateAiInsight as generateAiInsightContent,
+  generateDailyReview as generateDailyReviewContent,
+  prepareAiInsightGeneration,
+  prepareDailyReviewGeneration,
+} from './services/review'
 import { createSettingsFileStore, resolveSettingsFilePath } from './settingsFile'
 import {
   buildNotebookWritingGuide,
@@ -144,6 +161,7 @@ import {
 import { startStreamedDocumentGenerationTask } from './appContext-docgen'
 import { createContextEventEmitters, createPendingTaskTracker, createUsageTracker, parseTokenUsage } from './appContext-runtime'
 import type { AppContext, AppContextOptions, QueuedEnrichRequest, VectorIndexState } from './appContext-types'
+import { getExternalAccessStatus as buildExternalAccessStatus, setupExternalAccessFiles } from './externalAccess'
 
 export type { AppContext, AppContextOptions } from './appContext-types'
 
@@ -157,6 +175,7 @@ const FILE_BACKED_SETTING_KEYS = new Set([
   BLOCK_ENRICH_SETTINGS_KEY,
   CALENDAR_SETTINGS_KEY,
   DOC_GENERATION_SETTINGS_KEY,
+  EXTERNAL_ACCESS_SETTINGS_KEY,
   UI_SETTINGS_KEY,
 ])
 const MAX_ENRICH_RETRIES = 1
@@ -194,12 +213,15 @@ export function createAppContext(options: AppContextOptions): AppContext {
   let vectorSchemaReady = vectorReady ? currentVectorDimension !== null : false
   let currentVectorIndexState = parseVectorIndexState(getDbSetting(db, VECTOR_INDEX_STATE_KEY))
   const importJobs = new Map<string, Awaited<ReturnType<typeof previewMarkdownImport>>['job']>()
+  const dailyReviewCache = new Map<string, Awaited<ReturnType<typeof generateDailyReviewContent>>>()
+  const aiInsightCache = new Map<string, Awaited<ReturnType<typeof generateAiInsightContent>>>()
   const {
     emitBlockChanged,
     emitNotebooksChanged,
     emitMetaChanged,
     emitCalendarChanged,
     emitDocGenerationChunk,
+    emitReviewGenerationChunk,
     emitTouchedNotebooks,
   } = createContextEventEmitters(options)
   const { tokenSink, getModelCallCounts, getTokenUsage, getLifetimeTokenUsage } = createUsageTracker({
@@ -230,6 +252,36 @@ export function createAppContext(options: AppContextOptions): AppContext {
 
   function getCalendarSettings(): CalendarSettings {
     return parseCalendarSettings(settingsStore.get(CALENDAR_SETTINGS_KEY))
+  }
+
+  function getExternalAccessSettings() {
+    return parseExternalAccessSettings(settingsStore.get(EXTERNAL_ACCESS_SETTINGS_KEY))
+  }
+
+  function getDailyReviewCacheKey(dateKey: string): string {
+    const configFingerprint = getSavedConfigFingerprint()
+    return `${normalizeCalendarDate(dateKey)}::${getExecutionMode()}::${configFingerprint ?? 'no-config'}`
+  }
+
+  function getAiInsightCacheKey(methodId: string, dateKey: string): string {
+    const configFingerprint = getSavedConfigFingerprint()
+    return `${methodId}::${normalizeCalendarDate(dateKey)}::${getExecutionMode()}::${configFingerprint ?? 'no-config'}`
+  }
+
+  function clearDailyReviewCache(): void {
+    dailyReviewCache.clear()
+    aiInsightCache.clear()
+  }
+
+  function getExternalAccessOptions() {
+    return {
+      settingsFilePath: settingsStore.filePath,
+      cliLaunchSpec: options.cliLaunchSpec ?? {
+        executablePath: process.execPath,
+        args: process.argv[1] ? [process.argv[1]] : [],
+      },
+      skillRootDirectory: options.externalSkillRootDirectory,
+    }
   }
 
   function getSavedConfigFingerprint(): string | null {
@@ -332,6 +384,59 @@ export function createAppContext(options: AppContextOptions): AppContext {
 
   function rememberRuntimeAiError(error: unknown): void {
     lastAiError = error instanceof Error ? error.message : 'AI 运行失败。'
+  }
+
+  function emitReviewChunk(chunk: ReviewGenerationChunk): void {
+    emitReviewGenerationChunk(chunk)
+  }
+
+  function buildDailyReviewStart(requestId: string, date: string, mode: AIExecutionMode): ReviewGenerationStart {
+    return {
+      requestId,
+      kind: 'daily-review',
+      date,
+      mode,
+    }
+  }
+
+  function buildAiInsightStart(
+    requestId: string,
+    methodId: AiInsightMethodId,
+    date: string,
+    mode: AIExecutionMode,
+  ): ReviewGenerationStart {
+    return {
+      requestId,
+      kind: 'ai-insight',
+      date,
+      methodId,
+      mode,
+    }
+  }
+
+  function emitDailyReviewResultChunk(start: ReviewGenerationStart, result: Awaited<ReturnType<typeof generateDailyReviewContent>>): void {
+    emitReviewChunk({
+      requestId: start.requestId,
+      kind: 'daily-review',
+      date: start.date,
+      delta: '',
+      done: true,
+      mode: start.mode,
+      fullText: result.content,
+    })
+  }
+
+  function emitAiInsightResultChunk(start: ReviewGenerationStart, result: Awaited<ReturnType<typeof generateAiInsightContent>>): void {
+    emitReviewChunk({
+      requestId: start.requestId,
+      kind: 'ai-insight',
+      date: start.date,
+      methodId: start.methodId,
+      delta: '',
+      done: true,
+      mode: start.mode,
+      fullText: result.content,
+    })
   }
 
   function advanceBlockEnrichGeneration(blockId: string): number {
@@ -1250,6 +1355,7 @@ export function createAppContext(options: AppContextOptions): AppContext {
     })()
 
     if (deletedBlocks.length > 0) {
+      clearDailyReviewCache()
       emitTouchedNotebooks(Array.from(touchedNotebookIds), 'block-unlinked')
       emitMetaChanged({
         reason: 'vector-queue',
@@ -1277,6 +1383,7 @@ export function createAppContext(options: AppContextOptions): AppContext {
     const aiMode = getExecutionMode()
     const block = createBlockWithAttachments(safeContent, now, aiMode)
     const enrichGeneration = advanceBlockEnrichGeneration(block.id)
+    clearDailyReviewCache()
 
     emitBlockChanged({
       block,
@@ -1318,6 +1425,7 @@ export function createAppContext(options: AppContextOptions): AppContext {
       const aiMode = getExecutionMode()
       const updatedAt = new Date().toISOString()
       const block = updateBlockWithAttachments(id, safeContent, updatedAt, aiMode)
+      clearDailyReviewCache()
       emitTouchedNotebooks(touchNotebooksForBlock(db, id, updatedAt), 'updated')
 
       emitBlockChanged({
@@ -1492,6 +1600,324 @@ export function createAppContext(options: AppContextOptions): AppContext {
       return getCalendarDayDetail(db, normalizeCalendarDate(date))
     },
 
+    async generateDailyReview(dateKey, forceRefresh = false) {
+      const normalizedDate = normalizeCalendarDate(dateKey)
+      const cacheKey = getDailyReviewCacheKey(normalizedDate)
+
+      if (!forceRefresh) {
+        const cached = dailyReviewCache.get(cacheKey)
+
+        if (cached) {
+          return cached
+        }
+      }
+
+      const task = (async () => {
+        const { mode, llmProvider } = getProviders()
+        const dayDetail = getCalendarDayDetail(db, normalizedDate)
+
+        try {
+          const result = await generateDailyReviewContent({
+            date: normalizedDate,
+            dayDetail,
+            llmProvider,
+            mode,
+          })
+
+          dailyReviewCache.set(cacheKey, result)
+
+          if (mode === 'live' && clearRuntimeAiError()) {
+            emitMetaChanged({
+              reason: 'review-generation',
+            })
+          }
+
+          return result
+        } catch (error) {
+          if (mode === 'live') {
+            rememberRuntimeAiError(error)
+            emitMetaChanged({
+              reason: 'review-generation',
+            })
+          }
+
+          throw error
+        }
+      })()
+
+      return trackTask(task)
+    },
+
+    async generateAiInsight(methodId, dateKey, forceRefresh = false) {
+      if (!isAiInsightMethodId(methodId)) {
+        throw new Error('未知的 AI 洞察方法。')
+      }
+
+      const normalizedDate = normalizeCalendarDate(dateKey)
+      const cacheKey = getAiInsightCacheKey(methodId, normalizedDate)
+
+      if (!forceRefresh) {
+        const cached = aiInsightCache.get(cacheKey)
+
+        if (cached) {
+          return cached
+        }
+      }
+
+      const task = (async () => {
+        const { mode, llmProvider } = getProviders()
+        const dates = buildReviewDateRange(normalizedDate)
+        const dayDetails = dates.map((date) => getCalendarDayDetail(db, date))
+
+        try {
+          const result = await generateAiInsightContent({
+            methodId,
+            anchorDate: normalizedDate,
+            dayDetails,
+            llmProvider,
+            mode,
+          })
+
+          aiInsightCache.set(cacheKey, result)
+
+          if (mode === 'live' && clearRuntimeAiError()) {
+            emitMetaChanged({
+              reason: 'review-generation',
+            })
+          }
+
+          return result
+        } catch (error) {
+          if (mode === 'live') {
+            rememberRuntimeAiError(error)
+            emitMetaChanged({
+              reason: 'review-generation',
+            })
+          }
+
+          throw error
+        }
+      })()
+
+      return trackTask(task)
+    },
+
+    async startDailyReviewGeneration(dateKey, forceRefresh = false) {
+      const normalizedDate = normalizeCalendarDate(dateKey)
+      const cacheKey = getDailyReviewCacheKey(normalizedDate)
+      const { mode, llmProvider } = getProviders()
+      const requestId = uuid()
+      const start = buildDailyReviewStart(requestId, normalizedDate, mode)
+
+      if (!forceRefresh) {
+        const cached = dailyReviewCache.get(cacheKey)
+
+        if (cached) {
+          setTimeout(() => {
+            emitDailyReviewResultChunk(start, cached)
+          }, 0)
+          return start
+        }
+      }
+
+      void trackTask((async () => {
+        await Promise.resolve()
+        const dayDetail = getCalendarDayDetail(db, normalizedDate)
+        const prepared = prepareDailyReviewGeneration({
+          date: normalizedDate,
+          dayDetail,
+          mode,
+        })
+
+        if (prepared.emptyResult) {
+          dailyReviewCache.set(cacheKey, prepared.emptyResult)
+          emitDailyReviewResultChunk(start, prepared.emptyResult)
+          return
+        }
+
+        const generationInput = prepared.input
+
+        if (!generationInput) {
+          throw new Error('每日回顾生成输入缺失。')
+        }
+
+        try {
+          let fullText = ''
+
+          for await (const delta of llmProvider.streamDailyReview(generationInput)) {
+            fullText += delta
+            emitReviewChunk({
+              requestId,
+              kind: 'daily-review',
+              date: normalizedDate,
+              delta,
+              done: false,
+              mode,
+            })
+          }
+
+          const result = finalizeDailyReviewResult({
+            date: normalizedDate,
+            mode,
+            input: generationInput,
+            blocks: prepared.blocks,
+            entries: prepared.entries,
+            content: fullText,
+          })
+
+          dailyReviewCache.set(cacheKey, result)
+
+          if (mode === 'live' && clearRuntimeAiError()) {
+            emitMetaChanged({
+              reason: 'review-generation',
+            })
+          }
+
+          emitDailyReviewResultChunk(start, result)
+        } catch (error) {
+          if (mode === 'live') {
+            rememberRuntimeAiError(error)
+            emitMetaChanged({
+              reason: 'review-generation',
+            })
+          }
+
+          emitReviewChunk({
+            requestId,
+            kind: 'daily-review',
+            date: normalizedDate,
+            delta: '',
+            done: true,
+            mode,
+            error: error instanceof Error ? error.message : '每日回顾生成失败。',
+          })
+        }
+      })())
+
+      return start
+    },
+
+    async startAiInsightGeneration(methodId, dateKey, forceRefresh = false) {
+      if (!isAiInsightMethodId(methodId)) {
+        throw new Error('未知的 AI 洞察方法。')
+      }
+
+      const normalizedDate = normalizeCalendarDate(dateKey)
+      const cacheKey = getAiInsightCacheKey(methodId, normalizedDate)
+      const { mode, llmProvider } = getProviders()
+      const requestId = uuid()
+      const start = buildAiInsightStart(requestId, methodId, normalizedDate, mode)
+
+      if (!forceRefresh) {
+        const cached = aiInsightCache.get(cacheKey)
+
+        if (cached) {
+          setTimeout(() => {
+            emitAiInsightResultChunk(start, cached)
+          }, 0)
+          return start
+        }
+      }
+
+      void trackTask((async () => {
+        await Promise.resolve()
+        const dates = buildReviewDateRange(normalizedDate)
+        const dayDetails = dates.map((date) => getCalendarDayDetail(db, date))
+        const prepared = prepareAiInsightGeneration({
+          methodId,
+          anchorDate: normalizedDate,
+          dayDetails,
+          mode,
+        })
+
+        if (prepared.emptyResult) {
+          aiInsightCache.set(cacheKey, prepared.emptyResult)
+          emitAiInsightResultChunk(start, prepared.emptyResult)
+          return
+        }
+
+        const generationInput = prepared.input
+
+        if (!generationInput) {
+          throw new Error('AI 洞察生成输入缺失。')
+        }
+
+        try {
+          let fullText = ''
+
+          for await (const delta of llmProvider.streamAiInsight(generationInput)) {
+            fullText += delta
+            emitReviewChunk({
+              requestId,
+              kind: 'ai-insight',
+              date: normalizedDate,
+              methodId,
+              delta,
+              done: false,
+              mode,
+            })
+          }
+
+          const result = finalizeAiInsightResult({
+            methodId,
+            anchorDate: normalizedDate,
+            mode,
+            input: generationInput,
+            blocks: prepared.blocks,
+            entries: prepared.entries,
+            sourceBlocks: prepared.sourceBlocks,
+            content: fullText,
+          })
+
+          aiInsightCache.set(cacheKey, result)
+
+          if (mode === 'live' && clearRuntimeAiError()) {
+            emitMetaChanged({
+              reason: 'review-generation',
+            })
+          }
+
+          emitAiInsightResultChunk(start, result)
+        } catch (error) {
+          if (mode === 'live') {
+            rememberRuntimeAiError(error)
+            emitMetaChanged({
+              reason: 'review-generation',
+            })
+          }
+
+          emitReviewChunk({
+            requestId,
+            kind: 'ai-insight',
+            date: normalizedDate,
+            methodId,
+            delta: '',
+            done: true,
+            mode,
+            error: error instanceof Error ? error.message : 'AI 洞察生成失败。',
+          })
+        }
+      })())
+
+      return start
+    },
+
+    async saveDailyReviewSnapshot(input) {
+      const safeTitle = validateContent(input.title)
+      const snapshotContent = buildDailyReviewSnapshotContent(safeTitle, input.content)
+      return createSnapshot(db, safeTitle, snapshotContent, input.blockIds)
+    },
+
+    async saveAiInsightSnapshot(input) {
+      if (!isAiInsightMethodId(input.methodId)) {
+        throw new Error('未知的 AI 洞察方法。')
+      }
+
+      const safeTitle = validateContent(input.title)
+      const snapshotContent = buildAiInsightSnapshotContent(safeTitle, input.content)
+      return createSnapshot(db, safeTitle, snapshotContent, input.blockIds)
+    },
+
     async listUpcomingCalendarEntries(limitDays) {
       const settings = getCalendarSettings()
       const days = Math.max(1, Math.round(limitDays ?? settings.upcomingDays))
@@ -1509,6 +1935,7 @@ export function createAppContext(options: AppContextOptions): AppContext {
 
     async createCalendarEntry(input) {
       const entry = createCalendarEntry(db, normalizeCalendarEntryInput(input), new Date().toISOString())
+      clearDailyReviewCache()
       emitCalendarChanged({
         reason: 'entry-created',
         date: entry.date,
@@ -1518,6 +1945,7 @@ export function createAppContext(options: AppContextOptions): AppContext {
 
     async updateCalendarEntry(id, patch) {
       const entry = updateCalendarEntry(db, id, normalizeCalendarEntryPatch(patch), new Date().toISOString())
+      clearDailyReviewCache()
       emitCalendarChanged({
         reason: 'entry-updated',
         date: entry.date,
@@ -1527,6 +1955,7 @@ export function createAppContext(options: AppContextOptions): AppContext {
 
     async removeCalendarEntry(id) {
       removeCalendarEntry(db, id)
+      clearDailyReviewCache()
       emitCalendarChanged({
         reason: 'entry-deleted',
       })
@@ -1534,6 +1963,7 @@ export function createAppContext(options: AppContextOptions): AppContext {
 
     async acceptCalendarSuggestion(id, overrides) {
       const entry = acceptCalendarSuggestion(db, id, normalizeCalendarSuggestionAcceptInput(overrides), new Date().toISOString())
+      clearDailyReviewCache()
       emitCalendarChanged({
         reason: 'suggestion-updated',
         date: entry.date,
@@ -1544,6 +1974,7 @@ export function createAppContext(options: AppContextOptions): AppContext {
 
     async dismissCalendarSuggestion(id) {
       dismissCalendarSuggestion(db, id)
+      clearDailyReviewCache()
       emitCalendarChanged({
         reason: 'suggestion-updated',
       })
@@ -1773,7 +2204,15 @@ export function createAppContext(options: AppContextOptions): AppContext {
         return null
       }
 
-      return exportJsonBundle(db, targetFilePath, exportOptions)
+      const settingsSnapshot = exportOptions.includeSettings
+        ? Object.fromEntries(
+            Array.from(FILE_BACKED_SETTING_KEYS)
+              .map((key) => [key, settingsStore.get(key)] as const)
+              .filter((entry): entry is [string, string] => entry[1] !== null),
+          )
+        : null
+
+      return exportJsonBundle(db, targetFilePath, exportOptions, settingsSnapshot)
     },
 
     async previewImportMarkdown(filePaths) {
@@ -1872,6 +2311,25 @@ export function createAppContext(options: AppContextOptions): AppContext {
         )
       }
 
+      if (job.format === 'json' && job.settingsSnapshot) {
+        let settingsChanged = false
+
+        for (const [key, value] of Object.entries(job.settingsSnapshot)) {
+          if (settingsStore.get(key) === value) {
+            continue
+          }
+
+          settingsStore.set(key, value)
+          settingsChanged = true
+        }
+
+        if (settingsChanged) {
+          emitMetaChanged({
+            reason: 'settings',
+          })
+        }
+      }
+
       enqueueBlocksForVectorReindex(importedBlocks)
       scheduleCurrentVectorReindex()
 
@@ -1963,6 +2421,10 @@ export function createAppContext(options: AppContextOptions): AppContext {
 
     async setSetting(key, value) {
       const previousValue = FILE_BACKED_SETTING_KEYS.has(key) ? settingsStore.get(key) : getDbSetting(db, key)
+
+      if (previousValue !== value) {
+        clearDailyReviewCache()
+      }
 
       if (FILE_BACKED_SETTING_KEYS.has(key)) {
         settingsStore.set(key, value)
@@ -2105,6 +2567,89 @@ export function createAppContext(options: AppContextOptions): AppContext {
       }
 
       const openResult = await options.openPath(dirname(settingsStore.filePath))
+
+      if (openResult) {
+        throw new Error(openResult)
+      }
+    },
+
+    async getExternalAccessStatus() {
+      return buildExternalAccessStatus(getExternalAccessSettings(), getExternalAccessOptions())
+    },
+
+    async enableExternalAccess() {
+      const nextSettings = {
+        ...getExternalAccessSettings(),
+        enabled: true,
+        skillTarget: 'claude-code' as const,
+      }
+
+      settingsStore.set(EXTERNAL_ACCESS_SETTINGS_KEY, JSON.stringify(nextSettings))
+
+      emitMetaChanged({
+        reason: 'settings',
+      })
+
+      return buildExternalAccessStatus(nextSettings, getExternalAccessOptions())
+    },
+
+    async generateExternalAccessBundle() {
+      const nextSettings = {
+        ...getExternalAccessSettings(),
+        generatedAt: new Date().toISOString(),
+        skillTarget: 'claude-code' as const,
+      }
+
+      await setupExternalAccessFiles(getExternalAccessOptions())
+      settingsStore.set(EXTERNAL_ACCESS_SETTINGS_KEY, JSON.stringify(nextSettings))
+
+      emitMetaChanged({
+        reason: 'settings',
+      })
+
+      return buildExternalAccessStatus(nextSettings, getExternalAccessOptions())
+    },
+
+    async setupExternalAccess() {
+      const enabledSettings = {
+        ...getExternalAccessSettings(),
+        enabled: true,
+        generatedAt: new Date().toISOString(),
+        skillTarget: 'claude-code' as const,
+      }
+
+      await setupExternalAccessFiles(getExternalAccessOptions())
+      settingsStore.set(EXTERNAL_ACCESS_SETTINGS_KEY, JSON.stringify(enabledSettings))
+
+      emitMetaChanged({
+        reason: 'settings',
+      })
+
+      return buildExternalAccessStatus(enabledSettings, getExternalAccessOptions())
+    },
+
+    async disableExternalAccess() {
+      const nextSettings = {
+        ...getExternalAccessSettings(),
+        enabled: false,
+      }
+
+      settingsStore.set(EXTERNAL_ACCESS_SETTINGS_KEY, JSON.stringify(nextSettings))
+
+      emitMetaChanged({
+        reason: 'settings',
+      })
+
+      return buildExternalAccessStatus(nextSettings, getExternalAccessOptions())
+    },
+
+    async openExternalAccessDirectory() {
+      if (!options.openPath) {
+        return
+      }
+
+      const status = await buildExternalAccessStatus(getExternalAccessSettings(), getExternalAccessOptions())
+      const openResult = await options.openPath(status.cliDirectory)
 
       if (openResult) {
         throw new Error(openResult)

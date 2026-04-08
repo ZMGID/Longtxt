@@ -1,0 +1,47 @@
+import { useMutation, useQuery } from '@tanstack/react-query'
+
+import { DOC_GENERATION_SETTINGS_KEY, parseDocGenerationSettings } from '../../shared/config'
+import type { AiInsightMethodId, AiInsightSnapshotInput, DailyReviewSnapshotInput } from '../../shared/types'
+import { changbu } from '../lib/changbu'
+import { queryKeys } from '../lib/queryKeys'
+
+export function useDailyReview(dateKey: string, requestVersion: number, forceRefresh = false, enabled = true) {
+  return useQuery({
+    queryKey: queryKeys.reviewDaily(dateKey, requestVersion),
+    queryFn: () => changbu.review.generateDaily(dateKey, forceRefresh),
+    enabled: enabled && Boolean(dateKey),
+  })
+}
+
+export function useAiInsight(
+  methodId: AiInsightMethodId,
+  dateKey: string,
+  requestVersion: number,
+  forceRefresh = false,
+  enabled = true,
+) {
+  return useQuery({
+    queryKey: queryKeys.reviewInsight(methodId, dateKey, requestVersion),
+    queryFn: () => changbu.review.generateInsight(methodId, dateKey, forceRefresh),
+    enabled: enabled && Boolean(methodId) && Boolean(dateKey),
+  })
+}
+
+export function useDocGenerationSettings() {
+  return useQuery({
+    queryKey: queryKeys.setting(DOC_GENERATION_SETTINGS_KEY),
+    queryFn: async () => parseDocGenerationSettings(await changbu.settings.get(DOC_GENERATION_SETTINGS_KEY)),
+  })
+}
+
+export function useSaveDailyReviewSnapshot() {
+  return useMutation({
+    mutationFn: (input: DailyReviewSnapshotInput) => changbu.review.saveDailySnapshot(input),
+  })
+}
+
+export function useSaveAiInsightSnapshot() {
+  return useMutation({
+    mutationFn: (input: AiInsightSnapshotInput) => changbu.review.saveInsightSnapshot(input),
+  })
+}

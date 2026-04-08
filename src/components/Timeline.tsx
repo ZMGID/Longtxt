@@ -4,7 +4,7 @@ import { Virtuoso, type VirtuosoHandle } from 'react-virtuoso'
 
 import type { Block, NotebookSummary, TagSuggestion } from '../../shared/types'
 import { buildMiniTimelineGroups, getActiveMiniTimelineGroupKey } from '../lib/miniTimeline'
-import { formatDateKeyLabel } from '../lib/format'
+import { formatDateKeyLabel, formatLocalDateKey } from '../lib/format'
 import { AddToNotebookMenu } from './AddToNotebookMenu'
 import { BlockCard } from './BlockCard'
 
@@ -28,7 +28,11 @@ interface TimelineProps {
   onFindRelated?: (blockId: string) => void
   focusedBlockId?: string | null
   onFocusedBlockHandled?: () => void
+  focusedDateKey?: string | null
+  onActiveDateKeyChange?: (dateKey: string | null) => void
 }
+
+const MINI_TIMELINE_COLLAPSE_BREAKPOINT = 700
 
 export function Timeline({
   blocks,
@@ -50,11 +54,17 @@ export function Timeline({
   onFindRelated,
   focusedBlockId,
   onFocusedBlockHandled,
+  focusedDateKey,
+  onActiveDateKeyChange,
 }: TimelineProps) {
   const virtuosoRef = useRef<VirtuosoHandle | null>(null)
   const [topVisibleIndex, setTopVisibleIndex] = useState(0)
+  const [allowMiniTimeline, setAllowMiniTimeline] = useState(() =>
+    typeof window === 'undefined' ? true : window.innerWidth >= MINI_TIMELINE_COLLAPSE_BREAKPOINT,
+  )
   const boundedTopVisibleIndex = Math.min(topVisibleIndex, Math.max(0, blocks.length - 1))
   const miniTimelineGroups = useMemo(() => buildMiniTimelineGroups(blocks), [blocks])
+  const shouldShowMiniTimeline = showMiniTimeline && allowMiniTimeline
   const activeMiniTimelineGroupKey = useMemo(
     () => getActiveMiniTimelineGroupKey(miniTimelineGroups, boundedTopVisibleIndex),
     [boundedTopVisibleIndex, miniTimelineGroups],
@@ -63,6 +73,21 @@ export function Timeline({
     () => new Map(miniTimelineGroups.map((group) => [group.startIndex, group])),
     [miniTimelineGroups],
   )
+
+  useEffect(() => {
+    if (typeof window === 'undefined') {
+      return
+    }
+
+    function handleResize(): void {
+      setAllowMiniTimeline(window.innerWidth >= MINI_TIMELINE_COLLAPSE_BREAKPOINT)
+    }
+
+    window.addEventListener('resize', handleResize)
+    return () => {
+      window.removeEventListener('resize', handleResize)
+    }
+  }, [])
 
   useEffect(() => {
     if (!focusedBlockId) {
@@ -78,6 +103,24 @@ export function Timeline({
     virtuosoRef.current?.scrollToIndex({ index, align: 'center', behavior: 'auto' })
     onFocusedBlockHandled?.()
   }, [blocks, focusedBlockId, onFocusedBlockHandled])
+
+  useEffect(() => {
+    onActiveDateKeyChange?.(activeMiniTimelineGroupKey)
+  }, [activeMiniTimelineGroupKey, onActiveDateKeyChange])
+
+  useEffect(() => {
+    if (!focusedDateKey) {
+      return
+    }
+
+    const index = blocks.findIndex((block) => formatLocalDateKey(block.createdAt) === focusedDateKey)
+
+    if (index === -1) {
+      return
+    }
+
+    virtuosoRef.current?.scrollToIndex({ index, align: 'start', behavior: 'auto' })
+  }, [blocks, focusedDateKey])
 
   if (loading) {
     return (
@@ -103,7 +146,7 @@ export function Timeline({
       {composer ? composer : null}
 
       <div className="flex min-h-0 flex-1 gap-3">
-        {showMiniTimeline ? (
+        {shouldShowMiniTimeline ? (
           <aside
             data-testid="mini-timeline"
             className="flex w-[40px] shrink-0 py-2"

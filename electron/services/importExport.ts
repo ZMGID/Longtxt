@@ -44,6 +44,7 @@ interface ImportJob {
   format: 'markdown' | 'json'
   blocks: PreparedImportBlock[]
   conflicts: number
+  settingsSnapshot?: Record<string, string> | null
 }
 
 interface FinalizedImportBlock {
@@ -81,8 +82,9 @@ interface JsonExportBlock {
 }
 
 interface JsonExportPayload {
-  version: 2
+  version: 2 | 3
   exportedAt: string
+  settings?: Record<string, string>
   blocks: JsonExportBlock[]
 }
 
@@ -104,6 +106,14 @@ function sanitizeImportedStatus(status?: string): BlockStatus {
 
 function sanitizeImportedAiMode(aiMode?: string): AIExecutionMode {
   return aiMode === 'live' || aiMode === 'mock' ? aiMode : 'mock'
+}
+
+function isStringRecord(value: unknown): value is Record<string, string> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return false
+  }
+
+  return Object.values(value).every((item) => typeof item === 'string')
 }
 
 function sanitizeFileName(value: string): string {
@@ -263,12 +273,14 @@ export async function exportJsonBundle(
   db: Database.Database,
   targetFilePath: string,
   options: ExportOptions,
+  settingsSnapshot?: Record<string, string> | null,
 ): Promise<{ path: string; count: number }> {
   const ids = getFilteredBlockIds(db, options)
   const blocks = getBlockRows(db, ids)
   const payload: JsonExportPayload = {
-    version: 2,
+    version: settingsSnapshot ? 3 : 2,
     exportedAt: new Date().toISOString(),
+    settings: settingsSnapshot ?? undefined,
     blocks: [],
   }
 
@@ -412,6 +424,7 @@ export async function previewJsonImport(
 ): Promise<{ preview: ImportPreview; job: ImportJob }> {
   const raw = await readFile(filePath, 'utf8')
   const payload = JSON.parse(raw) as JsonExportPayload
+  const settingsSnapshot = isStringRecord(payload.settings) ? { ...payload.settings } : null
   const blocks = payload.blocks.map((block) => ({
     id: block.id,
     filename: basename(filePath),
@@ -442,6 +455,8 @@ export async function previewJsonImport(
     totalFiles: 1,
     totalBlocks: blocks.length,
     conflicts: conflictRows.total,
+    includesSettings: settingsSnapshot !== null,
+    settingsEntryCount: settingsSnapshot ? Object.keys(settingsSnapshot).length : 0,
     samples: blocks.slice(0, 5).map((block) => ({
       filename: block.filename,
       preview: summarizeContent(block.content),
@@ -454,6 +469,7 @@ export async function previewJsonImport(
       format: 'json',
       blocks,
       conflicts: conflictRows.total,
+      settingsSnapshot,
     },
   }
 }

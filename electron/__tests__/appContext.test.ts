@@ -126,6 +126,38 @@ function makeCalendarSuggestionResponse(
   )
 }
 
+function makeDailyReviewResponse(content: string): Response {
+  return new Response(
+    JSON.stringify({
+      choices: [
+        {
+          message: {
+            content,
+          },
+        },
+      ],
+      usage: { prompt_tokens: 9, completion_tokens: 15, total_tokens: 24 },
+    }),
+    { status: 200, headers: { 'Content-Type': 'application/json' } },
+  )
+}
+
+function makeAiInsightResponse(content: string): Response {
+  return new Response(
+    JSON.stringify({
+      choices: [
+        {
+          message: {
+            content,
+          },
+        },
+      ],
+      usage: { prompt_tokens: 11, completion_tokens: 18, total_tokens: 29 },
+    }),
+    { status: 200, headers: { 'Content-Type': 'application/json' } },
+  )
+}
+
 function makeEmbeddingResponse(vectors: number[][]): Response {
   return new Response(
     JSON.stringify({
@@ -1464,6 +1496,170 @@ describe('app context', () => {
 
     expect(snapshot.blockIds).toEqual([])
     expect((await context.getSnapshot(snapshot.id)).blockIds).toEqual([])
+  })
+
+  it('generates daily review from day blocks and calendar entries', async () => {
+    const originalFetch = global.fetch
+    const context = makeContext()
+    await configureLiveMode(context)
+
+    global.fetch = vi.fn(async (input, init) => {
+      const url = String(input)
+
+      if (url.endsWith('/chat/completions')) {
+        const body = JSON.parse(String(init?.body ?? '{}')) as {
+          messages?: Array<{ content?: string }>
+        }
+        const systemPrompt = body.messages?.[0]?.content ?? ''
+
+        if (typeof systemPrompt === 'string' && systemPrompt.includes('每日回顾助手')) {
+          return makeDailyReviewResponse('今天的重点主要围绕发布收尾和服务器巡检展开。日历里的两项安排让推进节奏更清楚，而几条块内容也把当天真正花时间的地方固定了下来。')
+        }
+
+        return makeLlmResponse('daily review fallback')
+      }
+
+      if (url.endsWith('/embeddings')) {
+        return makeEmbeddingResponse([[0.11, 0.12, 0.13, 0.14]])
+      }
+
+      throw new Error(`Unexpected fetch: ${url}`)
+    }) as typeof global.fetch
+
+    await context.createBlock('上午处理发布收尾，补齐回滚说明和监控项。')
+    await context.createBlock('下午巡检服务器，顺手把告警阈值记录了一下。')
+    await context.createCalendarEntry({
+      title: '发布检查',
+      date: formatLocalDate(new Date().toISOString()),
+      startTime: '10:30',
+      allDay: false,
+    })
+    const doneEntry = await context.createCalendarEntry({
+      title: '服务器巡检',
+      date: formatLocalDate(new Date().toISOString()),
+      startTime: '15:00',
+      allDay: false,
+    })
+    await context.updateCalendarEntry(doneEntry.id, { status: 'done' })
+    await context.whenIdle()
+
+    const dateKey = formatLocalDate(new Date().toISOString())
+    const result = await context.generateDailyReview(dateKey)
+
+    global.fetch = originalFetch
+
+    expect(result.date).toBe(dateKey)
+    expect(result.mode).toBe('live')
+    expect(result.blockCount).toBe(2)
+    expect(result.plannedEntryCount).toBe(1)
+    expect(result.doneEntryCount).toBe(1)
+    expect(result.content).toContain('发布')
+    expect(result.blockIds).toHaveLength(2)
+    expect(result.calendarEntryIds).toHaveLength(2)
+    expect(result.empty).toBe(false)
+  })
+
+  it('saves daily review snapshots as document snapshots', async () => {
+    const context = makeContext()
+    const block = await context.createBlock('补一条用于快照绑定的块内容。')
+    await context.whenIdle()
+
+    const snapshot = await context.saveDailyReviewSnapshot({
+      title: '每日回顾 2026-04-07',
+      content: '今天主要整理了服务器和发布相关的内容。',
+      blockIds: [block.id],
+    })
+
+    expect(snapshot.topic).toBe('每日回顾 2026-04-07')
+    expect(snapshot.blockIds).toEqual([block.id])
+    expect(snapshot.content).toContain('# 每日回顾 2026-04-07')
+    expect(snapshot.content).toContain('今天主要整理了服务器和发布相关的内容。')
+  })
+
+  it('generates ai insight from a 14-day review window', async () => {
+    const originalFetch = global.fetch
+    const context = makeContext()
+    await configureLiveMode(context)
+
+    global.fetch = vi.fn(async (input, init) => {
+      const url = String(input)
+
+      if (url.endsWith('/chat/completions')) {
+        const body = JSON.parse(String(init?.body ?? '{}')) as {
+          messages?: Array<{ content?: string }>
+        }
+        const systemPrompt = body.messages?.[0]?.content ?? ''
+
+        if (typeof systemPrompt === 'string' && systemPrompt.includes('AI 洞察分析助手')) {
+          return makeAiInsightResponse('## 这两周主要被什么占据\n最近两周的注意力主要围绕发布收尾、巡检与服务器记录展开。')
+        }
+
+        return makeLlmResponse('ai insight fallback')
+      }
+
+      if (url.endsWith('/embeddings')) {
+        return makeEmbeddingResponse([[0.11, 0.12, 0.13, 0.14]])
+      }
+
+      throw new Error(`Unexpected fetch: ${url}`)
+    }) as typeof global.fetch
+
+    const now = new Date()
+    const anchorDate = formatLocalDate(now.toISOString())
+    const earlierDate = formatLocalDate(new Date(now.getTime() - 2 * 24 * 60 * 60 * 1000).toISOString())
+
+    await context.createBlock('上午处理发布收尾，补齐回滚说明和监控项。')
+    await context.createBlock('下午巡检服务器，顺手把告警阈值记录了一下。')
+    await context.createCalendarEntry({
+      title: '发布检查',
+      date: earlierDate,
+      startTime: '10:30',
+      allDay: false,
+    })
+    const doneEntry = await context.createCalendarEntry({
+      title: '服务器巡检',
+      date: anchorDate,
+      startTime: '15:00',
+      allDay: false,
+    })
+    await context.updateCalendarEntry(doneEntry.id, { status: 'done' })
+    await context.whenIdle()
+
+    const result = await context.generateAiInsight('values-clarification', anchorDate)
+
+    global.fetch = originalFetch
+
+    expect(result.methodId).toBe('values-clarification')
+    expect(result.mode).toBe('live')
+    expect(result.date).toBe(anchorDate)
+    expect(result.rangeEnd).toBe(anchorDate)
+    expect(result.blockCount).toBe(2)
+    expect(result.plannedEntryCount).toBe(1)
+    expect(result.doneEntryCount).toBe(1)
+    expect(result.content).toContain('这两周主要被什么占据')
+    expect(result.blockIds).toHaveLength(2)
+    expect(result.sourceBlocks.length).toBeGreaterThan(0)
+  })
+
+  it('saves ai insight snapshots as document snapshots', async () => {
+    const context = makeContext()
+    const block = await context.createBlock('补一条用于 AI 洞察快照绑定的块内容。')
+    await context.whenIdle()
+
+    const snapshot = await context.saveAiInsightSnapshot({
+      methodId: 'default-insight',
+      date: '2026-04-08',
+      rangeStart: '2026-03-26',
+      rangeEnd: '2026-04-08',
+      title: 'AI 洞察｜默认洞察｜2026-03-26～2026-04-08',
+      content: '## 主线\n最近主要围绕发布与巡检推进。',
+      blockIds: [block.id],
+    })
+
+    expect(snapshot.topic).toBe('AI 洞察｜默认洞察｜2026-03-26～2026-04-08')
+    expect(snapshot.blockIds).toEqual([block.id])
+    expect(snapshot.content).toContain('# AI 洞察｜默认洞察｜2026-03-26～2026-04-08')
+    expect(snapshot.content).toContain('最近主要围绕发布与巡检推进。')
   })
 
   it('supports notebook reference review, notebook generation, and notebook-bound snapshots', async () => {

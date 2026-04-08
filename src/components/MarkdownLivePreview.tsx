@@ -10,6 +10,7 @@ import {
   ViewPlugin,
   type PluginValue,
   WidgetType,
+  drawSelection,
 } from '@codemirror/view'
 import {
   type Extension,
@@ -622,6 +623,7 @@ export function MarkdownLivePreview({
   const extensions = useMemo(() => {
     const exts: Extension[] = [
       markdown({ base: markdownLanguage }),
+      drawSelection(),
       cursorLineField,
       livePreviewPlugin,
       livePreviewTheme,

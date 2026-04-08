@@ -73,6 +73,15 @@ export const IPC_CHANNELS = {
     rebuildAttachmentIndex: 'data:rebuild-attachment-index',
     rebuildAllVectors: 'data:rebuild-all-vectors',
   },
+  review: {
+    openWindow: 'review:open-window',
+    generateDaily: 'review:generate-daily',
+    generateInsight: 'review:generate-insight',
+    startDailyGeneration: 'review:start-daily-generation',
+    startInsightGeneration: 'review:start-insight-generation',
+    saveDailySnapshot: 'review:save-daily-snapshot',
+    saveInsightSnapshot: 'review:save-insight-snapshot',
+  },
   settings: {
     get: 'settings:get',
     set: 'settings:set',
@@ -81,6 +90,12 @@ export const IPC_CHANNELS = {
     openDataDirectory: 'settings:open-data-directory',
     openSettingsDirectory: 'settings:open-settings-directory',
     getMeta: 'settings:get-meta',
+    getExternalAccessStatus: 'settings:get-external-access-status',
+    enableExternalAccess: 'settings:enable-external-access',
+    generateExternalAccessBundle: 'settings:generate-external-access-bundle',
+    setupExternalAccess: 'settings:setup-external-access',
+    disableExternalAccess: 'settings:disable-external-access',
+    openExternalAccessDirectory: 'settings:open-external-access-directory',
   },
   vectors: {
     retryFailed: 'vectors:retry-failed',
@@ -91,6 +106,7 @@ export const IPC_CHANNELS = {
     metaChanged: 'events:meta-changed',
     calendarChanged: 'events:calendar-changed',
     docGenerationChunk: 'events:doc-generation-chunk',
+    reviewGenerationChunk: 'events:review-generation-chunk',
     quitStateChanged: 'events:quit-state-changed',
   },
 } as const

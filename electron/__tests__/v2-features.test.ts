@@ -7,6 +7,7 @@ import { tmpdir } from 'node:os'
 
 import { afterEach, describe, expect, it } from 'vitest'
 
+import { CALENDAR_SETTINGS_KEY, DOC_GENERATION_SETTINGS_KEY } from '../../shared/config'
 import { createAppContext, type AppContext } from '../appContext'
 
 const contexts: AppContext[] = []
@@ -142,6 +143,61 @@ describe('v2 features', () => {
     expect(importedBlocks[0].status).toBe('error')
     expect(importedBlocks[0].aiMode).toBe('live')
     expect(importedBlocks[0].errorMessage).toBe('备份前的运行错误')
+  })
+
+  it('exports complete json backup with settings snapshot and restores it on import', async () => {
+    const { context, directory } = makeContext()
+
+    await context.setSetting('ai_config', JSON.stringify({
+      llm: {
+        endpoint: 'https://api.example.com/v1',
+        apiKey: 'secret-key',
+        model: 'gpt-4.1-mini',
+      },
+      embedding: {
+        endpoint: 'https://api.example.com/v1',
+        apiKey: 'embed-key',
+        model: 'text-embedding-3-small',
+      },
+    }))
+    await context.setSetting(CALENDAR_SETTINGS_KEY, JSON.stringify({
+      aiSuggestionsEnabled: true,
+      autoAcceptAiSuggestions: true,
+      maxSuggestionsPerBlock: 6,
+      upcomingDays: 45,
+    }))
+    await context.setSetting(DOC_GENERATION_SETTINGS_KEY, JSON.stringify({
+      maxReferenceBlocks: 12,
+      retrievalLimit: 36,
+      temperature: 0.2,
+      maxOutputTokens: 1400,
+      streamOutput: false,
+    }))
+
+    const jsonPath = join(directory, 'complete-backup.json')
+    const exportResult = await context.exportJson({
+      includeAttachments: true,
+      includeSettings: true,
+      targetPath: jsonPath,
+    })
+
+    expect(exportResult).not.toBeNull()
+    expect(readFileSync(jsonPath, 'utf8')).toContain('"version": 3')
+    expect(readFileSync(jsonPath, 'utf8')).toContain('"settings"')
+    expect(readFileSync(jsonPath, 'utf8')).toContain('"ai_config"')
+
+    const { context: importContext } = makeContext()
+    const preview = await importContext.previewImportJson(jsonPath)
+    expect(preview).not.toBeNull()
+    expect(preview?.includesSettings).toBe(true)
+    expect(preview?.settingsEntryCount).toBeGreaterThan(0)
+
+    const imported = await importContext.confirmImport(preview!.importId, 'overwrite_all')
+    expect(imported.imported).toBe(0)
+
+    expect(await importContext.getSetting('ai_config')).toContain('secret-key')
+    expect(await importContext.getSetting(CALENDAR_SETTINGS_KEY)).toContain('"autoAcceptAiSuggestions":true')
+    expect(await importContext.getSetting(DOC_GENERATION_SETTINGS_KEY)).toContain('"streamOutput":false')
   })
 
   it('treats a date-only end filter as inclusive for exports', async () => {

@@ -1,5 +1,4 @@
-import type { ReactNode } from 'react'
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 
 import type {
   Notebook,
@@ -14,6 +13,8 @@ import { BlockCard } from './BlockCard'
 import { InputBar } from './InputBar'
 import { MarkdownContent } from './MarkdownContent'
 import { SearchResultCard } from './SearchResultCard'
+import { ActionButton } from './ui/ActionButton'
+import { SectionEyebrow } from './ui/SectionEyebrow'
 
 interface NotebookWorkspaceProps {
   notebooks: NotebookSummary[]
@@ -43,18 +44,6 @@ interface NotebookWorkspaceProps {
   onSearchQueryChange: (value: string) => void
   onSearch: () => Promise<void>
   onAddSearchResultToNotebook: (blockId: string) => Promise<void>
-}
-
-interface ActionButtonProps {
-  children: ReactNode
-  onClick?: () => void
-  disabled?: boolean
-  danger?: boolean
-  active?: boolean
-  title?: string
-  ariaLabel?: string
-  className?: string
-  testId?: string
 }
 
 type NotebookLayoutMode = 'two-pane' | 'single-pane'
@@ -95,42 +84,6 @@ function moveItemIds(itemIds: string[], activeId: string, targetId: string): str
 
 function notebookSummaryLabel(notebook: Pick<NotebookSummary, 'itemCount' | 'blockCount' | 'structureCount'>): string {
   return `${notebook.itemCount} 项 · ${notebook.blockCount} 个引用块 / ${notebook.structureCount} 个结构项`
-}
-
-function SectionEyebrow({ children }: { children: ReactNode }) {
-  return <p className="text-[11px] font-medium uppercase tracking-[0.24em] text-stone-400">{children}</p>
-}
-
-function ActionButton({
-  children,
-  onClick,
-  disabled = false,
-  danger = false,
-  active = false,
-  title,
-  ariaLabel,
-  className = '',
-  testId,
-}: ActionButtonProps) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      disabled={disabled}
-      title={title}
-      aria-label={ariaLabel}
-      data-testid={testId}
-      className={`rounded-lg border px-3 py-2 text-sm font-medium transition disabled:opacity-50 ${
-        danger
-          ? 'border-rose-200 bg-rose-50 text-rose-700 hover:bg-rose-100'
-          : active
-            ? 'border-stone-900 bg-stone-900 text-white hover:bg-stone-800'
-            : 'border-stone-200 bg-white text-stone-700 hover:bg-stone-50'
-      } ${className}`}
-    >
-      {children}
-    </button>
-  )
 }
 
 export function NotebookWorkspace({

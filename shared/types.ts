@@ -82,6 +82,84 @@ export interface Snapshot {
   createdAt: string
 }
 
+export type ReviewMode = 'daily-review' | 'ai-insights' | 'recent-shifts'
+
+export type AiInsightMethodId =
+  | 'default-insight'
+  | 'values-clarification'
+  | 'reverse-thinking'
+  | 'second-order-thinking'
+  | 'cbt-patterns'
+  | 'mbti-analysis'
+
+export interface DailyReviewSourceBlock {
+  id: string
+  preview: string
+  createdAt: string
+  updatedAt: string
+  tags: string[]
+  summary?: string | null
+}
+
+export interface DailyReviewResult {
+  date: string
+  title: string
+  summary: string | null
+  content: string
+  blockIds: string[]
+  calendarEntryIds: string[]
+  blockCount: number
+  plannedEntryCount: number
+  doneEntryCount: number
+  canceledEntryCount: number
+  topTags: string[]
+  generatedAt: string
+  mode: AIExecutionMode
+  sourceBlocks: DailyReviewSourceBlock[]
+  empty: boolean
+}
+
+export interface DailyReviewSnapshotInput {
+  title: string
+  content: string
+  blockIds: string[]
+}
+
+export interface AiInsightSourceBlock extends DailyReviewSourceBlock {
+  date: string
+}
+
+export interface AiInsightResult {
+  methodId: AiInsightMethodId
+  date: string
+  rangeStart: string
+  rangeEnd: string
+  title: string
+  summary: string | null
+  content: string
+  blockIds: string[]
+  calendarEntryIds: string[]
+  blockCount: number
+  plannedEntryCount: number
+  doneEntryCount: number
+  canceledEntryCount: number
+  topTags: string[]
+  generatedAt: string
+  mode: AIExecutionMode
+  sourceBlocks: AiInsightSourceBlock[]
+  empty: boolean
+}
+
+export interface AiInsightSnapshotInput {
+  methodId: AiInsightMethodId
+  date: string
+  rangeStart: string
+  rangeEnd: string
+  title: string
+  content: string
+  blockIds: string[]
+}
+
 export interface NotebookSummary {
   id: string
   title: string
@@ -195,6 +273,7 @@ export interface ExportOptions {
     end?: string
   }
   includeAttachments: boolean
+  includeSettings?: boolean
   targetPath?: string | null
 }
 
@@ -206,6 +285,8 @@ export interface ImportPreview {
   totalFiles: number
   totalBlocks: number
   conflicts: number
+  includesSettings?: boolean
+  settingsEntryCount?: number
   samples: Array<{
     filename: string
     preview: string
@@ -230,6 +311,7 @@ export interface DocGenerationSettings {
   retrievalLimit: number
   temperature: number
   maxOutputTokens: number
+  streamOutput: boolean
 }
 
 export interface BlockEnrichSettings {
@@ -248,6 +330,40 @@ export interface CalendarSettings {
   autoAcceptAiSuggestions: boolean
   maxSuggestionsPerBlock: number
   upcomingDays: number
+}
+
+export type ExternalAccessSkillTarget = 'claude-code'
+
+export interface ExternalAccessSettings {
+  enabled: boolean
+  generatedAt: string | null
+  skillTarget: ExternalAccessSkillTarget
+}
+
+export interface ExternalAccessStatus {
+  enabled: boolean
+  available: boolean
+  generatedAt: string | null
+  skillTarget: ExternalAccessSkillTarget
+  cliPath: string
+  cliDirectory: string
+  guidesDirectory: string
+  integrationReadmePath: string
+  integrationReadmeExists: boolean
+  agentGuidePath: string
+  agentGuideExists: boolean
+  commandsGuidePath: string
+  workflowsGuidePath: string
+  examplesDirectory: string
+  adaptersDirectory: string
+  skillDirectory: string
+  executablePath: string
+  executableExists: boolean
+  cliExists: boolean
+  skillExists: boolean
+  doctorCommand: string
+  searchCommandExample: string
+  issues: string[]
 }
 
 export interface PaginationInput {
@@ -425,7 +541,7 @@ export interface NotebookChangedEvent {
 }
 
 export interface MetaChangedEvent {
-  reason: 'settings' | 'ai-test' | 'vector-queue' | 'vector-failure' | 'vector-retry' | 'doc-generation' | 'usage' | 'calendar-suggestion' | 'data-management' | 'quit'
+  reason: 'settings' | 'ai-test' | 'vector-queue' | 'vector-failure' | 'vector-retry' | 'doc-generation' | 'review-generation' | 'usage' | 'calendar-suggestion' | 'data-management' | 'quit'
 }
 
 export interface AppQuitStateChangedEvent {
@@ -449,6 +565,26 @@ export interface DocGenerationStart {
 export interface DocGenerationChunk {
   requestId: string
   topic: string
+  delta: string
+  done: boolean
+  mode: AIExecutionMode
+  fullText?: string
+  error?: string
+}
+
+export interface ReviewGenerationStart {
+  requestId: string
+  kind: 'daily-review' | 'ai-insight'
+  date: string
+  methodId?: AiInsightMethodId
+  mode: AIExecutionMode
+}
+
+export interface ReviewGenerationChunk {
+  requestId: string
+  kind: 'daily-review' | 'ai-insight'
+  date: string
+  methodId?: AiInsightMethodId
   delta: string
   done: boolean
   mode: AIExecutionMode
@@ -531,6 +667,15 @@ export interface ChangbuApi {
     rebuildAttachmentIndex(): Promise<AttachmentIndexRebuildResult>
     rebuildAllVectors(): Promise<VectorRebuildResult>
   }
+  review: {
+    openWindow(mode: ReviewMode, dateKey?: string): Promise<void>
+    generateDaily(dateKey: string, forceRefresh?: boolean): Promise<DailyReviewResult>
+    generateInsight(methodId: AiInsightMethodId, dateKey: string, forceRefresh?: boolean): Promise<AiInsightResult>
+    startDailyGeneration(dateKey: string, forceRefresh?: boolean): Promise<ReviewGenerationStart>
+    startInsightGeneration(methodId: AiInsightMethodId, dateKey: string, forceRefresh?: boolean): Promise<ReviewGenerationStart>
+    saveDailySnapshot(input: DailyReviewSnapshotInput): Promise<Snapshot>
+    saveInsightSnapshot(input: AiInsightSnapshotInput): Promise<Snapshot>
+  }
   tags: {
     add(blockId: string, tagName: string): Promise<Block>
     remove(blockId: string, tagId: string): Promise<Block>
@@ -544,6 +689,12 @@ export interface ChangbuApi {
     openDataDirectory(): Promise<void>
     openSettingsDirectory(): Promise<void>
     getMeta(): Promise<AppMeta>
+    getExternalAccessStatus(): Promise<ExternalAccessStatus>
+    enableExternalAccess(): Promise<ExternalAccessStatus>
+    generateExternalAccessBundle(): Promise<ExternalAccessStatus>
+    setupExternalAccess(): Promise<ExternalAccessStatus>
+    disableExternalAccess(): Promise<ExternalAccessStatus>
+    openExternalAccessDirectory(): Promise<void>
   }
   vectors: {
     retryFailed(): Promise<number>
@@ -554,6 +705,7 @@ export interface ChangbuApi {
     onMetaChanged(listener: (event: MetaChangedEvent) => void): () => void
     onCalendarChanged(listener: (event: CalendarChangedEvent) => void): () => void
     onDocGenerationChunk(listener: (chunk: DocGenerationChunk) => void): () => void
+    onReviewGenerationChunk(listener: (chunk: ReviewGenerationChunk) => void): () => void
     onQuitStateChanged(listener: (state: AppQuitStateChangedEvent) => void): () => void
   }
 }

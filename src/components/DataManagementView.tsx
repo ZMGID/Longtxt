@@ -138,6 +138,11 @@ function ImportPreviewPanel({
         {importPreview.format.toUpperCase()} · {importPreview.totalFiles} 个文件 · {importPreview.totalBlocks} 个块
         {importPreview.conflicts > 0 ? ` · ${importPreview.conflicts} 个冲突` : ' · 无冲突'}
       </p>
+      {importPreview.includesSettings ? (
+        <p className="mt-1 text-xs leading-5 text-stone-500">
+          这个备份还包含设置快照，导入时会额外恢复 {importPreview.settingsEntryCount ?? 0} 项设置。
+        </p>
+      ) : null}
       {importPreview.samples.length > 0 ? (
         <div className="mt-3 space-y-1 text-xs leading-5 text-stone-500">
           {importPreview.samples.map((sample) => (
@@ -408,7 +413,7 @@ export function DataManagementView() {
               <div className="mt-4 grid gap-6 xl:grid-cols-[minmax(0,1fr)_360px] xl:gap-8">
                 <div className="min-w-0">
                   <div className="text-sm font-semibold text-stone-900">备份与恢复</div>
-                  <p className="mt-1 text-sm leading-6 text-stone-500">Markdown 适合人工查看，JSON 适合完整迁移与恢复。导入前会先给你预览，不直接落盘。</p>
+                  <p className="mt-1 text-sm leading-6 text-stone-500">Markdown 适合人工查看，JSON 适合完整迁移与恢复；这里导出的 JSON 会连同设置快照一起保存。导入前会先给你预览，不直接落盘。</p>
                   <div className="mt-3 flex flex-wrap gap-2">
                     <FlatButton
                       disabled={busyAction !== null}
@@ -431,14 +436,14 @@ export function DataManagementView() {
                       disabled={busyAction !== null}
                       onClick={() => {
                         void runAction('export-json', async () => {
-                          const result = await changbu.exports.json({ includeAttachments: true })
+                          const result = await changbu.exports.json({ includeAttachments: true, includeSettings: true })
 
                           if (!result) {
                             toast('info', '已取消 JSON 备份。')
                             return
                           }
 
-                          toast('success', `JSON 备份已导出到 ${result.path}，共 ${formatCount(result.count)} 个块。`)
+                          toast('success', `完整 JSON 备份已导出到 ${result.path}，共 ${formatCount(result.count)} 个块，并包含设置快照。`)
                         })
                       }}
                     >

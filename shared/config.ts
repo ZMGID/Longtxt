@@ -1,4 +1,4 @@
-import type { AIConfig, BlockEnrichSettings, CalendarSettings, DocGenerationSettings, UISettings } from './types'
+import type { AIConfig, BlockEnrichSettings, CalendarSettings, DocGenerationSettings, ExternalAccessSettings, UISettings } from './types'
 
 export const APP_NAME = '长布'
 
@@ -6,6 +6,7 @@ export const DEFAULT_PAGE_SIZE = 200
 export const BLOCK_ENRICH_SETTINGS_KEY = 'block_enrich_settings'
 export const CALENDAR_SETTINGS_KEY = 'calendar_settings'
 export const DOC_GENERATION_SETTINGS_KEY = 'doc_generation_settings'
+export const EXTERNAL_ACCESS_SETTINGS_KEY = 'external_access_settings'
 export const UI_SETTINGS_KEY = 'ui_settings'
 export const MIN_BLOCK_ENRICH_BATCH_BLOCKS = 1
 export const MAX_BLOCK_ENRICH_BATCH_BLOCKS = 10
@@ -44,6 +45,7 @@ export const DEFAULT_DOC_GENERATION_SETTINGS: DocGenerationSettings = {
   retrievalLimit: 30,
   temperature: 0.1,
   maxOutputTokens: 1200,
+  streamOutput: true,
 }
 
 export const DEFAULT_BLOCK_ENRICH_SETTINGS: BlockEnrichSettings = {
@@ -62,6 +64,12 @@ export const DEFAULT_CALENDAR_SETTINGS: CalendarSettings = {
   autoAcceptAiSuggestions: false,
   maxSuggestionsPerBlock: 3,
   upcomingDays: 30,
+}
+
+export const DEFAULT_EXTERNAL_ACCESS_SETTINGS: ExternalAccessSettings = {
+  enabled: false,
+  generatedAt: null,
+  skillTarget: 'claude-code',
 }
 
 function clampDocGenerationReferenceBlocks(value: number): number {
@@ -187,6 +195,9 @@ export function normalizeDocGenerationSettings(
         ? value.maxOutputTokens
         : DEFAULT_DOC_GENERATION_SETTINGS.maxOutputTokens,
     ),
+    streamOutput: typeof value?.streamOutput === 'boolean'
+      ? value.streamOutput
+      : DEFAULT_DOC_GENERATION_SETTINGS.streamOutput,
   }
 }
 
@@ -293,5 +304,33 @@ export function parseUISettings(raw: string | null): UISettings {
     return normalizeUISettings(JSON.parse(raw) as Partial<UISettings>)
   } catch {
     return DEFAULT_UI_SETTINGS
+  }
+}
+
+export function normalizeExternalAccessSettings(
+  value: Partial<ExternalAccessSettings> | null | undefined,
+): ExternalAccessSettings {
+  return {
+    enabled: typeof value?.enabled === 'boolean'
+      ? value.enabled
+      : DEFAULT_EXTERNAL_ACCESS_SETTINGS.enabled,
+    generatedAt: typeof value?.generatedAt === 'string' && value.generatedAt.trim()
+      ? value.generatedAt
+      : DEFAULT_EXTERNAL_ACCESS_SETTINGS.generatedAt,
+    skillTarget: value?.skillTarget === 'claude-code'
+      ? value.skillTarget
+      : DEFAULT_EXTERNAL_ACCESS_SETTINGS.skillTarget,
+  }
+}
+
+export function parseExternalAccessSettings(raw: string | null): ExternalAccessSettings {
+  if (!raw) {
+    return DEFAULT_EXTERNAL_ACCESS_SETTINGS
+  }
+
+  try {
+    return normalizeExternalAccessSettings(JSON.parse(raw) as Partial<ExternalAccessSettings>)
+  } catch {
+    return DEFAULT_EXTERNAL_ACCESS_SETTINGS
   }
 }

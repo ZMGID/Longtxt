@@ -4,10 +4,12 @@ import {
   DEFAULT_BLOCK_ENRICH_SETTINGS,
   DEFAULT_CALENDAR_SETTINGS,
   DEFAULT_DOC_GENERATION_SETTINGS,
+  DEFAULT_EXTERNAL_ACCESS_SETTINGS,
   DEFAULT_UI_SETTINGS,
   parseBlockEnrichSettings,
   parseCalendarSettings,
   parseDocGenerationSettings,
+  parseExternalAccessSettings,
   parseUISettings,
 } from './config'
 
@@ -23,11 +25,13 @@ describe('parseDocGenerationSettings', () => {
       retrievalLimit: 40,
       temperature: 0.35,
       maxOutputTokens: 1800,
+      streamOutput: false,
     }))).toEqual({
       maxReferenceBlocks: 12,
       retrievalLimit: 40,
       temperature: 0.35,
       maxOutputTokens: 1800,
+      streamOutput: false,
     })
   })
 })
@@ -92,6 +96,25 @@ describe('parseCalendarSettings', () => {
       autoAcceptAiSuggestions: true,
       maxSuggestionsPerBlock: 8,
       upcomingDays: 120,
+    })
+  })
+})
+
+describe('parseExternalAccessSettings', () => {
+  it('falls back to defaults when the saved value is missing or invalid', () => {
+    expect(parseExternalAccessSettings(null)).toEqual(DEFAULT_EXTERNAL_ACCESS_SETTINGS)
+    expect(parseExternalAccessSettings('not-json')).toEqual(DEFAULT_EXTERNAL_ACCESS_SETTINGS)
+  })
+
+  it('normalizes external access settings', () => {
+    expect(parseExternalAccessSettings(JSON.stringify({
+      enabled: true,
+      generatedAt: '2026-04-07T12:00:00.000Z',
+      skillTarget: 'claude-code',
+    }))).toEqual({
+      enabled: true,
+      generatedAt: '2026-04-07T12:00:00.000Z',
+      skillTarget: 'claude-code',
     })
   })
 })

@@ -220,6 +220,11 @@ function setHeatmapViewportWidth(width: number): void {
   heatmapViewportWidth = width
 }
 
+function parseSizeFromInlineStyle(style: string, property: 'width' | 'height'): number {
+  const match = style.match(new RegExp(`${property}: ([0-9.]+)px`))
+  return match ? Number(match[1]) : NaN
+}
+
 function renderCalendar(width = 1600) {
   setWindowSize(width, 900)
 
@@ -377,8 +382,11 @@ describe('CalendarView', () => {
 
     const compactDayLabel = `${formatCalendarDateLabel('2026-04-05')} · 4 个块`
     const compactStyle = screen.getByRole('button', { name: compactDayLabel }).getAttribute('style') ?? ''
-    expect(compactStyle).toContain('width: 3.3962264150943398px')
-    expect(compactStyle).toContain('height: 3.3962264150943398px')
+    expect(screen.getByTestId('calendar-heatmap')).toHaveAttribute('data-mode', 'focused-window')
+    expect(screen.getByText('已聚焦当前日期附近')).toBeInTheDocument()
+    expect(parseSizeFromInlineStyle(compactStyle, 'width')).toBe(14)
+    expect(parseSizeFromInlineStyle(compactStyle, 'height')).toBe(14)
+    expect(screen.queryByRole('button', { name: `${formatCalendarDateLabel('2026-01-01')} · 0 个块` })).not.toBeInTheDocument()
 
     setHeatmapViewportWidth(1200)
     resizeWindow(1600)
@@ -387,6 +395,7 @@ describe('CalendarView', () => {
     })
 
     const expandedStyle = screen.getByRole('button', { name: compactDayLabel }).getAttribute('style') ?? ''
+    expect(screen.getByTestId('calendar-heatmap')).toHaveAttribute('data-mode', 'full-year')
     expect(expandedStyle).toContain('width: 15px')
     expect(expandedStyle).toContain('height: 15px')
   })

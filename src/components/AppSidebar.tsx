@@ -2,7 +2,8 @@ import type { ReactNode } from 'react'
 
 import type { AppMeta } from '../../shared/types'
 
-export type AppView = 'timeline' | 'calendar' | 'search' | 'notebooks' | 'graph' | 'snapshots' | 'data-management' | 'settings'
+export type AppView = 'timeline' | 'calendar' | 'search' | 'notebooks' | 'graph' | 'snapshots' | 'data-management'
+type SidebarItemId = AppView | 'settings'
 
 interface AppSidebarProps {
   activeView: AppView
@@ -15,7 +16,7 @@ interface AppSidebarProps {
 }
 
 interface SidebarItem {
-  id: AppView
+  id: SidebarItemId
   label: string
   icon: (props: { active: boolean }) => ReactNode
 }

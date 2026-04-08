@@ -9,6 +9,7 @@ import type {
   DocGenerationChunk,
   MetaChangedEvent,
   NotebookChangedEvent,
+  ReviewGenerationChunk,
   RendererExportOptions,
 } from '../shared/types'
 
@@ -17,11 +18,13 @@ const notebookListeners = new Set<(event: NotebookChangedEvent) => void>()
 const metaListeners = new Set<(event: MetaChangedEvent) => void>()
 const calendarListeners = new Set<(event: CalendarChangedEvent) => void>()
 const docListeners = new Set<(chunk: DocGenerationChunk) => void>()
+const reviewListeners = new Set<(chunk: ReviewGenerationChunk) => void>()
 const quitStateListeners = new Set<(state: AppQuitStateChangedEvent) => void>()
 
 function sanitizeExportOptions(options: Partial<RendererExportOptions> | undefined): RendererExportOptions {
   return {
     includeAttachments: Boolean(options?.includeAttachments),
+    includeSettings: Boolean(options?.includeSettings),
     tagFilter: options?.tagFilter,
     dateRange: options?.dateRange,
   }
@@ -53,6 +56,12 @@ ipcRenderer.on(IPC_CHANNELS.events.calendarChanged, (_event, payload: CalendarCh
 
 ipcRenderer.on(IPC_CHANNELS.events.docGenerationChunk, (_event, payload: DocGenerationChunk) => {
   for (const listener of docListeners) {
+    listener(payload)
+  }
+})
+
+ipcRenderer.on(IPC_CHANNELS.events.reviewGenerationChunk, (_event, payload: ReviewGenerationChunk) => {
+  for (const listener of reviewListeners) {
     listener(payload)
   }
 })
@@ -140,6 +149,16 @@ const api: ChangbuApi = {
     rebuildAttachmentIndex: () => ipcRenderer.invoke(IPC_CHANNELS.data.rebuildAttachmentIndex),
     rebuildAllVectors: () => ipcRenderer.invoke(IPC_CHANNELS.data.rebuildAllVectors),
   },
+  review: {
+    openWindow: (mode, dateKey) => ipcRenderer.invoke(IPC_CHANNELS.review.openWindow, mode, dateKey),
+    generateDaily: (dateKey, forceRefresh) => ipcRenderer.invoke(IPC_CHANNELS.review.generateDaily, dateKey, forceRefresh),
+    generateInsight: (methodId, dateKey, forceRefresh) => ipcRenderer.invoke(IPC_CHANNELS.review.generateInsight, methodId, dateKey, forceRefresh),
+    startDailyGeneration: (dateKey, forceRefresh) => ipcRenderer.invoke(IPC_CHANNELS.review.startDailyGeneration, dateKey, forceRefresh),
+    startInsightGeneration: (methodId, dateKey, forceRefresh) =>
+      ipcRenderer.invoke(IPC_CHANNELS.review.startInsightGeneration, methodId, dateKey, forceRefresh),
+    saveDailySnapshot: (input) => ipcRenderer.invoke(IPC_CHANNELS.review.saveDailySnapshot, input),
+    saveInsightSnapshot: (input) => ipcRenderer.invoke(IPC_CHANNELS.review.saveInsightSnapshot, input),
+  },
   settings: {
     get: (key) => ipcRenderer.invoke(IPC_CHANNELS.settings.get, key),
     set: (key, value) => ipcRenderer.invoke(IPC_CHANNELS.settings.set, key, value),
@@ -148,6 +167,12 @@ const api: ChangbuApi = {
     openDataDirectory: () => ipcRenderer.invoke(IPC_CHANNELS.settings.openDataDirectory),
     openSettingsDirectory: () => ipcRenderer.invoke(IPC_CHANNELS.settings.openSettingsDirectory),
     getMeta: () => ipcRenderer.invoke(IPC_CHANNELS.settings.getMeta),
+    getExternalAccessStatus: () => ipcRenderer.invoke(IPC_CHANNELS.settings.getExternalAccessStatus),
+    enableExternalAccess: () => ipcRenderer.invoke(IPC_CHANNELS.settings.enableExternalAccess),
+    generateExternalAccessBundle: () => ipcRenderer.invoke(IPC_CHANNELS.settings.generateExternalAccessBundle),
+    setupExternalAccess: () => ipcRenderer.invoke(IPC_CHANNELS.settings.setupExternalAccess),
+    disableExternalAccess: () => ipcRenderer.invoke(IPC_CHANNELS.settings.disableExternalAccess),
+    openExternalAccessDirectory: () => ipcRenderer.invoke(IPC_CHANNELS.settings.openExternalAccessDirectory),
   },
   vectors: {
     retryFailed: () => ipcRenderer.invoke(IPC_CHANNELS.vectors.retryFailed),
@@ -181,6 +206,12 @@ const api: ChangbuApi = {
       docListeners.add(listener)
       return () => {
         docListeners.delete(listener)
+      }
+    },
+    onReviewGenerationChunk(listener) {
+      reviewListeners.add(listener)
+      return () => {
+        reviewListeners.delete(listener)
       }
     },
     onQuitStateChanged(listener) {

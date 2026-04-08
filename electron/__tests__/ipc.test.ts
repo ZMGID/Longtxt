@@ -110,11 +110,13 @@ describe('ipc handlers', () => {
 
     expect(exportMarkdown).toHaveBeenCalledWith({
       includeAttachments: true,
+      includeSettings: false,
       tagFilter: ['项目'],
       dateRange: { start: '2026-04-01' },
     })
     expect(exportJson).toHaveBeenCalledWith({
       includeAttachments: false,
+      includeSettings: false,
       tagFilter: undefined,
       dateRange: undefined,
     })

@@ -7,6 +7,14 @@ import { ToastContext } from './toast-context'
 
 function renderSettings(overrides: Partial<ComponentProps<typeof SettingsPanel>> = {}) {
   const toast = vi.fn()
+  const clipboardWriteText = vi.fn(async () => {})
+  Object.defineProperty(navigator, 'clipboard', {
+    value: {
+      writeText: clipboardWriteText,
+    },
+    configurable: true,
+  })
+
   const props: ComponentProps<typeof SettingsPanel> = {
     config: {
       llm: {
@@ -25,6 +33,7 @@ function renderSettings(overrides: Partial<ComponentProps<typeof SettingsPanel>>
       retrievalLimit: 30,
       temperature: 0.1,
       maxOutputTokens: 1200,
+      streamOutput: true,
     },
     blockEnrichSettings: {
       queueEnabled: false,
@@ -80,6 +89,38 @@ function renderSettings(overrides: Partial<ComponentProps<typeof SettingsPanel>>
     onDismissImportPreview: vi.fn(),
     onOpenDataDirectory: vi.fn(async () => {}),
     onOpenSettingsDirectory: vi.fn(async () => {}),
+    externalAccessStatus: {
+      enabled: true,
+      available: true,
+      generatedAt: '2026-04-01T09:00:00.000Z',
+      skillTarget: 'claude-code',
+      cliPath: '/tmp/changbu/external-access/changbu-notes',
+      cliDirectory: '/tmp/changbu/external-access',
+      guidesDirectory: '/tmp/changbu/external-access/guides',
+      integrationReadmePath: '/tmp/changbu/external-access/README.md',
+      integrationReadmeExists: true,
+      agentGuidePath: '/tmp/changbu/external-access/guides/AGENTS.md',
+      agentGuideExists: true,
+      commandsGuidePath: '/tmp/changbu/external-access/guides/commands.md',
+      workflowsGuidePath: '/tmp/changbu/external-access/guides/workflows.md',
+      examplesDirectory: '/tmp/changbu/external-access/examples',
+      adaptersDirectory: '/tmp/changbu/external-access/adapters',
+      skillDirectory: '/tmp/changbu/external-access/adapters/claude-code/changbu-notes',
+      executablePath: '/Applications/长布.app/Contents/MacOS/长布',
+      executableExists: true,
+      cliExists: true,
+      skillExists: true,
+      doctorCommand: "'/tmp/changbu/external-access/changbu-notes' doctor --json",
+      searchCommandExample: "'/tmp/changbu/external-access/changbu-notes' search \"服务器信息\" --limit 5 --json",
+      issues: [],
+    },
+    externalAccessBusy: false,
+    externalAccessBusyAction: null,
+    onEnableExternalAccess: vi.fn(async () => {}),
+    onGenerateExternalAccessBundle: vi.fn(async () => {}),
+    onDisableExternalAccess: vi.fn(async () => {}),
+    onRefreshExternalAccess: vi.fn(async () => {}),
+    onOpenExternalAccessDirectory: vi.fn(async () => {}),
     ...overrides,
   }
 
@@ -88,10 +129,29 @@ function renderSettings(overrides: Partial<ComponentProps<typeof SettingsPanel>>
       <SettingsPanel {...props} />
     </ToastContext.Provider>,
   )
-  return { props, toast }
+  return { props, toast, clipboardWriteText }
 }
 
 describe('SettingsPanel', () => {
+  it('shows header actions only on configurable sections', () => {
+    renderSettings()
+
+    expect(screen.queryByRole('button', { name: '保存设置' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: '测试连接' })).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByTestId('settings-nav-general'))
+    expect(screen.getByRole('button', { name: '保存设置' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: '测试连接' })).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByText('模型与接口'))
+    expect(screen.getByRole('button', { name: '保存设置' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '测试连接' })).toBeInTheDocument()
+
+    fireEvent.click(screen.getByTestId('settings-nav-external-access'))
+    expect(screen.queryByRole('button', { name: '保存设置' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: '测试连接' })).not.toBeInTheDocument()
+  })
+
   it('uses left navigation sections and wires common, backup, advanced, and directory actions', () => {
     const { props } = renderSettings()
 
@@ -132,6 +192,7 @@ describe('SettingsPanel', () => {
       retrievalLimit: 30,
       temperature: 0.1,
       maxOutputTokens: 1200,
+      streamOutput: true,
     })
 
     fireEvent.change(screen.getByRole('spinbutton', { name: /召回候选块数/ }), { target: { value: '40' } })
@@ -140,6 +201,7 @@ describe('SettingsPanel', () => {
       retrievalLimit: 40,
       temperature: 0.1,
       maxOutputTokens: 1200,
+      streamOutput: true,
     })
 
     fireEvent.change(screen.getByRole('spinbutton', { name: /生成温度/ }), { target: { value: '0.35' } })
@@ -148,6 +210,16 @@ describe('SettingsPanel', () => {
       retrievalLimit: 30,
       temperature: 0.35,
       maxOutputTokens: 1200,
+      streamOutput: true,
+    })
+
+    fireEvent.click(screen.getByRole('checkbox', { name: /模型流式输出/ }))
+    expect(props.onDocGenerationSettingsChange).toHaveBeenCalledWith({
+      maxReferenceBlocks: 10,
+      retrievalLimit: 30,
+      temperature: 0.1,
+      maxOutputTokens: 1200,
+      streamOutput: false,
     })
 
     fireEvent.change(screen.getByRole('spinbutton', { name: /输出 Token 上限/ }), { target: { value: '1800' } })
@@ -156,6 +228,7 @@ describe('SettingsPanel', () => {
       retrievalLimit: 30,
       temperature: 0.1,
       maxOutputTokens: 1800,
+      streamOutput: true,
     })
 
     fireEvent.click(screen.getByRole('checkbox', { name: /启用 live enrich 队列/ }))
@@ -223,6 +296,71 @@ describe('SettingsPanel', () => {
     fireEvent.click(screen.getByTestId('settings-nav-general'))
     fireEvent.click(screen.getByRole('checkbox', { name: /显示左侧时间线/ }))
     expect(props.onUISettingsChange).toHaveBeenCalledWith({ showMiniTimeline: false })
+  })
+
+  it('shows external access controls and wires generation actions', async () => {
+    const { props, toast, clipboardWriteText } = renderSettings({
+      externalAccessStatus: {
+        enabled: false,
+        available: false,
+        generatedAt: '2026-04-01T09:00:00.000Z',
+        skillTarget: 'claude-code',
+        cliPath: '/tmp/changbu/external-access/changbu-notes',
+        cliDirectory: '/tmp/changbu/external-access',
+        guidesDirectory: '/tmp/changbu/external-access/guides',
+        integrationReadmePath: '/tmp/changbu/external-access/README.md',
+        integrationReadmeExists: true,
+        agentGuidePath: '/tmp/changbu/external-access/guides/AGENTS.md',
+        agentGuideExists: true,
+        commandsGuidePath: '/tmp/changbu/external-access/guides/commands.md',
+        workflowsGuidePath: '/tmp/changbu/external-access/guides/workflows.md',
+        examplesDirectory: '/tmp/changbu/external-access/examples',
+        adaptersDirectory: '/tmp/changbu/external-access/adapters',
+        skillDirectory: '/tmp/changbu/external-access/adapters/claude-code/changbu-notes',
+        executablePath: '/Applications/长布.app/Contents/MacOS/长布',
+        executableExists: true,
+        cliExists: true,
+        skillExists: true,
+        doctorCommand: "'/tmp/changbu/external-access/changbu-notes' doctor --json",
+        searchCommandExample: "'/tmp/changbu/external-access/changbu-notes' search \"服务器信息\" --limit 5 --json",
+        issues: ['外部接入未启用。'],
+      },
+    })
+
+    fireEvent.click(screen.getByTestId('settings-nav-external-access'))
+
+    expect(screen.getByText('快速操作')).toBeInTheDocument()
+    expect(screen.getByText(/这里默认生成的是完整通用接入包/)).toBeInTheDocument()
+
+    fireEvent.click(screen.getByTestId('settings-enable-external-access'))
+    fireEvent.click(screen.getByTestId('settings-generate-external-access'))
+    fireEvent.click(screen.getByTestId('settings-refresh-external-access'))
+    fireEvent.click(screen.getByTestId('settings-open-external-access-directory'))
+    fireEvent.click(screen.getByTestId('settings-copy-external-access-command'))
+
+    expect(props.onEnableExternalAccess).toHaveBeenCalledTimes(1)
+    expect(props.onGenerateExternalAccessBundle).toHaveBeenCalledTimes(1)
+    expect(props.onRefreshExternalAccess).toHaveBeenCalledTimes(1)
+    expect(props.onOpenExternalAccessDirectory).toHaveBeenCalledTimes(1)
+    expect(screen.getByText('/tmp/changbu/external-access/README.md')).toBeInTheDocument()
+    expect(screen.getByText('/tmp/changbu/external-access/guides/commands.md')).toBeInTheDocument()
+    expect(screen.getByText('/tmp/changbu/external-access/adapters')).toBeInTheDocument()
+
+    await waitFor(() => {
+      expect(clipboardWriteText).toHaveBeenCalledWith(
+        "'/tmp/changbu/external-access/changbu-notes' search \"服务器信息\" --limit 5 --json",
+      )
+      expect(toast).toHaveBeenCalledWith('success', '已复制示例查询命令。')
+    })
+  })
+
+  it('wires disable action when external access is enabled', () => {
+    const { props } = renderSettings()
+
+    fireEvent.click(screen.getByTestId('settings-nav-external-access'))
+    fireEvent.click(screen.getByTestId('settings-disable-external-access'))
+
+    expect(props.onDisableExternalAccess).toHaveBeenCalledTimes(1)
   })
 
   it('shows backup import preview actions and forwards conflict decisions', () => {

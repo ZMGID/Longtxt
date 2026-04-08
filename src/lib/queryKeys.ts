@@ -15,6 +15,11 @@ export const queryKeys = {
   calendarHeatmap: (year: number) => ['calendar', 'heatmap', year] as const,
   calendarDay: (date: string) => ['calendar', 'day', date] as const,
   calendarUpcoming: (limitDays: number) => ['calendar', 'upcoming', limitDays] as const,
+  reviewRoot: () => ['review'] as const,
+  reviewDaily: (date: string, requestVersion = 0) => ['review', 'daily', date, requestVersion] as const,
+  reviewInsight: (methodId: string, date: string, requestVersion = 0) => ['review', 'insight', methodId, date, requestVersion] as const,
+  settingsRoot: () => ['settings'] as const,
+  setting: (key: string) => ['settings', key] as const,
   dataManagement: () => ['data-management'] as const,
   meta: () => ['meta'] as const,
 }

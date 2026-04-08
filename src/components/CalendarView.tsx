@@ -7,11 +7,14 @@ import { useCalendarDayDetail, useCalendarHeatmap, useCalendarYears, useUpcoming
 import { buildCalendarHeatmapColumns, formatCalendarDateLabel, formatCalendarTimeLabel, groupUpcomingEntries } from '../lib/calendar'
 import { changbu } from '../lib/changbu'
 import { queryKeys } from '../lib/queryKeys'
+import { SectionEyebrow } from './ui/SectionEyebrow'
 import { useToast } from './toast-context'
 
 interface CalendarViewProps {
   settings: CalendarSettings
   onJumpToBlock: (blockId: string) => Promise<void>
+  selectedDateOverride?: string | null
+  onSelectedDateOverrideHandled?: () => void
 }
 
 interface CalendarEntryDraft {
@@ -40,6 +43,9 @@ function clampIndicatorSize(value: number, min: number, max: number): number {
 
 const SIDEBAR_COLLAPSE_BREAKPOINT = 1120
 const INLINE_SIDEBAR_TAB_BREAKPOINT = 760
+const HEATMAP_FOCUSED_WINDOW_BREAKPOINT = 680
+
+type HeatmapDisplayMode = 'full-year' | 'focused-window'
 
 function resolveLayoutMode(width: number): CalendarLayoutMode {
   return width < SIDEBAR_COLLAPSE_BREAKPOINT ? 'single-pane' : 'two-pane'
@@ -57,6 +63,20 @@ function todayDateKey(): string {
     String(today.getMonth() + 1).padStart(2, '0'),
     String(today.getDate()).padStart(2, '0'),
   ].join('-')
+}
+
+function getColumnAnchorDate(column: ReturnType<typeof buildCalendarHeatmapColumns>[number]): string | null {
+  return column.days.find((day) => day)?.date ?? null
+}
+
+function getColumnMonthFallbackLabel(column: ReturnType<typeof buildCalendarHeatmapColumns>[number]): string | null {
+  const anchorDate = getColumnAnchorDate(column)
+
+  if (!anchorDate) {
+    return null
+  }
+
+  return new Intl.DateTimeFormat('en-US', { month: 'short' }).format(new Date(`${anchorDate}T00:00:00`))
 }
 
 function buildEntryDraft(date: string): CalendarEntryDraft {
@@ -86,11 +106,12 @@ function formatBlockTime(value: string): string {
   }).format(new Date(value))
 }
 
-function SectionEyebrow({ children }: { children: ReactNode }) {
-  return <p className="text-[11px] font-medium uppercase tracking-[0.24em] text-stone-400">{children}</p>
-}
-
-export function CalendarView({ settings, onJumpToBlock }: CalendarViewProps) {
+export function CalendarView({
+  settings,
+  onJumpToBlock,
+  selectedDateOverride,
+  onSelectedDateOverrideHandled,
+}: CalendarViewProps) {
   const { toast } = useToast()
   const queryClient = useQueryClient()
   const heatmapContainerRef = useRef<HTMLDivElement | null>(null)
@@ -107,6 +128,8 @@ export function CalendarView({ settings, onJumpToBlock }: CalendarViewProps) {
   const [heatmapCellSize, setHeatmapCellSize] = useState(16)
   const [heatmapGapSize, setHeatmapGapSize] = useState(4)
   const [showWeekLabels, setShowWeekLabels] = useState(true)
+  const [heatmapDisplayMode, setHeatmapDisplayMode] = useState<HeatmapDisplayMode>('full-year')
+  const [heatmapVisibleColumnCount, setHeatmapVisibleColumnCount] = useState<number | null>(null)
   const [layoutMode, setLayoutMode] = useState<CalendarLayoutMode>(() =>
     typeof window === 'undefined' ? 'two-pane' : resolveLayoutMode(window.innerWidth),
   )
@@ -126,6 +149,39 @@ export function CalendarView({ settings, onJumpToBlock }: CalendarViewProps) {
   const heatmap = heatmapQuery.data
   const dayDetail = dayDetailQuery.data
   const columns = useMemo(() => buildCalendarHeatmapColumns(heatmap?.days ?? []), [heatmap?.days])
+  const visibleHeatmapColumns = useMemo(() => {
+    if (columns.length === 0 || heatmapDisplayMode === 'full-year' || !heatmapVisibleColumnCount || heatmapVisibleColumnCount >= columns.length) {
+      return columns
+    }
+
+    const fallbackDate = activeYear === currentYear ? today : columns.find((column) => column.days.some((day) => day !== null))?.days.find((day) => day)?.date ?? null
+    const focusDate = columns.some((column) => column.days.some((day) => day?.date === selectedDate))
+      ? selectedDate
+      : fallbackDate
+
+    const focusIndex = focusDate
+      ? columns.findIndex((column) => column.days.some((day) => day?.date === focusDate))
+      : -1
+    const safeIndex = focusIndex >= 0 ? focusIndex : Math.floor(columns.length / 2)
+    const windowSize = Math.min(columns.length, heatmapVisibleColumnCount)
+
+    let start = Math.max(0, safeIndex - Math.floor(windowSize / 2))
+    let end = start + windowSize
+
+    if (end > columns.length) {
+      end = columns.length
+      start = Math.max(0, end - windowSize)
+    }
+
+    return columns.slice(start, end).map((column, index) => (
+      index === 0 && !column.monthLabel
+        ? {
+            ...column,
+            monthLabel: getColumnMonthFallbackLabel(column),
+          }
+        : column
+    ))
+  }, [activeYear, columns, currentYear, heatmapDisplayMode, heatmapVisibleColumnCount, selectedDate, today])
   const groupedUpcoming = useMemo(() => groupUpcomingEntries(upcomingQuery.data ?? []), [upcomingQuery.data])
 
   const resetScrollPosition = useCallback((): void => {
@@ -179,6 +235,17 @@ export function CalendarView({ settings, onJumpToBlock }: CalendarViewProps) {
       date: selectedDate,
     }))
   }, [selectedDate])
+
+  useEffect(() => {
+    if (!selectedDateOverride) {
+      return
+    }
+
+    setSelectedDate(selectedDateOverride)
+    setActiveYear(Number(selectedDateOverride.slice(0, 4)))
+    setDetailTab('entries')
+    onSelectedDateOverrideHandled?.()
+  }, [onSelectedDateOverrideHandled, selectedDateOverride])
 
   useEffect(() => {
     if (typeof window === 'undefined') {
@@ -269,30 +336,70 @@ export function CalendarView({ settings, onJumpToBlock }: CalendarViewProps) {
       const preferredGap = width >= 1280 ? 4 : width >= 960 ? 3 : width >= 640 ? 2 : width >= 440 ? 1 : 0
       const hardMinCellSize = width >= 760 ? 6 : width >= 560 ? 4 : width >= 420 ? 3 : 2
 
-      const computeMetrics = (withWeekLabels: boolean) => {
+      const computeMetrics = (withWeekLabels: boolean, columnCount: number) => {
         const weekLabelWidth = withWeekLabels ? 28 : 0
         const sectionGap = withWeekLabels ? 12 : 0
         const availableGridWidth = Math.max(96, width - weekLabelWidth - sectionGap)
         const gap = preferredGap
-        const exactCellSize = (availableGridWidth - gap * Math.max(columns.length - 1, 0)) / Math.max(columns.length, 1)
+        const exactCellSize = (availableGridWidth - gap * Math.max(columnCount - 1, 0)) / Math.max(columnCount, 1)
 
         return {
           cellSize: Math.min(maxCellSize, Math.max(hardMinCellSize, exactCellSize)),
           gapSize: gap,
+          availableGridWidth,
         }
       }
 
       let nextShowWeekLabels = width >= 920
-      let metrics = computeMetrics(nextShowWeekLabels)
+      let metrics = computeMetrics(nextShowWeekLabels, columns.length)
 
       if (nextShowWeekLabels && metrics.cellSize <= hardMinCellSize + 0.5) {
         nextShowWeekLabels = false
-        metrics = computeMetrics(false)
+        metrics = computeMetrics(false, columns.length)
+      }
+
+      const fullYearCellSize = metrics.cellSize
+      const shouldUseFocusedWindow = width < HEATMAP_FOCUSED_WINDOW_BREAKPOINT || fullYearCellSize < 7
+      let nextVisibleColumnCount: number | null = null
+
+      if (shouldUseFocusedWindow) {
+        const focusedCellSize = 14
+        const focusedGap = width >= 420 ? 2 : 1
+        nextShowWeekLabels = width >= 240
+
+        const computeFocusedCount = (withWeekLabels: boolean) => {
+          const weekLabelWidth = withWeekLabels ? 28 : 0
+          const sectionGap = withWeekLabels ? 12 : 0
+          const availableGridWidth = Math.max(96, width - weekLabelWidth - sectionGap)
+
+          return Math.max(1, Math.min(
+            columns.length,
+            Math.floor((availableGridWidth + focusedGap) / Math.max(focusedCellSize + focusedGap, 1)),
+          ))
+        }
+
+        nextVisibleColumnCount = computeFocusedCount(nextShowWeekLabels)
+
+        if (nextShowWeekLabels && nextVisibleColumnCount <= 8) {
+          nextShowWeekLabels = false
+          nextVisibleColumnCount = computeFocusedCount(false)
+        }
+
+        metrics = {
+          cellSize: focusedCellSize,
+          gapSize: focusedGap,
+          availableGridWidth: Math.max(
+            96,
+            width - (nextShowWeekLabels ? 28 : 0) - (nextShowWeekLabels ? 12 : 0),
+          ),
+        }
       }
 
       setShowWeekLabels(nextShowWeekLabels)
       setHeatmapCellSize(metrics.cellSize)
       setHeatmapGapSize(metrics.gapSize)
+      setHeatmapDisplayMode(shouldUseFocusedWindow ? 'focused-window' : 'full-year')
+      setHeatmapVisibleColumnCount(nextVisibleColumnCount)
     }
 
     syncHeatmapLayout(container.clientWidth)
@@ -312,7 +419,7 @@ export function CalendarView({ settings, onJumpToBlock }: CalendarViewProps) {
     return () => {
       observer.disconnect()
     }
-  }, [columns.length, layoutMode, sidebarOpen])
+  }, [columns, layoutMode, sidebarOpen])
 
   async function refreshCalendar(): Promise<void> {
     await queryClient.invalidateQueries({ queryKey: queryKeys.calendarRoot() })
@@ -627,8 +734,14 @@ export function CalendarView({ settings, onJumpToBlock }: CalendarViewProps) {
 
       {heatmapQuery.isPending ? (
         <div className="mt-4 py-10 text-sm text-stone-400">正在加载年度热力图…</div>
-      ) : columns.length > 0 ? (
-        <div ref={heatmapContainerRef} className="mt-4 min-w-0 overflow-hidden" style={heatmapStyles}>
+      ) : visibleHeatmapColumns.length > 0 ? (
+        <div
+          ref={heatmapContainerRef}
+          data-testid="calendar-heatmap"
+          data-mode={heatmapDisplayMode}
+          className="mt-4 min-w-0 overflow-hidden"
+          style={heatmapStyles}
+        >
           <div className="flex min-w-0 items-start gap-3">
             {showWeekLabels ? (
               <div className="flex shrink-0 flex-col pt-8 text-[11px] text-stone-500">
@@ -646,7 +759,7 @@ export function CalendarView({ settings, onJumpToBlock }: CalendarViewProps) {
 
             <div className="min-w-0 flex-1">
               <div className="mb-2 flex" style={{ gap: `${heatmapGapSize}px` }}>
-                {columns.map((column) => (
+                {visibleHeatmapColumns.map((column) => (
                   <div
                     key={`${column.key}-label`}
                     className="overflow-hidden text-[11px] leading-none text-stone-400"
@@ -658,7 +771,7 @@ export function CalendarView({ settings, onJumpToBlock }: CalendarViewProps) {
               </div>
 
               <div className="flex" style={{ gap: `${heatmapGapSize}px` }}>
-                {columns.map((column) => (
+                {visibleHeatmapColumns.map((column) => (
                   <div key={column.key} className="flex flex-col" style={{ gap: `${heatmapGapSize}px` }}>
                     {column.days.map((day, index) => {
                       if (!day) {
@@ -729,6 +842,11 @@ export function CalendarView({ settings, onJumpToBlock }: CalendarViewProps) {
       )}
 
       <div className="mt-4 flex flex-wrap items-center gap-x-5 gap-y-2 text-xs text-stone-500">
+        {heatmapDisplayMode === 'focused-window' ? (
+          <div className="flex items-center gap-2 text-stone-400">
+            <span className="rounded-full border border-stone-200 px-2.5 py-1">已聚焦当前日期附近</span>
+          </div>
+        ) : null}
         <div className="flex items-center gap-2">
           <span>密度</span>
           <span>Less</span>

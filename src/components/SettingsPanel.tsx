@@ -30,14 +30,16 @@ import type {
   BlockEnrichSettings,
   CalendarSettings,
   DocGenerationSettings,
+  ExternalAccessStatus,
   ImportConflictStrategy,
   ImportPreview,
   TokenUsage,
   UISettings,
 } from '../../shared/types'
+import { ActionButton } from './ui/ActionButton'
 import { useToast } from './toast-context'
 
-interface SettingsPanelProps {
+export interface SettingsPanelProps {
   config: AIConfig
   docGenerationSettings: DocGenerationSettings
   blockEnrichSettings: BlockEnrichSettings
@@ -65,9 +67,17 @@ interface SettingsPanelProps {
   onDismissImportPreview: () => void
   onOpenDataDirectory: () => Promise<void>
   onOpenSettingsDirectory: () => Promise<void>
+  externalAccessStatus: ExternalAccessStatus | null
+  externalAccessBusy: boolean
+  externalAccessBusyAction?: 'enable' | 'generate' | 'disable' | 'open' | 'refresh' | null
+  onEnableExternalAccess: () => Promise<void>
+  onGenerateExternalAccessBundle: () => Promise<void>
+  onDisableExternalAccess: () => Promise<void>
+  onRefreshExternalAccess: () => Promise<void>
+  onOpenExternalAccessDirectory: () => Promise<void>
 }
 
-type SettingsSectionId = 'about' | 'general' | 'ai' | 'backup' | 'files' | 'advanced'
+type SettingsSectionId = 'about' | 'general' | 'ai' | 'external-access' | 'backup' | 'files' | 'advanced'
 
 type SettingsNavGroup = {
   title: string
@@ -85,6 +95,7 @@ const SETTINGS_NAV_GROUPS: SettingsNavGroup[] = [
       { id: 'about', label: '关于', hint: '运行状态与诊断' },
       { id: 'general', label: '常用', hint: '日常功能开关' },
       { id: 'ai', label: '模型与接口', hint: 'LLM / Embedding' },
+      { id: 'external-access', label: '外部接入', hint: 'CLI 与通用接入' },
       { id: 'files', label: '文件与目录', hint: '打开数据与设置' },
     ],
   },
@@ -96,36 +107,6 @@ const SETTINGS_NAV_GROUPS: SettingsNavGroup[] = [
     ],
   },
 ]
-
-function ActionButton({
-  children,
-  onClick,
-  disabled = false,
-  primary = false,
-  testId,
-}: {
-  children: ReactNode
-  onClick: () => void
-  disabled?: boolean
-  primary?: boolean
-  testId?: string
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      disabled={disabled}
-      data-testid={testId}
-      className={`rounded-md border px-4 py-2 text-sm font-medium transition disabled:cursor-not-allowed disabled:opacity-50 ${
-        primary
-          ? 'border-violet-500 bg-violet-500 text-white hover:bg-violet-600'
-          : 'border-stone-200 bg-white text-stone-700 hover:bg-stone-50'
-      }`}
-    >
-      {children}
-    </button>
-  )
-}
 
 function SettingField({
   label,
@@ -265,6 +246,19 @@ function formatCompactStat(value: number): string {
   return new Intl.NumberFormat('zh-CN').format(value)
 }
 
+function formatExternalAccessTime(value: string | null): string {
+  if (!value) {
+    return '尚未生成'
+  }
+
+  const date = new Date(value)
+  return Number.isNaN(date.getTime()) ? value : date.toLocaleString('zh-CN')
+}
+
+function renderMonospaceValue(value: string): ReactNode {
+  return <span className="break-all font-mono text-[12px] text-stone-600">{value}</span>
+}
+
 function normalizeTokenUsage(usage: TokenUsage | null | undefined): TokenUsage {
   return usage ?? {
     promptTokens: 0,
@@ -343,6 +337,16 @@ function NavIcon({ section }: { section: SettingsSectionId }) {
           <path d="M3 10h4" />
           <path d="M13 10h4" />
           <circle cx="10" cy="10" r="3" />
+        </svg>
+      )
+    case 'external-access':
+      return (
+        <svg viewBox="0 0 20 20" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
+          <path d="M6.5 6.5h3" />
+          <path d="M10.5 13.5h3" />
+          <path d="M9.5 10.5 6.5 13.5" />
+          <path d="M10.5 9.5 13.5 6.5" />
+          <rect x="3.5" y="3.5" width="13" height="13" rx="3" />
         </svg>
       )
     case 'backup':
@@ -482,6 +486,7 @@ function countAdvancedOverrides(
   if (docGenerationSettings.retrievalLimit !== DEFAULT_DOC_GENERATION_SETTINGS.retrievalLimit) count += 1
   if (docGenerationSettings.temperature !== DEFAULT_DOC_GENERATION_SETTINGS.temperature) count += 1
   if (docGenerationSettings.maxOutputTokens !== DEFAULT_DOC_GENERATION_SETTINGS.maxOutputTokens) count += 1
+  if (docGenerationSettings.streamOutput !== DEFAULT_DOC_GENERATION_SETTINGS.streamOutput) count += 1
   if (blockEnrichSettings.queueEnabled !== DEFAULT_BLOCK_ENRICH_SETTINGS.queueEnabled) count += 1
   if (blockEnrichSettings.maxBatchBlocks !== DEFAULT_BLOCK_ENRICH_SETTINGS.maxBatchBlocks) count += 1
   if (blockEnrichSettings.queueDebounceMs !== DEFAULT_BLOCK_ENRICH_SETTINGS.queueDebounceMs) count += 1
@@ -520,6 +525,14 @@ export function SettingsPanel({
   onDismissImportPreview,
   onOpenDataDirectory,
   onOpenSettingsDirectory,
+  externalAccessStatus,
+  externalAccessBusy,
+  externalAccessBusyAction,
+  onEnableExternalAccess,
+  onGenerateExternalAccessBundle,
+  onDisableExternalAccess,
+  onRefreshExternalAccess,
+  onOpenExternalAccessDirectory,
 }: SettingsPanelProps) {
   const { toast } = useToast()
   const advancedOverrideCount = countAdvancedOverrides(docGenerationSettings, blockEnrichSettings, calendarSettings)
@@ -534,6 +547,8 @@ export function SettingsPanel({
         return { eyebrow: '常用', title: '常用功能', description: '把日常会用到的功能开关留在外层，避免先钻进高级参数。' }
       case 'ai':
         return { eyebrow: '模型与接口', title: '模型与接口', description: '配置 LLM / Embedding，并在保存后手动测试连接。' }
+      case 'external-access':
+        return { eyebrow: '外部接入', title: '外部接入', description: '先操作，再看路径。这里默认生成通用接入包，Claude 只是附带模板。' }
       case 'backup':
         return { eyebrow: '备份与恢复', title: '备份与恢复', description: '导出完整 JSON 备份，或预览后加载历史备份。' }
       case 'files':
@@ -542,6 +557,31 @@ export function SettingsPanel({
         return { eyebrow: '高级设置', title: '高级设置', description: '低频参数和维护工具都收在这里，只在需要调优或维护时再打开。' }
     }
   }, [activeSection])
+
+  const headerActions = useMemo(() => {
+    switch (activeSection) {
+      case 'general':
+      case 'advanced':
+        return (
+          <ActionButton primary disabled={saving} onClick={() => { void onSave() }}>
+            {saving ? '保存中…' : '保存设置'}
+          </ActionButton>
+        )
+      case 'ai':
+        return (
+          <>
+            <ActionButton primary disabled={saving} onClick={() => { void onSave() }}>
+              {saving ? '保存中…' : '保存设置'}
+            </ActionButton>
+            <ActionButton disabled={testing} onClick={() => { void onTest() }}>
+              {testing ? '检测中…' : '测试连接'}
+            </ActionButton>
+          </>
+        )
+      default:
+        return null
+    }
+  }, [activeSection, onSave, onTest, saving, testing])
 
   async function runFileAction(
     action: 'data-directory' | 'settings-directory',
@@ -560,6 +600,20 @@ export function SettingsPanel({
       toast('error', error instanceof Error ? error.message : fallbackMessage)
     } finally {
       setFileActionPending(null)
+    }
+  }
+
+  async function copyExternalAccessCommand(): Promise<void> {
+    if (!externalAccessStatus || typeof navigator?.clipboard?.writeText !== 'function') {
+      toast('error', '当前环境不支持剪贴板复制。')
+      return
+    }
+
+    try {
+      await navigator.clipboard.writeText(externalAccessStatus.searchCommandExample)
+      toast('success', '已复制示例查询命令。')
+    } catch {
+      toast('error', '复制命令失败。')
     }
   }
 
@@ -744,13 +798,186 @@ export function SettingsPanel({
             </SettingsGroup>
           </div>
         )
+      case 'external-access':
+        return (
+          <div className="space-y-10">
+            <SettingsGroup title="快速操作">
+              <SettingsRow
+                title="接入开关"
+                description={
+                  externalAccessStatus
+                    ? externalAccessStatus.enabled
+                      ? '当前已启用。CLI 在执行真实读写前会检查这个状态。'
+                      : '当前未启用。先启用，外部工具才可以真正读写长布内容。'
+                    : '正在读取外部接入状态。'
+                }
+                control={
+                  <>
+                    <ActionButton
+                      primary
+                      disabled={externalAccessBusy || externalAccessStatus?.enabled === true}
+                      onClick={() => {
+                        void onEnableExternalAccess()
+                      }}
+                      testId="settings-enable-external-access"
+                    >
+                      {externalAccessBusyAction === 'enable' ? '启用中…' : '启用接入'}
+                    </ActionButton>
+                    <ActionButton
+                      disabled={externalAccessBusy || !externalAccessStatus?.enabled}
+                      onClick={() => {
+                        void onDisableExternalAccess()
+                      }}
+                      testId="settings-disable-external-access"
+                    >
+                      {externalAccessBusyAction === 'disable' ? '停用中…' : '停用接入'}
+                    </ActionButton>
+                    <ActionButton
+                      disabled={externalAccessBusy}
+                      onClick={() => {
+                        void onRefreshExternalAccess()
+                      }}
+                      testId="settings-refresh-external-access"
+                    >
+                      {externalAccessBusyAction === 'refresh' ? '刷新中…' : '刷新状态'}
+                    </ActionButton>
+                  </>
+                }
+              />
+              <SettingsRow
+                title="生成接入包"
+                description="生成物统一放在长布自己的接入目录里。你要给 Claude、Codex 或别的工具用，都从这里拿。"
+                control={
+                  <>
+                    <ActionButton
+                      primary
+                      disabled={externalAccessBusy}
+                      onClick={() => {
+                        void onGenerateExternalAccessBundle()
+                      }}
+                      testId="settings-generate-external-access"
+                    >
+                      {externalAccessBusyAction === 'generate' ? '生成中…' : externalAccessStatus?.generatedAt ? '重新生成接入包' : '生成接入包'}
+                    </ActionButton>
+                    <ActionButton
+                      disabled={externalAccessBusy || !externalAccessStatus}
+                      onClick={() => {
+                        void onOpenExternalAccessDirectory()
+                      }}
+                      testId="settings-open-external-access-directory"
+                    >
+                      {externalAccessBusyAction === 'open' ? '打开中…' : '打开接入目录'}
+                    </ActionButton>
+                    <ActionButton
+                      disabled={!externalAccessStatus}
+                      onClick={() => {
+                        void copyExternalAccessCommand()
+                      }}
+                      testId="settings-copy-external-access-command"
+                    >
+                      复制示例查询命令
+                    </ActionButton>
+                  </>
+                }
+              />
+              <SettingsRow
+                title="当前结果"
+                description={
+                  externalAccessStatus
+                    ? [
+                        `接入：${externalAccessStatus.enabled ? '已启用' : '未启用'}`,
+                        `CLI：${externalAccessStatus.cliExists ? '已生成' : '未生成'}`,
+                        `总说明：${externalAccessStatus.integrationReadmeExists ? '已生成' : '未生成'}`,
+                        `通用规则：${externalAccessStatus.agentGuideExists ? '已生成' : '未生成'}`,
+                        `适配器：${externalAccessStatus.skillExists ? '已生成' : '未生成'}`,
+                      ].join(' · ')
+                    : '正在读取状态。'
+                }
+              />
+            </SettingsGroup>
+
+            <SettingsGroup title="生成产物">
+              <SettingsRow
+                title="接入包目录"
+                description={externalAccessStatus ? renderMonospaceValue(externalAccessStatus.cliDirectory) : '生成后会显示接入包根目录。'}
+              />
+              <SettingsRow
+                title="CLI 路径"
+                description={externalAccessStatus ? renderMonospaceValue(externalAccessStatus.cliPath) : '生成后会显示本地 CLI 包装脚本路径。'}
+              />
+              <SettingsRow
+                title="README"
+                description={externalAccessStatus ? renderMonospaceValue(externalAccessStatus.integrationReadmePath) : '生成后会显示通用接入说明 README。'}
+              />
+              <SettingsRow
+                title="AGENTS"
+                description={externalAccessStatus ? renderMonospaceValue(externalAccessStatus.agentGuidePath) : '生成后会显示可复用的 AGENTS.md 提示文件。'}
+              />
+              <SettingsRow
+                title="命令说明"
+                description={externalAccessStatus ? renderMonospaceValue(externalAccessStatus.commandsGuidePath) : '生成后会显示 CLI 命令说明。'}
+              />
+              <SettingsRow
+                title="工作流说明"
+                description={externalAccessStatus ? renderMonospaceValue(externalAccessStatus.workflowsGuidePath) : '生成后会显示检索与写入工作流说明。'}
+              />
+              <SettingsRow
+                title="示例目录"
+                description={externalAccessStatus ? renderMonospaceValue(externalAccessStatus.examplesDirectory) : '生成后会显示 examples 目录。'}
+              />
+              <SettingsRow
+                title="适配器目录"
+                description={externalAccessStatus ? renderMonospaceValue(externalAccessStatus.adaptersDirectory) : '生成后会显示 adapters 目录。'}
+              />
+              <SettingsRow
+                title="Claude 模板目录"
+                description={externalAccessStatus ? renderMonospaceValue(externalAccessStatus.skillDirectory) : '生成后会显示 Claude 模板目录。'}
+              />
+              <SettingsRow
+                title="可执行文件"
+                description={externalAccessStatus ? renderMonospaceValue(externalAccessStatus.executablePath) : '加载中…'}
+              />
+              <SettingsRow
+                title="最近生成时间"
+                description={formatExternalAccessTime(externalAccessStatus?.generatedAt ?? null)}
+              />
+              <SettingsRow
+                title="自检命令"
+                description={externalAccessStatus ? renderMonospaceValue(externalAccessStatus.doctorCommand) : '生成后会显示 doctor 命令。'}
+              />
+            </SettingsGroup>
+
+            <SettingsGroup title="问题与说明">
+              <SettingsRow
+                title="当前问题"
+                description={
+                  externalAccessStatus
+                    ? externalAccessStatus.issues.length > 0
+                      ? (
+                        <ul className="space-y-1">
+                          {externalAccessStatus.issues.map((issue) => (
+                            <li key={issue}>• {issue}</li>
+                          ))}
+                        </ul>
+                      )
+                      : '没有检测到问题。'
+                    : '正在读取状态。'
+                }
+              />
+              <SettingsRow
+                title="说明"
+                description="这里默认生成的是完整通用接入包：包含 guides、examples 和 adapters。Claude 只是 adapters 里的一个模板，不再自动塞进它自己的目录。外部 CLI 目前支持 search、tag、get、list、create、update、remove、tags、doctor。"
+              />
+            </SettingsGroup>
+          </div>
+        )
       case 'backup':
         return (
           <div className="space-y-10">
             <SettingsGroup title="备份">
               <SettingsRow
                 title="创建备份"
-                description="导出当前块数据与附件，适合迁移、归档和手动留档。"
+                description="导出当前块数据、附件和设置快照，适合完整迁移、归档和手动留档。"
                 control={
                   <ActionButton primary onClick={() => { void onCreateBackup() }} testId="settings-create-backup">
                     创建备份
@@ -774,6 +1001,11 @@ export function SettingsPanel({
                 <div className="mt-1 text-xs leading-5 text-amber-800">
                   {importPreview.format.toUpperCase()} · {importPreview.totalFiles} 个文件 / {importPreview.totalBlocks} 个块 · 冲突 {importPreview.conflicts}
                 </div>
+                {importPreview.includesSettings ? (
+                  <div className="mt-1 text-xs leading-5 text-amber-800">
+                    含设置快照 · {importPreview.settingsEntryCount ?? 0} 项设置会在导入时一并恢复
+                  </div>
+                ) : null}
                 <div className="mt-3 space-y-1 text-xs text-amber-800">
                   {importPreview.samples.map((sample) => (
                     <p key={`${sample.filename}-${sample.preview}`}>{sample.filename}：{sample.preview}</p>
@@ -892,6 +1124,22 @@ export function SettingsPanel({
                       })
                     }}
                     description={`默认 ${DEFAULT_DOC_GENERATION_SETTINGS.temperature}`}
+                  />
+                }
+              />
+              <SettingsRow
+                title="模型流式输出"
+                description="开启后，每日回顾和 AI 洞察会边生成边显示；关闭后等待完整结果再展示。"
+                control={
+                  <SettingSwitch
+                    label="模型流式输出"
+                    checked={docGenerationSettings.streamOutput}
+                    onChange={(checked) => {
+                      onDocGenerationSettingsChange({
+                        ...docGenerationSettings,
+                        streamOutput: checked,
+                      })
+                    }}
                   />
                 }
               />
@@ -1099,10 +1347,6 @@ export function SettingsPanel({
   return (
     <section className="flex h-full min-h-0 min-w-0 border-t border-stone-200 bg-[#f7f5f2] text-stone-900">
       <aside className="w-[250px] shrink-0 border-r border-stone-200 bg-[#f6f4f1] px-4 pb-6 pt-5">
-        <div className="mb-6">
-          <div className="text-sm font-semibold text-stone-400">选项</div>
-        </div>
-
         <div className="space-y-6">
           {SETTINGS_NAV_GROUPS.map((group) => (
             <div key={group.title}>
@@ -1120,6 +1364,8 @@ export function SettingsPanel({
                     testId={
                       item.id === 'general'
                         ? 'settings-nav-general'
+                        : item.id === 'external-access'
+                          ? 'settings-nav-external-access'
                         : item.id === 'backup'
                           ? 'settings-nav-backup'
                           : item.id === 'advanced'
@@ -1144,14 +1390,7 @@ export function SettingsPanel({
               <h2 className="mt-3 text-[30px] font-semibold text-stone-900">{pageTitle.title}</h2>
               <p className="mt-2 max-w-2xl text-sm leading-6 text-stone-500">{pageTitle.description}</p>
             </div>
-            <div className="flex flex-wrap gap-2">
-              <ActionButton primary disabled={saving} onClick={() => { void onSave() }}>
-                {saving ? '保存中…' : '保存设置'}
-              </ActionButton>
-              <ActionButton disabled={testing} onClick={() => { void onTest() }}>
-                {testing ? '检测中…' : '测试连接'}
-              </ActionButton>
-            </div>
+            {headerActions ? <div className="flex flex-wrap gap-2">{headerActions}</div> : null}
           </header>
 
           {testResult ? (
