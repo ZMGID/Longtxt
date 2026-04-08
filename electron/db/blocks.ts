@@ -1,6 +1,6 @@
 import Database from 'better-sqlite3'
 
-import type { AIExecutionMode, Block, BlockStatus, PaginationInput, TagKind, TagSuggestion } from '../../shared/types'
+import type { AIExecutionMode, Block, BlockListInput, BlockListPage, BlockStatus, TagKind, TagSuggestion } from '../../shared/types'
 
 interface BlockRow {
   id: string
@@ -35,6 +35,11 @@ interface BlockStateUpdate {
   updatedAt: string
   summary?: string | null
   errorMessage?: string | null
+}
+
+export interface RecentBlockContentRow {
+  blockId: string
+  content: string
 }
 
 function rowsToBlocks(rows: BlockRow[]): Block[] {
@@ -123,25 +128,53 @@ export function createBlockRecord(db: Database.Database, input: UpsertBlockInput
   return getBlockById(db, input.id)
 }
 
-export function listBlocks(db: Database.Database, params: PaginationInput = {}): Block[] {
-  const limit = params.limit ?? 200
-  const offset = params.offset ?? 0
-  const rows = db
-    .prepare(
-      `
-        SELECT id
-        FROM blocks
-        ORDER BY created_at DESC
-        LIMIT ?
-        OFFSET ?
-      `,
-    )
-    .all(limit, offset) as Array<{ id: string }>
+export function listBlocks(db: Database.Database, params: BlockListInput = {}): BlockListPage {
+  const limit = Math.max(1, Math.trunc(params.limit ?? 200))
+  const cursor = params.cursor ?? null
+  const rows = (
+    cursor
+      ? db
+          .prepare(
+            `
+              SELECT id, created_at AS createdAt
+              FROM blocks
+              WHERE created_at < ?
+                 OR (created_at = ? AND id < ?)
+              ORDER BY created_at DESC, id DESC
+              LIMIT ?
+            `,
+          )
+          .all(cursor.createdAt, cursor.createdAt, cursor.id, limit + 1)
+      : db
+          .prepare(
+            `
+              SELECT id, created_at AS createdAt
+              FROM blocks
+              ORDER BY created_at DESC, id DESC
+              LIMIT ?
+            `,
+          )
+          .all(limit + 1)
+  ) as Array<{ id: string; createdAt: string }>
 
-  return hydrateBlocks(
+  const hasMore = rows.length > limit
+  const pageRows = hasMore ? rows.slice(0, limit) : rows
+  const items = hydrateBlocks(
     db,
-    rows.map((row) => row.id),
+    pageRows.map((row) => row.id),
   )
+  const lastItem = items.at(-1)
+
+  return {
+    items,
+    hasMore,
+    nextCursor: hasMore && lastItem
+      ? {
+          createdAt: lastItem.createdAt,
+          id: lastItem.id,
+        }
+      : null,
+  }
 }
 
 export function getBlockById(db: Database.Database, id: string): Block {
@@ -153,6 +186,67 @@ export function getBlockById(db: Database.Database, id: string): Block {
   }
 
   return block
+}
+
+export function getBlockContextWindow(
+  db: Database.Database,
+  blockId: string,
+  options: { before?: number; after?: number } = {},
+): Block[] {
+  const targetRow = db
+    .prepare(
+      `
+        SELECT id, created_at AS createdAt
+        FROM blocks
+        WHERE id = ?
+      `,
+    )
+    .get(blockId) as { id: string; createdAt: string } | undefined
+
+  if (!targetRow) {
+    throw new Error(`Block ${blockId} not found`)
+  }
+
+  const before = Math.max(0, Math.trunc(options.before ?? 3))
+  const after = Math.max(0, Math.trunc(options.after ?? 3))
+
+  const newerRows = before > 0
+    ? (db
+        .prepare(
+          `
+            SELECT id
+            FROM blocks
+            WHERE created_at > ?
+               OR (created_at = ? AND id > ?)
+            ORDER BY created_at ASC, id ASC
+            LIMIT ?
+          `,
+        )
+        .all(targetRow.createdAt, targetRow.createdAt, targetRow.id, before) as Array<{ id: string }>)
+    : []
+
+  const olderRows = after > 0
+    ? (db
+        .prepare(
+          `
+            SELECT id
+            FROM blocks
+            WHERE created_at < ?
+               OR (created_at = ? AND id < ?)
+            ORDER BY created_at DESC, id DESC
+            LIMIT ?
+          `,
+        )
+        .all(targetRow.createdAt, targetRow.createdAt, targetRow.id, after) as Array<{ id: string }>)
+    : []
+
+  const orderedIds = [
+    ...newerRows.map((row) => row.id).reverse(),
+    targetRow.id,
+    ...olderRows.map((row) => row.id),
+  ]
+
+  return hydrateBlocks(db, orderedIds)
 }
 
 export function updateBlockContent(
@@ -305,4 +399,12 @@ export function listRecentBlockContents(db: Database.Database, limit: number, ex
     : (db.prepare(`SELECT content FROM blocks ORDER BY updated_at DESC LIMIT ?`).all(limit) as Array<{ content: string }>)
 
   return rows.map((row) => row.content)
+}
+
+export function listRecentBlockContentRows(db: Database.Database, limit: number): RecentBlockContentRow[] {
+  if (limit <= 0) {
+    return []
+  }
+
+  return db.prepare(`SELECT id AS blockId, content FROM blocks ORDER BY updated_at DESC LIMIT ?`).all(limit) as RecentBlockContentRow[]
 }

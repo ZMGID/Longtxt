@@ -3,13 +3,11 @@ import { describe, expect, it, vi } from 'vitest'
 import { loadDocumentReferences } from './documentReferences'
 
 describe('loadDocumentReferences', () => {
-  it('keeps successfully loaded blocks when part of the batch fails', async () => {
-    const loadBlock = vi.fn(async (blockId: string) => {
-      if (blockId === 'block-2') {
-        throw new Error('not found')
-      }
-
-      return {
+  it('keeps the original order and skips missing blocks in a batch response', async () => {
+    const loadBlocks = vi.fn(async (blockIds: string[]) => blockIds
+      .filter((blockId) => blockId !== 'block-2')
+      .reverse()
+      .map((blockId) => ({
         id: blockId,
         content: `content-${blockId}`,
         summary: null,
@@ -19,13 +17,13 @@ describe('loadDocumentReferences', () => {
         status: 'ready' as const,
         aiMode: 'mock' as const,
         errorMessage: null,
-      }
-    })
+      })))
 
-    const results = await loadDocumentReferences(loadBlock, ['block-1', 'block-2', 'block-3'])
+    const results = await loadDocumentReferences(loadBlocks, ['block-1', 'block-2', 'block-3'])
 
     expect(results.map((result) => result.block.id)).toEqual(['block-1', 'block-3'])
     expect(results.every((result) => result.score === 0)).toBe(true)
     expect(results.every((result) => result.matchSource.length === 0)).toBe(true)
+    expect(loadBlocks).toHaveBeenCalledWith(['block-1', 'block-2', 'block-3'])
   })
 })

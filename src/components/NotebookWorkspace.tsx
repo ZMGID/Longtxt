@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { Virtuoso } from 'react-virtuoso'
 
 import type {
   Notebook,
@@ -528,7 +529,7 @@ export function NotebookWorkspace({
   }
 
   const notebookListPanel = (
-    <section>
+    <section className="flex min-h-0 flex-1 flex-col">
       <div className="flex items-end justify-between gap-3">
         <div>
           <SectionEyebrow>Notebook List</SectionEyebrow>
@@ -582,7 +583,7 @@ export function NotebookWorkspace({
   )
 
   const searchPanel = (
-    <section>
+    <section className="flex min-h-0 flex-1 flex-col">
       <div>
         <SectionEyebrow>Search</SectionEyebrow>
         <h3 className="mt-3 text-lg font-semibold text-stone-900">检索补料</h3>
@@ -618,39 +619,43 @@ export function NotebookWorkspace({
         <div className="mt-4 border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">{searchError}</div>
       ) : null}
 
-      <div className="mt-5 min-h-0 overflow-y-auto pr-1">
+      <div className="mt-5 min-h-0 flex-1 pr-1">
         {!selectedNotebook ? (
           <p className="text-sm leading-6 text-stone-500">先选择一个笔记本，再从这里搜索并加入相关引用块。</p>
         ) : searchResults.length > 0 ? (
-          <div className="space-y-3">
-            {searchResults.map((result) => {
+          <Virtuoso
+            style={{ height: searchPanelMode === 'docked' ? '100%' : 'min(60vh, 720px)' }}
+            data={searchResults}
+            computeItemKey={(_, result) => result.block.id}
+            itemContent={(index, result) => {
               const added = notebookBlockIds.has(result.block.id)
               const submitting = addingBlockIds.includes(result.block.id)
 
               return (
-                <SearchResultCard
-                  key={result.block.id}
-                  result={result}
-                  query={searchQuery}
-                  onTagClick={onTagClick}
-                  footer={(
-                    <div className="flex justify-end">
-                      <ActionButton
-                        disabled={added || submitting}
-                        active={!added}
-                        onClick={() => {
-                          void handleAddResult(result.block.id)
-                        }}
-                        className={`px-3 py-1.5 text-xs ${added ? 'border-stone-200 bg-stone-100 text-stone-400 hover:bg-stone-100' : ''}`}
-                      >
-                        {added ? '已加入当前笔记本' : submitting ? '加入中…' : '加入当前笔记本'}
-                      </ActionButton>
-                    </div>
-                  )}
-                />
+                <div className={index === searchResults.length - 1 ? '' : 'pb-3'}>
+                  <SearchResultCard
+                    result={result}
+                    query={searchQuery}
+                    onTagClick={onTagClick}
+                    footer={(
+                      <div className="flex justify-end">
+                        <ActionButton
+                          disabled={added || submitting}
+                          active={!added}
+                          onClick={() => {
+                            void handleAddResult(result.block.id)
+                          }}
+                          className={`px-3 py-1.5 text-xs ${added ? 'border-stone-200 bg-stone-100 text-stone-400 hover:bg-stone-100' : ''}`}
+                        >
+                          {added ? '已加入当前笔记本' : submitting ? '加入中…' : '加入当前笔记本'}
+                        </ActionButton>
+                      </div>
+                    )}
+                  />
+                </div>
               )
-            })}
-          </div>
+            }}
+          />
         ) : (
           <p className="text-sm leading-6 text-stone-500">
             {searchQuery.trim()
@@ -771,17 +776,19 @@ export function NotebookWorkspace({
       </ActionButton>
     </section>
   ) : (
-    <section className="min-h-0 flex-1 overflow-y-auto pr-1">
+    <section className="min-h-0 flex-1 overflow-hidden pr-1">
       {loadingNotebook ? (
         <div className="py-10 text-sm text-stone-400">加载笔记本内容中…</div>
       ) : selectedNotebook.items.length > 0 ? (
-        <div className="divide-y divide-stone-200 pb-6">
-          {selectedNotebook.items.map((item, index) => {
+        <Virtuoso
+          style={{ height: '100%' }}
+          data={selectedNotebook.items}
+          computeItemKey={(_, item) => item.id}
+          itemContent={(index, item) => {
             const isDropTarget = item.id === dropTargetItemId && draggedItemId !== item.id
 
             return (
               <div
-                key={item.id}
                 onDragOver={(event) => {
                   event.preventDefault()
                   if (draggedItemId && draggedItemId !== item.id) {
@@ -792,7 +799,7 @@ export function NotebookWorkspace({
                   event.preventDefault()
                   void handleDrop(item.id)
                 }}
-                className={`grid gap-4 py-5 transition md:grid-cols-[46px_minmax(0,1fr)] ${isDropTarget ? 'bg-stone-50/80' : ''}`}
+                className={`grid gap-4 py-5 transition md:grid-cols-[46px_minmax(0,1fr)] ${index > 0 ? 'border-t border-stone-200' : ''} ${isDropTarget ? 'bg-stone-50/80' : ''}`}
               >
                 <div className="flex flex-row items-start gap-2 md:flex-col md:items-center md:gap-1.5 md:pt-1">
                   <span className="text-[11px] font-medium tabular-nums text-stone-400">{String(index + 1).padStart(2, '0')}</span>
@@ -844,6 +851,7 @@ export function NotebookWorkspace({
                     ? (
                         <BlockCard
                           block={item.block}
+                          renderContentAsPlainText
                           headerActions={(
                             <ActionButton
                               title="移出笔记本"
@@ -867,8 +875,8 @@ export function NotebookWorkspace({
                 </div>
               </div>
             )
-          })}
-        </div>
+          }}
+        />
       ) : (
         <div className="py-10 text-sm leading-6 text-stone-500">
           这个笔记本还是空的。你可以先展开检索补料加入相关块，也可以直接在这里新建引用块、标题、笔记和待办。
@@ -878,7 +886,7 @@ export function NotebookWorkspace({
   )
 
   const workspaceMain = (
-    <section className="min-h-0 min-w-0 flex-1">
+    <section className="flex min-h-0 min-w-0 flex-1 flex-col">
       {layoutMode === 'single-pane' ? (
         <div className="mb-6 flex flex-wrap items-center justify-between gap-3 border-b border-stone-200 pb-4">
           <div>
@@ -915,24 +923,24 @@ export function NotebookWorkspace({
       ) : null}
 
       {searchPanelMode === 'inline' ? (
-        <aside data-testid="notebook-search-panel" className="mb-6 border-b border-stone-200 pb-6">
+        <aside data-testid="notebook-search-panel" className="mb-6 flex min-h-0 flex-col border-b border-stone-200 pb-6">
           {searchPanel}
         </aside>
       ) : null}
 
       {searchPanelMode === 'docked' ? (
-        <div className="grid min-h-0 min-w-0 gap-8 xl:grid-cols-[minmax(0,1fr)_19rem] 2xl:grid-cols-[minmax(0,1fr)_21rem]">
-          <div className="min-w-0">
+        <div className="grid min-h-0 min-w-0 flex-1 gap-8 xl:grid-cols-[minmax(0,1fr)_19rem] 2xl:grid-cols-[minmax(0,1fr)_21rem]">
+          <div className="flex min-h-0 min-w-0 flex-col">
             {workspaceHeader}
             {workspaceComposer}
             {workspaceBody}
           </div>
-          <aside data-testid="notebook-search-panel" className="min-w-0 border-l border-stone-200 pl-6">
+          <aside data-testid="notebook-search-panel" className="flex min-h-0 min-w-0 flex-col border-l border-stone-200 pl-6">
             {searchPanel}
           </aside>
         </div>
       ) : (
-        <div className="min-w-0">
+        <div className="flex min-h-0 min-w-0 flex-1 flex-col">
           {workspaceHeader}
           {workspaceComposer}
           {workspaceBody}
@@ -952,7 +960,7 @@ export function NotebookWorkspace({
         : 'min-h-0 min-w-0 flex-1'}
     >
       {layoutMode === 'two-pane' ? (
-        <aside data-testid="notebook-list-panel" className="min-h-0 min-w-0 border-r border-stone-200 pr-6">
+        <aside data-testid="notebook-list-panel" className="flex min-h-0 min-w-0 flex-col border-r border-stone-200 pr-6">
           {notebookListPanel}
         </aside>
       ) : null}

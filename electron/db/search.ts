@@ -1,6 +1,7 @@
 import Database from 'better-sqlite3'
 
 import type { SearchResult } from '../../shared/types'
+import { buildSearchPreview } from '../../shared/searchPreview'
 import { getBlocksByIds } from './blocks'
 import { countBlockVectors, searchVectorMatches } from './vectors'
 
@@ -216,9 +217,10 @@ export function searchBlocks(db: Database.Database, query: string, options: Sear
         block,
         score: Number(ranked.score.toFixed(4)),
         matchSource: Array.from(ranked.matchSource),
+        preview: buildSearchPreview(block.content, normalizedQuery),
       }
     })
-    .filter((item): item is SearchResult => Boolean(item))
+    .filter((item): item is NonNullable<typeof item> => item !== null)
 }
 
 export function searchBlocksByTag(db: Database.Database, tagName: string, limit = 50): SearchResult[] {
@@ -243,8 +245,9 @@ export function searchBlocksByTag(db: Database.Database, tagName: string, limit 
       return {
         block,
         score: Number(reciprocalRank(index + 1).toFixed(4)),
-        matchSource: ['tag'],
+        matchSource: ['tag'] as SearchResult['matchSource'],
+        preview: buildSearchPreview(block.content, normalizedTagName),
       }
     })
-    .filter((item): item is SearchResult => item !== null)
+    .filter((item): item is NonNullable<typeof item> => item !== null)
 }

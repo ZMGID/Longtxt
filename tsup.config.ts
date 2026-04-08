@@ -4,6 +4,7 @@ export default defineConfig({
   entry: {
     main: 'electron/main.ts',
     preload: 'electron/preload.ts',
+    appContextWorker: 'electron/appContextWorker.ts',
   },
   clean: true,
   dts: false,

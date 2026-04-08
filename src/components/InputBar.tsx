@@ -2,6 +2,24 @@ import { useState } from 'react'
 
 import { MarkdownLivePreview } from './MarkdownLivePreview'
 
+const EMBEDDED_EDITOR_CLASS = [
+  'min-h-0',
+  '[&_.cm-editor]:max-h-[52vh]',
+  '[&_.cm-editor]:overflow-hidden',
+  '[&_.cm-scroller]:max-h-[52vh]',
+  '[&_.cm-scroller]:overflow-auto',
+  '[&_.cm-scroller]:overscroll-contain',
+].join(' ')
+
+const DEFAULT_EDITOR_CLASS = [
+  'min-h-0',
+  '[&_.cm-editor]:max-h-[48vh]',
+  '[&_.cm-editor]:overflow-hidden',
+  '[&_.cm-scroller]:max-h-[48vh]',
+  '[&_.cm-scroller]:overflow-auto',
+  '[&_.cm-scroller]:overscroll-contain',
+].join(' ')
+
 interface InputBarProps {
   onSubmit: (content: string) => Promise<void>
   embedded?: boolean
@@ -42,10 +60,11 @@ export function InputBar({
   if (embedded) {
     return (
       <div className="rounded-lg border border-stone-200 bg-white p-3">
-        <p className="mb-2 text-xs text-stone-500">继续往下写 · Enter 创建块 · Shift+Enter 换行</p>
+        <p className="mb-2 text-xs text-stone-500">继续往下写 · Enter 创建块 · Shift+Enter 换行 · 长内容可在输入区内滚动</p>
         <MarkdownLivePreview
           value={value}
           onValueChange={setValue}
+          className={EMBEDDED_EDITOR_CLASS}
           onKeyDown={(event) => {
             if (event.key === 'Enter' && !event.shiftKey) {
               event.preventDefault()
@@ -75,6 +94,7 @@ export function InputBar({
       <MarkdownLivePreview
         value={value}
         onValueChange={setValue}
+        className={DEFAULT_EDITOR_CLASS}
         onKeyDown={(event) => {
           if (event.key === 'Enter' && !event.shiftKey) {
             event.preventDefault()

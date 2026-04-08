@@ -53,12 +53,15 @@ describe('ipc handlers', () => {
     const created = await handlers[IPC_CHANNELS.blocks.create]({}, '给长布补一个 PRD 主链路')
     await context.whenIdle()
 
-    const listed = await handlers[IPC_CHANNELS.blocks.list]({}, { offset: 0, limit: 20 })
-    expect(listed).toHaveLength(1)
-    expect(created.id).toBe(listed[0].id)
+    const listed = await handlers[IPC_CHANNELS.blocks.list]({}, { limit: 20, cursor: null })
+    expect(listed.items).toHaveLength(1)
+    expect(created.id).toBe(listed.items[0].id)
 
     const fetched = await handlers[IPC_CHANNELS.blocks.get]({}, created.id)
     expect(fetched.id).toBe(created.id)
+
+    const contextWindow = await handlers[IPC_CHANNELS.blocks.getContext]({}, created.id, { before: 1, after: 1 })
+    expect(contextWindow.map((block) => block.id)).toEqual([created.id])
 
     const searchResults = await handlers[IPC_CHANNELS.search.blocks]({}, 'PRD', 20)
     expect(searchResults).toHaveLength(1)

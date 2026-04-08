@@ -11,7 +11,11 @@ interface BlockCardProps {
   block: Block
   editable?: boolean
   compact?: boolean
+  renderContentAsPlainText?: boolean
+  contentOverride?: ReactNode
+  metaBadges?: ReactNode
   headerActions?: ReactNode
+  footer?: ReactNode
   tagSuggestions?: TagSuggestion[]
   onSave?: (id: string, content: string) => Promise<void>
   onDelete?: (id: string) => Promise<void>
@@ -45,7 +49,11 @@ export function BlockCard({
   block,
   editable = true,
   compact = false,
+  renderContentAsPlainText = false,
+  contentOverride,
+  metaBadges,
   headerActions,
+  footer,
   tagSuggestions = [],
   onSave,
   onDelete,
@@ -57,6 +65,7 @@ export function BlockCard({
   const [isEditing, setIsEditing] = useState(false)
   const [draft, setDraft] = useState(block.content)
   const [isExpanded, setIsExpanded] = useState(false)
+  const [showRenderedContent, setShowRenderedContent] = useState(!renderContentAsPlainText)
   const [saving, setSaving] = useState(false)
   const [isAddingTag, setIsAddingTag] = useState(false)
   const [tagDraft, setTagDraft] = useState('')
@@ -79,10 +88,13 @@ export function BlockCard({
       setDraft(block.content)
     }
     setIsExpanded(false)
-  }, [block.id, block.content, isEditing])
+    setShowRenderedContent(!renderContentAsPlainText)
+  }, [block.id, block.content, isEditing, renderContentAsPlainText])
 
-  const canToggleCollapse = !compact && block.content.trim().length > COLLAPSIBLE_CONTENT_LENGTH
+  const canToggleCollapse = !contentOverride && !compact && block.content.trim().length > COLLAPSIBLE_CONTENT_LENGTH
   const isCollapsed = canToggleCollapse && !isExpanded && !isEditing
+  const shouldRenderPlainText = renderContentAsPlainText && !contentOverride && !isEditing && !showRenderedContent
+  const canToggleRenderedContent = renderContentAsPlainText && !contentOverride && !isEditing && !showRenderedContent
 
   async function handleSave(): Promise<void> {
     if (!onSave) return
@@ -118,6 +130,7 @@ export function BlockCard({
           <span className="rounded border border-stone-200 bg-stone-50 px-2 py-0.5 text-[11px] font-medium text-stone-500">
             {block.aiMode === 'live' ? 'live AI' : 'mock AI'}
           </span>
+          {metaBadges}
         </div>
 
         {headerActions ? (
@@ -147,7 +160,11 @@ export function BlockCard({
               data-testid="block-card-content"
               className={`text-sm leading-6 text-stone-800 ${compact ? 'line-clamp-4' : ''} ${isCollapsed ? COLLAPSED_CONTENT_CLASS : ''}`}
             >
-              <MarkdownContent content={block.content} />
+              {contentOverride ?? (
+                shouldRenderPlainText
+                  ? <div className="whitespace-pre-wrap break-words">{block.content}</div>
+                  : <MarkdownContent content={block.content} />
+              )}
             </div>
             {isCollapsed ? (
               <div className="pointer-events-none absolute inset-x-0 bottom-0 h-20 rounded-b-lg bg-gradient-to-t from-white via-white/90 to-transparent" />
@@ -156,15 +173,26 @@ export function BlockCard({
         )}
       </div>
 
-      {canToggleCollapse && !isEditing ? (
-        <div className="mt-2">
-          <button
-            type="button"
-            onClick={() => setIsExpanded((current) => !current)}
-            className="rounded border border-stone-200 bg-stone-50 px-3 py-1.5 text-xs font-medium text-stone-600 transition duration-150 hover:bg-white active:scale-[0.97]"
-          >
-            {isExpanded ? '收起' : '显示全文'}
-          </button>
+      {(canToggleCollapse || canToggleRenderedContent) && !isEditing ? (
+        <div className="mt-2 flex flex-wrap items-center gap-2">
+          {canToggleCollapse ? (
+            <button
+              type="button"
+              onClick={() => setIsExpanded((current) => !current)}
+              className="rounded border border-stone-200 bg-stone-50 px-3 py-1.5 text-xs font-medium text-stone-600 transition duration-150 hover:bg-white active:scale-[0.97]"
+            >
+              {isExpanded ? '收起' : '显示全文'}
+            </button>
+          ) : null}
+          {canToggleRenderedContent ? (
+            <button
+              type="button"
+              onClick={() => setShowRenderedContent(true)}
+              className="rounded border border-stone-200 bg-white px-3 py-1.5 text-xs font-medium text-stone-500 transition duration-150 hover:border-stone-300 hover:text-stone-700 active:scale-[0.97]"
+            >
+              渲染 Markdown
+            </button>
+          ) : null}
         </div>
       ) : null}
 
@@ -306,6 +334,8 @@ export function BlockCard({
           )}
         </div>
       )}
+
+      {footer ? <div className="mt-3">{footer}</div> : null}
     </article>
   )
 }

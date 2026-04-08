@@ -31,7 +31,9 @@ import type {
   RelatedBlockResult,
   ReviewGenerationChunk,
   ReviewGenerationStart,
+  SearchResult,
 } from '../shared/types'
+import { buildSearchPreview } from '../shared/searchPreview'
 import {
   addManualTagToBlock,
   clearAutoBlockTags,
@@ -39,8 +41,10 @@ import {
   createBlockRecord,
   deleteBlockRecord,
   getBlockById,
+  getBlockContextWindow,
   getBlocksByIds,
   listBlocksByDate as listBlocksByDateInDb,
+  listRecentBlockContentRows,
   listRecentBlockContents,
   listBlocks,
   removeTagFromBlock,
@@ -183,6 +187,9 @@ const MAX_ENRICH_RETRIES = 1
 const ENRICH_RETRY_DELAY_MS = 500
 const TAGGER_CORPUS_LIMIT = 50
 const VECTOR_REINDEX_BATCH_SIZE = 12
+const SEARCH_CACHE_LIMIT = 32
+const SEARCH_CACHE_TTL_MS = 5 * 60 * 1000
+const GRAPH_CACHE_LIMIT = 12
 
 export function createAppContext(options: AppContextOptions): AppContext {
   mkdirSync(options.dataDirectory, { recursive: true })
@@ -216,6 +223,10 @@ export function createAppContext(options: AppContextOptions): AppContext {
   const importJobs = new Map<string, Awaited<ReturnType<typeof previewMarkdownImport>>['job']>()
   const dailyReviewCache = new Map<string, Awaited<ReturnType<typeof generateDailyReviewContent>>>()
   const aiInsightCache = new Map<string, Awaited<ReturnType<typeof generateAiInsightContent>>>()
+  const searchResultCache = new Map<string, { results: SearchResult[]; updatedAt: number; dirty: boolean }>()
+  const searchInFlightRequests = new Map<string, { epoch: number; request: Promise<SearchResult[]> }>()
+  let searchCacheEpoch = 0
+  const graphResultCache = new Map<string, { data: { nodes: Awaited<ReturnType<typeof loadGraphData>>['nodes']; edges: Awaited<ReturnType<typeof loadGraphData>>['edges'] }; dirty: boolean }>()
   const {
     emitBlockChanged,
     emitNotebooksChanged,
@@ -272,6 +283,187 @@ export function createAppContext(options: AppContextOptions): AppContext {
   function clearDailyReviewCache(): void {
     dailyReviewCache.clear()
     aiInsightCache.clear()
+  }
+
+  function pruneLeastRecentlyUsedEntries<T>(cache: Map<string, T>, limit: number): void {
+    while (cache.size > limit) {
+      const oldestKey = cache.keys().next().value
+
+      if (!oldestKey) {
+        break
+      }
+
+      cache.delete(oldestKey)
+    }
+  }
+
+  function setSearchCacheEntry(cacheKey: string, results: SearchResult[], dirty = false, expectedEpoch: number | null = null): SearchResult[] {
+    if (expectedEpoch !== null && expectedEpoch !== searchCacheEpoch) {
+      return results
+    }
+
+    searchResultCache.delete(cacheKey)
+    searchResultCache.set(cacheKey, {
+      results,
+      updatedAt: Date.now(),
+      dirty,
+    })
+    pruneLeastRecentlyUsedEntries(searchResultCache, SEARCH_CACHE_LIMIT)
+    return results
+  }
+
+  function getSearchCacheEntry(cacheKey: string): SearchResult[] | null {
+    const cached = searchResultCache.get(cacheKey)
+
+    if (!cached) {
+      return null
+    }
+
+    if (cached.dirty || Date.now() - cached.updatedAt > SEARCH_CACHE_TTL_MS) {
+      searchResultCache.delete(cacheKey)
+      return null
+    }
+
+    searchResultCache.delete(cacheKey)
+    searchResultCache.set(cacheKey, {
+      ...cached,
+      updatedAt: Date.now(),
+    })
+
+    return cached.results
+  }
+
+  function createSearchResultPreview(block: Block, query: string): string {
+    return buildSearchPreview(block.content, query)
+  }
+
+  function patchSearchResults(results: SearchResult[], event: { block: Block; reason: 'created' | 'updated' | 'enriched' | 'deleted' | 'tagged' }, query: string): SearchResult[] {
+    const index = results.findIndex((item) => item.block.id === event.block.id)
+
+    if (index === -1) {
+      return results
+    }
+
+    if (event.reason === 'deleted') {
+      return results.filter((item) => item.block.id !== event.block.id)
+    }
+
+    const nextResults = results.slice()
+    const current = nextResults[index]
+
+    if (!current) {
+      return results
+    }
+
+    nextResults[index] = {
+      ...current,
+      block: event.block,
+      preview: createSearchResultPreview(event.block, query),
+    }
+
+    return nextResults
+  }
+
+  function markSearchCachesDirty(event?: { block: Block; reason: 'created' | 'updated' | 'enriched' | 'deleted' | 'tagged' }): void {
+    searchCacheEpoch += 1
+    searchInFlightRequests.clear()
+
+    if (searchResultCache.size === 0) {
+      return
+    }
+
+    for (const [cacheKey, entry] of searchResultCache.entries()) {
+      let query = ''
+
+      try {
+        query = (JSON.parse(cacheKey) as { query?: string }).query ?? ''
+      } catch {
+        query = ''
+      }
+
+      const patchedResults = event ? patchSearchResults(entry.results, event, query) : entry.results
+
+      searchResultCache.set(cacheKey, {
+        results: patchedResults,
+        updatedAt: entry.updatedAt,
+        dirty: true,
+      })
+    }
+  }
+
+  function normalizeGraphTagFilters(tagNames: string[]): string[] {
+    return Array.from(
+      new Set(
+        tagNames
+          .map((tag) => tag.trim())
+          .filter(Boolean),
+      ),
+    ).sort((left, right) => left.localeCompare(right, 'zh-Hans-CN'))
+  }
+
+  function getGraphCacheKey(tagNames: string[]): string {
+    return normalizeGraphTagFilters(tagNames).join('||')
+  }
+
+  function getGraphCacheEntry(tagNames: string[]) {
+    const cacheKey = getGraphCacheKey(tagNames)
+    const cached = graphResultCache.get(cacheKey)
+
+    if (!cached || cached.dirty) {
+      if (cached?.dirty) {
+        graphResultCache.delete(cacheKey)
+      }
+
+      return null
+    }
+
+    graphResultCache.delete(cacheKey)
+    graphResultCache.set(cacheKey, cached)
+    return cached.data
+  }
+
+  function setGraphCacheEntry(tagNames: string[], data: Awaited<ReturnType<typeof loadGraphData>>): Awaited<ReturnType<typeof loadGraphData>> {
+    const cacheKey = getGraphCacheKey(tagNames)
+    graphResultCache.delete(cacheKey)
+    graphResultCache.set(cacheKey, {
+      data,
+      dirty: false,
+    })
+    pruneLeastRecentlyUsedEntries(graphResultCache, GRAPH_CACHE_LIMIT)
+    return data
+  }
+
+  function markGraphCachesDirty(): void {
+    for (const [cacheKey, entry] of graphResultCache.entries()) {
+      graphResultCache.set(cacheKey, {
+        ...entry,
+        dirty: true,
+      })
+    }
+  }
+
+  function createSearchCacheKey(options: {
+    type: 'query' | 'tag'
+    query: string
+    limit: number
+    mode?: AIExecutionMode
+    vectorEnabled?: boolean
+    vectorIndexState?: string | null
+  }): string {
+    return JSON.stringify({
+      type: options.type,
+      query: options.query,
+      limit: options.limit,
+      mode: options.mode ?? 'static',
+      vectorEnabled: Boolean(options.vectorEnabled),
+      vectorIndexState: options.vectorIndexState ?? 'none',
+    })
+  }
+
+  function emitBlockChangedWithDerivedInvalidation(event: { block: Block; reason: 'created' | 'updated' | 'enriched' | 'deleted' | 'tagged' }): void {
+    markSearchCachesDirty(event)
+    markGraphCachesDirty()
+    emitBlockChanged(event)
   }
 
   function recordAiInsightHistory(result: Awaited<ReturnType<typeof generateAiInsightContent>>): void {
@@ -798,6 +990,7 @@ export function createAppContext(options: AppContextOptions): AppContext {
         persistVectorIndexState(indexState)
       }
 
+      markSearchCachesDirty()
       emitMetaChanged({
         reason: 'vector-queue',
       })
@@ -970,7 +1163,7 @@ export function createAppContext(options: AppContextOptions): AppContext {
       updatedAt: currentBlock.updatedAt,
     })
 
-    emitBlockChanged({
+    emitBlockChangedWithDerivedInvalidation({
       block,
       reason: 'enriched',
     })
@@ -1009,7 +1202,7 @@ export function createAppContext(options: AppContextOptions): AppContext {
             errorMessage: error instanceof Error ? `自动重试中：${error.message}` : '自动重试中。',
           })
 
-          emitBlockChanged({
+          emitBlockChangedWithDerivedInvalidation({
             block,
             reason: 'enriched',
           })
@@ -1036,7 +1229,7 @@ export function createAppContext(options: AppContextOptions): AppContext {
           errorMessage: error instanceof Error ? error.message : '后台处理失败。',
         })
 
-        emitBlockChanged({
+        emitBlockChangedWithDerivedInvalidation({
           block,
           reason: 'enriched',
         })
@@ -1100,17 +1293,35 @@ export function createAppContext(options: AppContextOptions): AppContext {
       }
 
       try {
+        const tagMemory = getTagMemory(db)
+        const recentCorpusSnapshot = listRecentBlockContentRows(db, TAGGER_CORPUS_LIMIT + currentRequests.length)
         const assignments = await tagger.assignBatch(
           currentRequests.map((request) => ({
             content: request.content,
             options: {
-              corpusContents: [request.content, ...listRecentBlockContents(db, TAGGER_CORPUS_LIMIT, request.blockId)],
+              corpusContents: (() => {
+                const corpusContents = [request.content]
+
+                for (const entry of recentCorpusSnapshot) {
+                  if (entry.blockId === request.blockId || entry.content === request.content) {
+                    continue
+                  }
+
+                  corpusContents.push(entry.content)
+
+                  if (corpusContents.length >= TAGGER_CORPUS_LIMIT + 1) {
+                    break
+                  }
+                }
+
+                return corpusContents
+              })(),
               liveLlmProvider: llmProvider,
               batchOptions: {
                 maxBatchBlocks: batchOptions.maxBatchBlocks,
                 responseReserveTokens: batchOptions.responseReserveTokens,
               },
-              tagMemory: getTagMemory(db),
+              tagMemory,
             },
           })),
         )
@@ -1140,7 +1351,7 @@ export function createAppContext(options: AppContextOptions): AppContext {
             updatedAt: currentBlock.updatedAt,
           })
 
-          emitBlockChanged({
+          emitBlockChangedWithDerivedInvalidation({
             block,
             reason: 'enriched',
           })
@@ -1175,7 +1386,7 @@ export function createAppContext(options: AppContextOptions): AppContext {
               errorMessage: error instanceof Error ? `自动重试中：${error.message}` : '自动重试中。',
             })
 
-            emitBlockChanged({
+            emitBlockChangedWithDerivedInvalidation({
               block,
               reason: 'enriched',
             })
@@ -1202,7 +1413,7 @@ export function createAppContext(options: AppContextOptions): AppContext {
             errorMessage: error instanceof Error ? error.message : '后台处理失败。',
           })
 
-          emitBlockChanged({
+          emitBlockChangedWithDerivedInvalidation({
             block,
             reason: 'enriched',
           })
@@ -1377,7 +1588,7 @@ export function createAppContext(options: AppContextOptions): AppContext {
       })
 
       for (const deletedBlock of deletedBlocks) {
-        emitBlockChanged({
+        emitBlockChangedWithDerivedInvalidation({
           block: deletedBlock,
           reason: 'deleted',
         })
@@ -1400,7 +1611,7 @@ export function createAppContext(options: AppContextOptions): AppContext {
     const enrichGeneration = advanceBlockEnrichGeneration(block.id)
     clearDailyReviewCache()
 
-    emitBlockChanged({
+    emitBlockChangedWithDerivedInvalidation({
       block,
       reason: 'created',
     })
@@ -1423,10 +1634,30 @@ export function createAppContext(options: AppContextOptions): AppContext {
       return getBlockById(db, id)
     },
 
+    async getBlocks(ids) {
+      const dedupedIds = Array.from(new Set(ids.filter((id) => id.trim().length > 0)))
+
+      if (dedupedIds.length === 0) {
+        return []
+      }
+
+      const blocks = getBlocksByIds(db, dedupedIds)
+      const blockMap = new Map(blocks.map((block) => [block.id, block]))
+
+      return dedupedIds.flatMap((id) => {
+        const block = blockMap.get(id)
+        return block ? [block] : []
+      })
+    },
+
+    async getBlockContext(id, options = {}) {
+      return getBlockContextWindow(db, id, options)
+    },
+
     async listBlocks(params = {}) {
       return listBlocks(db, {
-        offset: params.offset ?? 0,
         limit: params.limit ?? DEFAULT_PAGE_SIZE,
+        cursor: params.cursor ?? null,
       })
     },
 
@@ -1443,7 +1674,7 @@ export function createAppContext(options: AppContextOptions): AppContext {
       clearDailyReviewCache()
       emitTouchedNotebooks(touchNotebooksForBlock(db, id, updatedAt), 'updated')
 
-      emitBlockChanged({
+      emitBlockChangedWithDerivedInvalidation({
         block,
         reason: 'updated',
       })
@@ -1493,7 +1724,7 @@ export function createAppContext(options: AppContextOptions): AppContext {
       const block = addManualTagToBlock(db, blockId, tag)
       emitTouchedNotebooks(touchNotebooksForBlock(db, blockId, new Date().toISOString()), 'updated')
 
-      emitBlockChanged({
+      emitBlockChangedWithDerivedInvalidation({
         block,
         reason: 'tagged',
       })
@@ -1505,7 +1736,7 @@ export function createAppContext(options: AppContextOptions): AppContext {
       const block = removeTagFromBlock(db, blockId, tagId)
       emitTouchedNotebooks(touchNotebooksForBlock(db, blockId, new Date().toISOString()), 'updated')
 
-      emitBlockChanged({
+      emitBlockChangedWithDerivedInvalidation({
         block,
         reason: 'tagged',
       })
@@ -1522,23 +1753,110 @@ export function createAppContext(options: AppContextOptions): AppContext {
     },
 
     async getGraphData(tagNames = []) {
-      return loadGraphData(db, tagNames)
+      const normalizedTags = normalizeGraphTagFilters(tagNames)
+      const cached = getGraphCacheEntry(normalizedTags)
+
+      if (cached) {
+        return cached
+      }
+
+      return setGraphCacheEntry(normalizedTags, loadGraphData(db, normalizedTags))
     },
 
     async searchBlocks(query, limit = 20) {
       const normalizedQuery = validateContent(query)
       const { mode, embeddingProvider } = getProviders()
-      const queryEmbedding = await getQueryEmbedding(normalizedQuery, mode, embeddingProvider)
-
-      return searchBlocksInDatabase(db, normalizedQuery, {
+      const vectorEnabled = canUseVectorSearch()
+      const cacheKey = createSearchCacheKey({
+        type: 'query',
+        query: normalizedQuery,
         limit,
-        queryEmbedding,
-        vectorEnabled: canUseVectorSearch() && Boolean(queryEmbedding),
+        mode,
+        vectorEnabled,
+        vectorIndexState: currentVectorIndexState?.configFingerprint ?? currentVectorIndexState?.mode ?? 'none',
       })
+      const cached = getSearchCacheEntry(cacheKey)
+
+      if (cached) {
+        return cached
+      }
+
+      const inFlight = searchInFlightRequests.get(cacheKey)
+
+      if (inFlight?.epoch === searchCacheEpoch) {
+        return inFlight.request
+      }
+
+      searchInFlightRequests.delete(cacheKey)
+      const requestEpoch = searchCacheEpoch
+      const request = (async () => {
+        const queryEmbedding = await getQueryEmbedding(normalizedQuery, mode, embeddingProvider)
+
+        return setSearchCacheEntry(cacheKey, searchBlocksInDatabase(db, normalizedQuery, {
+          limit,
+          queryEmbedding,
+          vectorEnabled: vectorEnabled && Boolean(queryEmbedding),
+        }), false, requestEpoch)
+      })()
+
+      searchInFlightRequests.set(cacheKey, {
+        epoch: requestEpoch,
+        request,
+      })
+
+      try {
+        return await request
+      } finally {
+        const active = searchInFlightRequests.get(cacheKey)
+
+        if (active?.request === request) {
+          searchInFlightRequests.delete(cacheKey)
+        }
+      }
     },
 
     async searchByTag(tagName, limit = 50) {
-      return searchBlocksByTag(db, tagName, limit)
+      const normalizedTagName = tagName.trim()
+
+      if (!normalizedTagName) {
+        return []
+      }
+
+      const cacheKey = createSearchCacheKey({
+        type: 'tag',
+        query: normalizedTagName,
+        limit,
+      })
+      const cached = getSearchCacheEntry(cacheKey)
+
+      if (cached) {
+        return cached
+      }
+
+      const inFlight = searchInFlightRequests.get(cacheKey)
+
+      if (inFlight?.epoch === searchCacheEpoch) {
+        return inFlight.request
+      }
+
+      searchInFlightRequests.delete(cacheKey)
+      const requestEpoch = searchCacheEpoch
+      const request = Promise.resolve(setSearchCacheEntry(cacheKey, searchBlocksByTag(db, normalizedTagName, limit), false, requestEpoch))
+
+      searchInFlightRequests.set(cacheKey, {
+        epoch: requestEpoch,
+        request,
+      })
+
+      try {
+        return await request
+      } finally {
+        const active = searchInFlightRequests.get(cacheKey)
+
+        if (active?.request === request) {
+          searchInFlightRequests.delete(cacheKey)
+        }
+      }
     },
 
     async generateDocument(topic) {
@@ -2101,8 +2419,9 @@ export function createAppContext(options: AppContextOptions): AppContext {
 
       const block = transaction()
       const enrichGeneration = advanceBlockEnrichGeneration(block.id)
+      clearDailyReviewCache()
 
-      emitBlockChanged({
+      emitBlockChangedWithDerivedInvalidation({
         block,
         reason: 'created',
       })
@@ -2311,14 +2630,14 @@ export function createAppContext(options: AppContextOptions): AppContext {
       }
 
       for (const block of createdBlocks) {
-        emitBlockChanged({
+        emitBlockChangedWithDerivedInvalidation({
           block,
           reason: 'created',
         })
       }
 
       for (const block of updatedBlocks) {
-        emitBlockChanged({
+        emitBlockChangedWithDerivedInvalidation({
           block,
           reason: 'updated',
         })

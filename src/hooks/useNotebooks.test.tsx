@@ -4,12 +4,13 @@ import { describe, expect, it, vi } from 'vitest'
 
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 
-import type { BlockChangedEvent, CalendarChangedEvent, ChangbuApi, MetaChangedEvent, Notebook, NotebookChangedEvent, NotebookSummary } from '../../shared/types'
+import type { AppEventBatch, BlockChangedEvent, CalendarChangedEvent, ChangbuApi, MetaChangedEvent, Notebook, NotebookChangedEvent, NotebookSummary } from '../../shared/types'
 import { ChangbuEventBridge } from '../components/ChangbuEventBridge'
 import { useNotebooks } from './useNotebooks'
 
 function createNotebookApiMock() {
   const blockListeners = new Set<(event: BlockChangedEvent) => void>()
+  const batchListeners = new Set<(batch: AppEventBatch) => void>()
   const notebookListeners = new Set<(event: NotebookChangedEvent) => void>()
   const metaListeners = new Set<(event: MetaChangedEvent) => void>()
   const calendarListeners = new Set<(event: CalendarChangedEvent) => void>()
@@ -63,7 +64,9 @@ function createNotebookApiMock() {
     blocks: {
       create: async () => getFirstNotebookBlock(),
       get: async () => getFirstNotebookBlock(),
-      list: async () => [],
+      getMany: async (ids) => ids.map(() => getFirstNotebookBlock()),
+      getContext: async () => [getFirstNotebookBlock()],
+      list: async () => ({ items: [], nextCursor: null, hasMore: false }),
       listByDate: async () => [],
       update: async () => getFirstNotebookBlock(),
       remove: async () => undefined,
@@ -479,6 +482,12 @@ function createNotebookApiMock() {
       retryFailed: async () => 0,
     },
     events: {
+      onBatch(listener) {
+        batchListeners.add(listener)
+        return () => {
+          batchListeners.delete(listener)
+        }
+      },
       onBlockChanged(listener) {
         blockListeners.add(listener)
         return () => {
@@ -524,11 +533,35 @@ function createNotebookApiMock() {
       notebook = nextState.notebook ?? notebook
     },
     emitBlockChanged(event: BlockChangedEvent) {
+      const batch: AppEventBatch = {
+        blockChanges: [{ blockId: event.block.id, reason: event.reason }],
+        blockPayloads: event.reason === 'deleted' ? {} : { [event.block.id]: event.block },
+        notebookChanges: [],
+        metaChanges: [],
+        calendarChanges: [],
+      }
+
+      for (const listener of batchListeners) {
+        listener(batch)
+      }
+
       for (const listener of blockListeners) {
         listener(event)
       }
     },
     emitNotebooksChanged(event: NotebookChangedEvent) {
+      const batch: AppEventBatch = {
+        blockChanges: [],
+        blockPayloads: {},
+        notebookChanges: [event],
+        metaChanges: [],
+        calendarChanges: [],
+      }
+
+      for (const listener of batchListeners) {
+        listener(batch)
+      }
+
       for (const listener of notebookListeners) {
         listener(event)
       }

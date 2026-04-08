@@ -5,8 +5,9 @@ import { fileURLToPath } from 'node:url'
 import { app, BrowserWindow, dialog, nativeImage, protocol, shell } from 'electron'
 
 import { IPC_CHANNELS } from '../shared/ipc'
-import type { BlockChangedEvent, CalendarChangedEvent, DocGenerationChunk, MetaChangedEvent, NotebookChangedEvent, ReviewGenerationChunk } from '../shared/types'
+import type { AppEventBatch, BlockChangedEvent, CalendarChangedEvent, DocGenerationChunk, MetaChangedEvent, NotebookChangedEvent, ReviewGenerationChunk } from '../shared/types'
 import { createAppContext, type AppContext } from './appContext'
+import { createAppContextWorkerClient, type AppContextWorkerClient } from './appContextWorkerClient'
 import { runChangbuCli } from './cli'
 import { registerIpcHandlers } from './ipc/register'
 
@@ -14,15 +15,25 @@ const isDevelopment = Boolean(process.env.VITE_DEV_SERVER_URL)
 const APP_NAME = '长布'
 const DEFAULT_ZOOM_FACTOR = 1.1
 const APP_IDLE_TIMEOUT_MS = 15_000
+const EVENT_BATCH_WINDOW_MS = 80
 const preloadPath = join(__dirname, 'preload.cjs')
 const ATTACHMENT_PROTOCOL = 'changbu-attachment'
 let mainWindow: BrowserWindow | null = null
 let settingsWindow: BrowserWindow | null = null
 let reviewWindow: BrowserWindow | null = null
 let appContext: AppContext | null = null
+let appContextClient: AppContextWorkerClient | null = null
 let unregisterHandlers: (() => void) | null = null
 let isQuitting = false
 let quitTask: Promise<void> | null = null
+let pendingRendererBatch: AppEventBatch = {
+  blockChanges: [],
+  blockPayloads: {},
+  notebookChanges: [],
+  metaChanges: [],
+  calendarChanges: [],
+}
+let pendingRendererBatchTimer: ReturnType<typeof setTimeout> | null = null
 const cliArgs = (() => {
   const cliIndex = process.argv.indexOf('--cli')
   return cliIndex === -1 ? null : process.argv.slice(cliIndex + 1)
@@ -44,13 +55,121 @@ protocol.registerSchemesAsPrivileged([
 
 function sendEvent(
   channel: string,
-  payload: BlockChangedEvent | NotebookChangedEvent | MetaChangedEvent | CalendarChangedEvent | DocGenerationChunk | ReviewGenerationChunk | { waiting: boolean },
+  payload: AppEventBatch | BlockChangedEvent | NotebookChangedEvent | MetaChangedEvent | CalendarChangedEvent | DocGenerationChunk | ReviewGenerationChunk | { waiting: boolean },
 ): void {
   for (const window of BrowserWindow.getAllWindows()) {
     if (!window.isDestroyed()) {
       window.webContents.send(channel, payload)
     }
   }
+}
+
+function resetPendingRendererBatch(): void {
+  pendingRendererBatch = {
+    blockChanges: [],
+    blockPayloads: {},
+    notebookChanges: [],
+    metaChanges: [],
+    calendarChanges: [],
+  }
+}
+
+function flushPendingRendererBatch(): void {
+  if (pendingRendererBatchTimer) {
+    clearTimeout(pendingRendererBatchTimer)
+    pendingRendererBatchTimer = null
+  }
+
+  const hasChanges = pendingRendererBatch.blockChanges.length > 0
+    || pendingRendererBatch.notebookChanges.length > 0
+    || pendingRendererBatch.metaChanges.length > 0
+    || pendingRendererBatch.calendarChanges.length > 0
+
+  if (!hasChanges) {
+    resetPendingRendererBatch()
+    return
+  }
+
+  sendEvent(IPC_CHANNELS.events.batch, pendingRendererBatch)
+  resetPendingRendererBatch()
+}
+
+function scheduleRendererBatchFlush(): void {
+  if (pendingRendererBatchTimer) {
+    return
+  }
+
+  pendingRendererBatchTimer = setTimeout(() => {
+    flushPendingRendererBatch()
+  }, EVENT_BATCH_WINDOW_MS)
+}
+
+function queueRendererBatchEvent(channel: string, payload: BlockChangedEvent | NotebookChangedEvent | MetaChangedEvent | CalendarChangedEvent): void {
+  switch (channel) {
+    case IPC_CHANNELS.events.blockChanged: {
+      const blockPayload = payload as BlockChangedEvent
+      const previousIndex = pendingRendererBatch.blockChanges.findIndex((event) => event.blockId === blockPayload.block.id)
+      const previous = previousIndex === -1 ? null : pendingRendererBatch.blockChanges[previousIndex] ?? null
+      const nextReason = previous?.reason === 'created' && blockPayload.reason !== 'deleted'
+        ? 'created'
+        : blockPayload.reason
+
+      if (previous?.reason === 'created' && blockPayload.reason === 'deleted') {
+        pendingRendererBatch.blockChanges.splice(previousIndex, 1)
+        delete pendingRendererBatch.blockPayloads[blockPayload.block.id]
+        break
+      }
+
+      if (blockPayload.reason === 'deleted') {
+        delete pendingRendererBatch.blockPayloads[blockPayload.block.id]
+      } else {
+        pendingRendererBatch.blockPayloads[blockPayload.block.id] = blockPayload.block
+      }
+
+      const nextChange = {
+        blockId: blockPayload.block.id,
+        reason: nextReason,
+      }
+
+      if (previousIndex === -1) {
+        pendingRendererBatch.blockChanges.push(nextChange)
+      } else {
+        pendingRendererBatch.blockChanges[previousIndex] = nextChange
+      }
+
+      break
+    }
+    case IPC_CHANNELS.events.notebooksChanged: {
+      const notebookPayload = payload as NotebookChangedEvent
+      const key = `${notebookPayload.reason}::${[...notebookPayload.notebookIds].sort().join(',')}`
+
+      if (!pendingRendererBatch.notebookChanges.some((event) => `${event.reason}::${[...event.notebookIds].sort().join(',')}` === key)) {
+        pendingRendererBatch.notebookChanges.push(notebookPayload)
+      }
+      break
+    }
+    case IPC_CHANNELS.events.metaChanged: {
+      const metaPayload = payload as MetaChangedEvent
+
+      if (!pendingRendererBatch.metaChanges.some((event) => event.reason === metaPayload.reason)) {
+        pendingRendererBatch.metaChanges.push(metaPayload)
+      }
+      break
+    }
+    case IPC_CHANNELS.events.calendarChanged: {
+      const calendarPayload = payload as CalendarChangedEvent
+      const key = `${calendarPayload.reason}::${calendarPayload.date ?? ''}::${calendarPayload.sourceBlockId ?? ''}`
+
+      if (!pendingRendererBatch.calendarChanges.some((event) => `${event.reason}::${event.date ?? ''}::${event.sourceBlockId ?? ''}` === key)) {
+        pendingRendererBatch.calendarChanges.push(calendarPayload)
+      }
+      break
+    }
+    default:
+      return
+  }
+
+  scheduleRendererBatchFlush()
 }
 
 function sendQuitState(waiting: boolean): void {
@@ -193,10 +312,12 @@ async function waitForAppIdle(): Promise<void> {
   }
 }
 
-function finishQuit(): void {
+async function finishQuit(): Promise<void> {
+  flushPendingRendererBatch()
   sendQuitState(false)
-  appContext?.dispose()
+  const activeContextClient = appContextClient
   appContext = null
+  appContextClient = null
   unregisterHandlers?.()
   unregisterHandlers = null
   settingsWindow?.destroy()
@@ -204,6 +325,7 @@ function finishQuit(): void {
   reviewWindow?.destroy()
   reviewWindow = null
   mainWindow?.destroy()
+  await activeContextClient?.terminate()
   app.quit()
 }
 
@@ -219,7 +341,7 @@ function requestAppQuit(): void {
     } finally {
       isQuitting = true
       quitTask = null
-      finishQuit()
+      await finishQuit()
     }
   })()
 }
@@ -456,47 +578,63 @@ async function bootstrap(): Promise<void> {
   applyDevelopmentAppIcon()
   await registerAttachmentProtocol(dataDirectory)
 
-  appContext = createAppContext({
+  appContextClient = createAppContextWorkerClient({
     dataDirectory,
     settingsFilePath,
     cliLaunchSpec: {
       executablePath: process.execPath,
       args: app.isPackaged ? [] : [join(__dirname, 'main.cjs')],
     },
-    openPath: shell.openPath,
-    chooseOpenPaths: async ({ title, filters, properties }) => {
-      const result = await dialog.showOpenDialog({
-        title,
-        filters,
-        properties,
-      })
+    host: {
+      openPath: shell.openPath,
+      chooseOpenPaths: async ({ title, filters, properties }) => {
+        const result = await dialog.showOpenDialog({
+          title,
+          filters,
+          properties,
+        })
 
-      return result.canceled ? [] : result.filePaths
-    },
-    chooseSavePath: async ({ title, defaultPath, filters }) => {
-      const result = await dialog.showSaveDialog({
-        title,
-        defaultPath,
-        filters,
-      })
+        return result.canceled ? [] : result.filePaths
+      },
+      chooseSavePath: async ({ title, defaultPath, filters }) => {
+        const result = await dialog.showSaveDialog({
+          title,
+          defaultPath,
+          filters,
+        })
 
-      return result.canceled ? null : result.filePath ?? null
-    },
-    chooseDirectory: async (title) => {
-      const result = await dialog.showOpenDialog({
-        title,
-        properties: ['openDirectory'],
-      })
+        return result.canceled ? null : result.filePath ?? null
+      },
+      chooseDirectory: async (title) => {
+        const result = await dialog.showOpenDialog({
+          title,
+          properties: ['openDirectory'],
+        })
 
-      return result.canceled ? null : result.filePaths[0] ?? null
+        return result.canceled ? null : result.filePaths[0] ?? null
+      },
     },
-    onBlockChanged: (event) => sendEvent(IPC_CHANNELS.events.blockChanged, event),
-    onNotebooksChanged: (event) => sendEvent(IPC_CHANNELS.events.notebooksChanged, event),
-    onMetaChanged: (event) => sendEvent(IPC_CHANNELS.events.metaChanged, event),
-    onCalendarChanged: (event) => sendEvent(IPC_CHANNELS.events.calendarChanged, event),
-    onDocGenerationChunk: (chunk) => sendEvent(IPC_CHANNELS.events.docGenerationChunk, chunk),
-    onReviewGenerationChunk: (chunk) => sendEvent(IPC_CHANNELS.events.reviewGenerationChunk, chunk),
+    onEvent: (channel, payload) => {
+      if (
+        channel === IPC_CHANNELS.events.blockChanged
+        || channel === IPC_CHANNELS.events.notebooksChanged
+        || channel === IPC_CHANNELS.events.metaChanged
+        || channel === IPC_CHANNELS.events.calendarChanged
+      ) {
+        queueRendererBatchEvent(channel, payload as BlockChangedEvent | NotebookChangedEvent | MetaChangedEvent | CalendarChangedEvent)
+        return
+      }
+
+      sendEvent(channel, payload)
+    },
+    onError: (error) => {
+      console.error('[changbu] app context worker failed:', error)
+    },
   })
+
+  await appContextClient.ready
+
+  appContext = appContextClient.context
 
   unregisterHandlers = registerIpcHandlers(appContext, {
     [IPC_CHANNELS.settings.openWindow]: () => {
@@ -507,6 +645,7 @@ async function bootstrap(): Promise<void> {
       openReviewWindow(reviewMode, dateKey)
     },
   })
+
   openMainWindow()
 }
 
@@ -546,9 +685,17 @@ app.whenReady().then(() => {
     return
   }
 
-  void bootstrap()
+  void bootstrap().catch((error) => {
+    console.error('[changbu] bootstrap failed:', error)
+    dialog.showErrorBox(APP_NAME, error instanceof Error ? error.message : '应用启动失败。')
+    app.exit(1)
+  })
 
   app.on('activate', () => {
+    if (!appContext) {
+      return
+    }
+
     if (!mainWindow || mainWindow.isDestroyed()) {
       openMainWindow()
       return

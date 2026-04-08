@@ -1,10 +1,12 @@
 import type { ReactNode } from 'react'
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Virtuoso, type VirtuosoHandle } from 'react-virtuoso'
 
 import type { Block, NotebookSummary, TagSuggestion } from '../../shared/types'
-import { buildMiniTimelineGroups, getActiveMiniTimelineGroupKey } from '../lib/miniTimeline'
+import type { BlockListChangeHint } from '../lib/blockListCache'
+import { getActiveMiniTimelineGroupKey } from '../lib/miniTimeline'
 import { formatDateKeyLabel, formatLocalDateKey } from '../lib/format'
+import { buildMiniTimelineDerivedState, reconcileMiniTimelineDerivedState } from '../lib/timelineDerived'
 import { AddToNotebookMenu } from './AddToNotebookMenu'
 import { BlockCard } from './BlockCard'
 
@@ -30,6 +32,7 @@ interface TimelineProps {
   onFocusedBlockHandled?: () => void
   focusedDateKey?: string | null
   onActiveDateKeyChange?: (dateKey: string | null) => void
+  blockChangeHint?: BlockListChangeHint
 }
 
 const MINI_TIMELINE_COLLAPSE_BREAKPOINT = 700
@@ -56,23 +59,31 @@ export function Timeline({
   onFocusedBlockHandled,
   focusedDateKey,
   onActiveDateKeyChange,
+  blockChangeHint = { type: 'reset' },
 }: TimelineProps) {
   const virtuosoRef = useRef<VirtuosoHandle | null>(null)
+  const previousBlocksRef = useRef<Block[] | null>(null)
+  const miniTimelineStateRef = useRef(buildMiniTimelineDerivedState(blocks))
   const [topVisibleIndex, setTopVisibleIndex] = useState(0)
   const [allowMiniTimeline, setAllowMiniTimeline] = useState(() =>
     typeof window === 'undefined' ? true : window.innerWidth >= MINI_TIMELINE_COLLAPSE_BREAKPOINT,
   )
+
+  if (previousBlocksRef.current !== blocks) {
+    miniTimelineStateRef.current = reconcileMiniTimelineDerivedState(
+      previousBlocksRef.current ? miniTimelineStateRef.current : null,
+      blocks,
+      blockChangeHint,
+    )
+    previousBlocksRef.current = blocks
+  }
+
+  const miniTimelineState = miniTimelineStateRef.current
   const boundedTopVisibleIndex = Math.min(topVisibleIndex, Math.max(0, blocks.length - 1))
-  const miniTimelineGroups = useMemo(() => buildMiniTimelineGroups(blocks), [blocks])
+  const miniTimelineGroups = miniTimelineState.groups
   const shouldShowMiniTimeline = showMiniTimeline && allowMiniTimeline
-  const activeMiniTimelineGroupKey = useMemo(
-    () => getActiveMiniTimelineGroupKey(miniTimelineGroups, boundedTopVisibleIndex),
-    [boundedTopVisibleIndex, miniTimelineGroups],
-  )
-  const miniTimelineGroupByStartIndex = useMemo(
-    () => new Map(miniTimelineGroups.map((group) => [group.startIndex, group])),
-    [miniTimelineGroups],
-  )
+  const activeMiniTimelineGroupKey = getActiveMiniTimelineGroupKey(miniTimelineGroups, boundedTopVisibleIndex)
+  const miniTimelineGroupByStartIndex = miniTimelineState.groupByStartIndex
 
   useEffect(() => {
     if (typeof window === 'undefined') {

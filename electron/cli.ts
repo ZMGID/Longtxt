@@ -278,7 +278,42 @@ export async function runChangbuCli(context: AppContext, rawArgs: string[]): Pro
         await ensureExternalAccessEnabled(context)
         const offset = parseIntegerOption(args, '--offset', 0)
         const limit = parseIntegerOption(args, '--limit', 10)
-        const blocks = await context.listBlocks({ offset, limit })
+        let cursor: { createdAt: string; id: string } | null = null
+        let skipped = 0
+        const blocks: Block[] = []
+
+        while (blocks.length < limit) {
+          const page = await context.listBlocks({
+            cursor,
+            limit: Math.max(limit, 50),
+          })
+
+          if (page.items.length === 0) {
+            break
+          }
+
+          if (skipped + page.items.length <= offset) {
+            skipped += page.items.length
+
+            if (!page.nextCursor) {
+              break
+            }
+
+            cursor = page.nextCursor
+            continue
+          }
+
+          const sliceStart = Math.max(0, offset - skipped)
+          blocks.push(...page.items.slice(sliceStart, sliceStart + (limit - blocks.length)))
+          skipped += page.items.length
+
+          if (!page.nextCursor) {
+            break
+          }
+
+          cursor = page.nextCursor
+        }
+
         writeSuccess(json, blocks.map(toBlockSummary), () => formatBlockList(blocks))
         return 0
       }

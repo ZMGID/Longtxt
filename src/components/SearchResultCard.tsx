@@ -1,6 +1,8 @@
 import type { ReactNode } from 'react'
 
-import type { MatchSource, SearchResult } from '../../shared/types'
+import type { MatchSource, SearchResult, TagSuggestion } from '../../shared/types'
+import { buildSearchPreview } from '../../shared/searchPreview'
+import { BlockCard } from './BlockCard'
 import { formatTimeLabel } from '../lib/format'
 import { highlightText } from '../lib/highlight'
 import { StatusPill } from './StatusPill'
@@ -14,41 +16,103 @@ const MATCH_SOURCE_LABELS: Record<MatchSource, string> = {
 interface SearchResultCardProps {
   result: SearchResult
   query: string
+  editable?: boolean
+  tagSuggestions?: TagSuggestion[]
   onTagClick?: (tagName: string) => void
+  onSave?: (id: string, content: string) => Promise<void>
+  onDelete?: (id: string) => Promise<void>
+  onAddTag?: (blockId: string, tagName: string) => Promise<void>
+  onRemoveTag?: (blockId: string, tagId: string) => Promise<void>
+  onFindRelated?: (blockId: string) => void
   showScore?: boolean
   metaLabel?: string | null
+  headerActions?: ReactNode
   footer?: ReactNode
 }
 
-export function SearchResultCard({ result, query, onTagClick, showScore = true, metaLabel = null, footer = null }: SearchResultCardProps) {
+export function SearchResultCard({
+  result,
+  query,
+  editable = false,
+  tagSuggestions = [],
+  onTagClick,
+  onSave,
+  onDelete,
+  onAddTag,
+  onRemoveTag,
+  onFindRelated,
+  showScore = true,
+  metaLabel = null,
+  headerActions = null,
+  footer = null,
+}: SearchResultCardProps) {
   const { block } = result
+  const previewText = result.preview ?? buildSearchPreview(block.content, query)
+  const previewContent = (
+    <div className="whitespace-pre-wrap break-words">
+      {highlightText(previewText, query)}
+    </div>
+  )
+  const metaBadges = (
+    <>
+      {showScore ? (
+        <span className="rounded border border-stone-200 bg-stone-50 px-2 py-0.5 text-[11px] font-medium text-stone-500">
+          得分 {result.score}
+        </span>
+      ) : metaLabel ? (
+        <span className="rounded border border-stone-200 bg-stone-50 px-2 py-0.5 text-[11px] font-medium text-stone-500">
+          {metaLabel}
+        </span>
+      ) : null}
+      {result.matchSource.map((source) => (
+        <span key={source} className="rounded border border-sky-200 bg-sky-50 px-2 py-0.5 text-[11px] font-medium text-sky-700">
+          {MATCH_SOURCE_LABELS[source]}
+        </span>
+      ))}
+    </>
+  )
+
+  if (editable) {
+    return (
+      <BlockCard
+        block={block}
+        editable
+        contentOverride={previewContent}
+        metaBadges={metaBadges}
+        headerActions={headerActions}
+        footer={footer}
+        tagSuggestions={tagSuggestions}
+        onSave={onSave}
+        onDelete={onDelete}
+        onAddTag={onAddTag}
+        onRemoveTag={onRemoveTag}
+        onTagClick={onTagClick}
+        onFindRelated={onFindRelated}
+      />
+    )
+  }
 
   return (
     <article className="rounded-lg border border-black/[0.06] bg-white/70 p-3 transition-all duration-200 hover:border-black/[0.12] hover:shadow-sm">
-      <div className="flex flex-wrap items-center gap-2 text-xs text-stone-500">
-        <StatusPill status={block.status} />
-        <span>{formatTimeLabel(block.updatedAt)}</span>
-        <span className="rounded border border-stone-200 bg-stone-50 px-2 py-0.5 text-[11px] font-medium text-stone-500">
-          {block.aiMode === 'live' ? 'live AI' : 'mock AI'}
-        </span>
-        {showScore ? (
+      <div className="flex items-start justify-between gap-3">
+        <div className="flex min-w-0 flex-wrap items-center gap-2 text-xs text-stone-500">
+          <StatusPill status={block.status} />
+          <span>{formatTimeLabel(block.updatedAt)}</span>
           <span className="rounded border border-stone-200 bg-stone-50 px-2 py-0.5 text-[11px] font-medium text-stone-500">
-            得分 {result.score}
+            {block.aiMode === 'live' ? 'live AI' : 'mock AI'}
           </span>
-        ) : metaLabel ? (
-          <span className="rounded border border-stone-200 bg-stone-50 px-2 py-0.5 text-[11px] font-medium text-stone-500">
-            {metaLabel}
-          </span>
+          {metaBadges}
+        </div>
+
+        {headerActions ? (
+          <div className="shrink-0">
+            {headerActions}
+          </div>
         ) : null}
-        {result.matchSource.map((source) => (
-          <span key={source} className="rounded border border-sky-200 bg-sky-50 px-2 py-0.5 text-[11px] font-medium text-sky-700">
-            {MATCH_SOURCE_LABELS[source]}
-          </span>
-        ))}
       </div>
 
       <div className="mt-2 whitespace-pre-wrap break-words text-sm leading-6 text-stone-800">
-        {highlightText(block.content, query)}
+        {previewContent}
       </div>
 
       <div className="mt-2 flex flex-wrap items-center gap-1">

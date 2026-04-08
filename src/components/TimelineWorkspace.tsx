@@ -1,8 +1,10 @@
 import type { ReactNode } from 'react'
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 
 import type { Block, NotebookSummary, TagSuggestion } from '../../shared/types'
+import type { BlockListChangeHint } from '../lib/blockListCache'
 import { formatLocalDateKey } from '../lib/format'
+import { buildTimelineDateCountState, reconcileTimelineDateCountState } from '../lib/timelineDerived'
 import type { TimelineReviewMode } from '../lib/timelineReview'
 import { Timeline } from './Timeline'
 import { TimelineSidebar } from './TimelineSidebar'
@@ -27,6 +29,7 @@ interface TimelineWorkspaceProps {
   onFindRelated?: (blockId: string) => void
   focusedBlockId?: string | null
   onFocusedBlockHandled?: () => void
+  blockChangeHint?: BlockListChangeHint
   upcomingDays: number
   onOpenCalendarDate: (dateKey: string) => void
   onOpenReview: (mode: TimelineReviewMode, dateKey: string) => void
@@ -67,18 +70,30 @@ export function TimelineWorkspace({
   onFindRelated,
   focusedBlockId,
   onFocusedBlockHandled,
+  blockChangeHint = { type: 'reset' },
   upcomingDays,
   onOpenCalendarDate,
   onOpenReview,
 }: TimelineWorkspaceProps) {
+  const previousBlocksRef = useRef<Block[] | null>(null)
+  const dateCountStateRef = useRef(buildTimelineDateCountState(blocks))
   const [activeDateKey, setActiveDateKey] = useState(() => resolveInitialDateKey(blocks))
   const [focusedDateKey, setFocusedDateKey] = useState<string | null>(null)
   const [showSidebar, setShowSidebar] = useState(() =>
     typeof window === 'undefined' ? true : window.innerWidth >= TIMELINE_SIDEBAR_BREAKPOINT,
   )
 
-  const latestDateKey = useMemo(() => resolveInitialDateKey(blocks), [blocks])
-  const availableDateKeys = useMemo(() => new Set(blocks.map((block) => formatLocalDateKey(block.createdAt))), [blocks])
+  if (previousBlocksRef.current !== blocks) {
+    dateCountStateRef.current = reconcileTimelineDateCountState(
+      previousBlocksRef.current ? dateCountStateRef.current : null,
+      blocks,
+      blockChangeHint,
+    )
+    previousBlocksRef.current = blocks
+  }
+
+  const latestDateKey = resolveInitialDateKey(blocks)
+  const { dateCounts, availableDateKeys } = dateCountStateRef.current
 
   useEffect(() => {
     if (blocks.length === 0) {
@@ -127,6 +142,7 @@ export function TimelineWorkspace({
           focusedBlockId={focusedBlockId}
           onFocusedBlockHandled={onFocusedBlockHandled}
           focusedDateKey={focusedDateKey}
+          blockChangeHint={blockChangeHint}
           onActiveDateKeyChange={(dateKey) => {
             if (dateKey) {
               setActiveDateKey(dateKey)
@@ -137,7 +153,7 @@ export function TimelineWorkspace({
 
       {showSidebar ? (
         <TimelineSidebar
-          blocks={blocks}
+          dateCounts={dateCounts}
           upcomingDays={upcomingDays}
           activeDateKey={activeDateKey}
           onSelectDate={(dateKey) => {

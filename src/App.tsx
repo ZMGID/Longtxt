@@ -1,4 +1,4 @@
-import { startTransition, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { Suspense, lazy, startTransition, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 
 import { useQueryClient } from '@tanstack/react-query'
 
@@ -12,16 +12,12 @@ import type {
   RelatedBlockResult,
   SearchResult,
 } from '../shared/types'
+import { expandBlockChangedEvents } from '../shared/eventBatch'
+import { buildSearchPreview } from '../shared/searchPreview'
 import { AppSidebar, type AppView } from './components/AppSidebar'
 import { BlockCard } from './components/BlockCard'
-import { CalendarView } from './components/CalendarView'
 import { ChangbuEventBridge } from './components/ChangbuEventBridge'
-import { DataManagementView } from './components/DataManagementView'
-import { GraphView } from './components/GraphView'
 import { InputBar } from './components/InputBar'
-import { NotebookWorkspace } from './components/NotebookWorkspace'
-import { SearchPanel } from './components/SearchPanel'
-import { SnapshotsView } from './components/SnapshotsView'
 import { TimelineWorkspace } from './components/TimelineWorkspace'
 import { ToastProvider } from './components/Toast'
 import { useToast } from './components/toast-context'
@@ -33,6 +29,7 @@ import { useGraphData } from './hooks/useGraphData'
 import { useNotebooks } from './hooks/useNotebooks'
 import { useSnapshots } from './hooks/useSnapshots'
 import { useTags } from './hooks/useTags'
+import type { BlockListChangeHint } from './lib/blockListCache'
 import { changbu } from './lib/changbu'
 import { loadDocumentReferences } from './lib/documentReferences'
 import { resolveSelectedGraphBlock } from './lib/graphSelection'
@@ -67,6 +64,36 @@ const initialDocumentState: DocumentState = {
   error: null,
 }
 
+const STARTUP_PREFETCH_PLAN: Array<{ view: AppView; delayMs: number }> = [
+  { view: 'calendar', delayMs: 260 },
+  { view: 'snapshots', delayMs: 920 },
+  { view: 'graph', delayMs: 1560 },
+  { view: 'data-management', delayMs: 2240 },
+]
+
+const loadCalendarView = () => import('./components/CalendarView')
+const loadNotebookWorkspace = () => import('./components/NotebookWorkspace')
+const loadSearchPanel = () => import('./components/SearchPanel')
+const loadGraphView = () => import('./components/GraphView')
+const loadSnapshotsView = () => import('./components/SnapshotsView')
+const loadDataManagementView = () => import('./components/DataManagementView')
+
+const LazyCalendarView = lazy(() => loadCalendarView().then((module) => ({ default: module.CalendarView })))
+const LazyNotebookWorkspace = lazy(() => loadNotebookWorkspace().then((module) => ({ default: module.NotebookWorkspace })))
+const LazySearchPanel = lazy(() => loadSearchPanel().then((module) => ({ default: module.SearchPanel })))
+const LazyGraphView = lazy(() => loadGraphView().then((module) => ({ default: module.GraphView })))
+const LazySnapshotsView = lazy(() => loadSnapshotsView().then((module) => ({ default: module.SnapshotsView })))
+const LazyDataManagementView = lazy(() => loadDataManagementView().then((module) => ({ default: module.DataManagementView })))
+
+const VIEW_MODULE_PRELOADERS: Partial<Record<AppView, () => Promise<unknown>>> = {
+  calendar: loadCalendarView,
+  notebooks: loadNotebookWorkspace,
+  search: loadSearchPanel,
+  graph: loadGraphView,
+  snapshots: loadSnapshotsView,
+  'data-management': loadDataManagementView,
+}
+
 async function runSearchAction(
   action: () => Promise<SearchResult[]>,
   handlers: {
@@ -87,6 +114,34 @@ async function runSearchAction(
   }
 }
 
+function applyBlockChangeToSearchResults(
+  results: SearchResult[],
+  event: { block: Block; reason: 'created' | 'updated' | 'enriched' | 'deleted' | 'tagged' },
+  query: string,
+): SearchResult[] {
+  if (!results.some((item) => item.block.id === event.block.id)) {
+    return results
+  }
+
+  if (event.reason === 'deleted') {
+    return results.filter((item) => item.block.id !== event.block.id)
+  }
+
+  return results.map((item) => (
+    item.block.id === event.block.id
+      ? {
+          ...item,
+          block: event.block,
+          preview: buildSearchPreview(event.block.content, query),
+        }
+      : item
+  ))
+}
+
+function applyBlockChangesToSearchResults(results: SearchResult[], events: Array<{ block: Block; reason: 'created' | 'updated' | 'enriched' | 'deleted' | 'tagged' }>, query: string): SearchResult[] {
+  return events.reduce((current, event) => applyBlockChangeToSearchResults(current, event, query), results)
+}
+
 export default function App() {
   return (
     <ToastProvider>
@@ -98,7 +153,20 @@ export default function App() {
 function AppInner() {
   const { toast } = useToast()
   const queryClient = useQueryClient()
-  const { blocks, loading, loadingMore, hasMore, error, createBlock, updateBlock, removeBlock, addTag, removeTag, loadMore, ensureBlockLoaded } = useBlocks()
+  const {
+    blocks,
+    blockChangeHint,
+    loading,
+    loadingMore,
+    hasMore,
+    error,
+    createBlock,
+    updateBlock,
+    removeBlock,
+    addTag,
+    removeTag,
+    loadMore,
+  } = useBlocks()
   const { tags } = useTags()
   const {
     notebooks,
@@ -133,6 +201,8 @@ function AppInner() {
   const [documentReferences, setDocumentReferences] = useState<SearchResult[]>([])
   const [documentReferencesLoading, setDocumentReferencesLoading] = useState(false)
   const [documentDepositAction, setDocumentDepositAction] = useState<'create' | 'append' | null>(null)
+  const [jumpingToTimelineBlockId, setJumpingToTimelineBlockId] = useState<string | null>(null)
+  const [timelineContextBlocks, setTimelineContextBlocks] = useState<Block[]>([])
   const [isWaitingToQuit, setIsWaitingToQuit] = useState(false)
   const { calendarSettings, uiSettings } = useAppShellSettings()
   const searchInputRef = useRef<HTMLTextAreaElement | null>(null)
@@ -148,13 +218,23 @@ function AppInner() {
   const [relatedLoading, setRelatedLoading] = useState(false)
   const graphSelectionRequestRef = useRef<string | null>(null)
   const documentReferencesRequestIdRef = useRef<string | null>(null)
+  const prefetchedViewsRef = useRef<Set<AppView>>(new Set(['timeline']))
+  const scheduledPrefetchesRef = useRef<Partial<Record<AppView, ReturnType<typeof setTimeout>>>>({})
   const metaQuery = useAppMeta()
   const meta = metaQuery.data ?? null
   const graphQuery = useGraphData(graphTagFilters, activeView === 'graph')
-  const graphData = graphQuery.data ?? { nodes: [], edges: [] }
+  const graphData = graphQuery.data ?? { nodes: [], edges: [], forceGraphData: { nodes: [], links: [] } }
   const graphLoading = graphQuery.isPending && graphData.nodes.length === 0 && graphData.edges.length === 0
   const snapshotsQuery = useSnapshots(snapshotQuery, null, activeView === 'snapshots')
   const snapshots = useMemo(() => snapshotsQuery.data ?? [], [snapshotsQuery.data])
+  const timelineBlocks = useMemo(
+    () => (timelineContextBlocks.length > 0 ? timelineContextBlocks : blocks),
+    [blocks, timelineContextBlocks],
+  )
+  const timelineBlockChangeHint = useMemo<BlockListChangeHint>(
+    () => (timelineContextBlocks.length > 0 ? { type: 'reset' } : blockChangeHint),
+    [blockChangeHint, timelineContextBlocks.length],
+  )
 
   const refreshMeta = useCallback(async (): Promise<AppMeta> => {
     await queryClient.refetchQueries({ queryKey: queryKeys.meta(), exact: true })
@@ -167,26 +247,67 @@ function AppInner() {
     return result
   }, [queryClient])
 
-  const prefetchViewResources = useCallback((view: AppView): void => {
+  const clearScheduledPrefetch = useCallback((view?: AppView): void => {
+    if (view) {
+      const timer = scheduledPrefetchesRef.current[view]
+
+      if (timer) {
+        clearTimeout(timer)
+        delete scheduledPrefetchesRef.current[view]
+      }
+
+      return
+    }
+
+    for (const scheduledView of Object.keys(scheduledPrefetchesRef.current) as AppView[]) {
+      const timer = scheduledPrefetchesRef.current[scheduledView]
+
+      if (timer) {
+        clearTimeout(timer)
+      }
+    }
+
+    scheduledPrefetchesRef.current = {}
+  }, [])
+
+  const prefetchQueryIfNeeded = useCallback(
+    async <T,>(options: {
+      queryKey: readonly unknown[]
+      queryFn: () => Promise<T>
+    }): Promise<void> => {
+      const queryState = queryClient.getQueryState(options.queryKey)
+
+      if (queryState?.fetchStatus === 'fetching' || queryState?.status === 'success') {
+        return
+      }
+
+      await queryClient.prefetchQuery(options)
+    },
+    [queryClient],
+  )
+
+  const runPrefetchViewResources = useCallback((view: AppView): void => {
     const currentYear = new Date().getFullYear()
     const today = formatTodayDateKey()
+    prefetchedViewsRef.current.add(view)
+    void VIEW_MODULE_PRELOADERS[view]?.()
 
     switch (view) {
       case 'calendar':
         void Promise.allSettled([
-          queryClient.prefetchQuery({
+          prefetchQueryIfNeeded({
             queryKey: queryKeys.calendarYears(),
             queryFn: () => changbu.calendar.listYears(),
           }),
-          queryClient.prefetchQuery({
+          prefetchQueryIfNeeded({
             queryKey: queryKeys.calendarHeatmap(currentYear),
             queryFn: () => changbu.calendar.getYearHeatmap(currentYear),
           }),
-          queryClient.prefetchQuery({
+          prefetchQueryIfNeeded({
             queryKey: queryKeys.calendarDay(today),
             queryFn: () => changbu.calendar.getDayDetail(today),
           }),
-          queryClient.prefetchQuery({
+          prefetchQueryIfNeeded({
             queryKey: queryKeys.calendarUpcoming(calendarSettings.upcomingDays),
             queryFn: () => changbu.calendar.listUpcoming(calendarSettings.upcomingDays),
           }),
@@ -197,24 +318,24 @@ function AppInner() {
       case 'notebooks':
         return
       case 'graph':
-        void queryClient.prefetchQuery({
+        void prefetchQueryIfNeeded({
           queryKey: queryKeys.graph(graphTagFilters),
           queryFn: () => changbu.graph.getData(graphTagFilters),
         })
         return
       case 'snapshots':
-        void queryClient.prefetchQuery({
+        void prefetchQueryIfNeeded({
           queryKey: queryKeys.snapshots('', null),
           queryFn: () => changbu.snapshots.list('', null),
         })
         return
       case 'data-management':
         void Promise.allSettled([
-          queryClient.prefetchQuery({
+          prefetchQueryIfNeeded({
             queryKey: queryKeys.dataManagement(),
             queryFn: () => changbu.data.getOverview(),
           }),
-          queryClient.prefetchQuery({
+          prefetchQueryIfNeeded({
             queryKey: queryKeys.blockCleanupDays(),
             queryFn: fetchBlockCleanupDays,
           }),
@@ -223,20 +344,33 @@ function AppInner() {
       case 'timeline':
         return
     }
-  }, [calendarSettings.upcomingDays, graphTagFilters, queryClient])
+  }, [calendarSettings.upcomingDays, graphTagFilters, prefetchQueryIfNeeded])
+
+  const prefetchViewResources = useCallback((view: AppView): void => {
+    clearScheduledPrefetch(view)
+    runPrefetchViewResources(view)
+  }, [clearScheduledPrefetch, runPrefetchViewResources])
 
   useEffect(() => {
-    const warmViews: AppView[] = ['calendar', 'search', 'snapshots', 'data-management', 'graph']
-    const timeoutId = setTimeout(() => {
-      warmViews.forEach((view) => {
-        prefetchViewResources(view)
-      })
-    }, 40)
+    if (loading) {
+      return
+    }
+
+    for (const { view, delayMs } of STARTUP_PREFETCH_PLAN) {
+      if (prefetchedViewsRef.current.has(view) || scheduledPrefetchesRef.current[view]) {
+        continue
+      }
+
+      scheduledPrefetchesRef.current[view] = setTimeout(() => {
+        delete scheduledPrefetchesRef.current[view]
+        runPrefetchViewResources(view)
+      }, delayMs)
+    }
 
     return () => {
-      clearTimeout(timeoutId)
+      clearScheduledPrefetch()
     }
-  }, [prefetchViewResources])
+  }, [clearScheduledPrefetch, loading, runPrefetchViewResources])
 
   useEffect(() => {
     let active = true
@@ -278,6 +412,37 @@ function AppInner() {
       unsubscribeQuitState()
     }
   }, [refreshMeta])
+
+  useEffect(() => {
+    return changbu.events.onBatch((batch) => {
+      const blockEvents = expandBlockChangedEvents(batch)
+
+      if (blockEvents.length === 0) {
+        return
+      }
+
+      startTransition(() => {
+        setResults((current) => applyBlockChangesToSearchResults(current, blockEvents, searchQuery))
+        setNotebookResults((current) => applyBlockChangesToSearchResults(current, blockEvents, searchQuery))
+        setDocumentReferences((current) => applyBlockChangesToSearchResults(current, blockEvents, document.topic || searchQuery))
+        setTimelineContextBlocks((current) => {
+          let nextBlocks = current
+
+          for (const event of blockEvents) {
+            if (!nextBlocks.some((block) => block.id === event.block.id)) {
+              continue
+            }
+
+            nextBlocks = event.reason === 'deleted'
+              ? nextBlocks.filter((block) => block.id !== event.block.id)
+              : nextBlocks.map((block) => (block.id === event.block.id ? event.block : block))
+          }
+
+          return nextBlocks
+        })
+      })
+    })
+  }, [document.topic, searchQuery])
 
   useEffect(() => {
     if (!snapshotsQuery.isSuccess) {
@@ -341,7 +506,7 @@ function AppInner() {
     setDocumentReferencesLoading(true)
 
     try {
-      const references = await loadDocumentReferences(changbu.blocks.get, blockIds)
+      const references = await loadDocumentReferences(changbu.blocks.getMany, blockIds, document.topic || searchQuery)
 
       if (documentReferencesRequestIdRef.current !== requestId) {
         return
@@ -633,6 +798,43 @@ function AppInner() {
     }
   }
 
+  async function handleJumpToTimeline(blockId: string): Promise<boolean> {
+    if (jumpingToTimelineBlockId) {
+      return false
+    }
+
+    setJumpingToTimelineBlockId(blockId)
+
+    try {
+      const blockInLoadedPages = blocks.some((block) => block.id === blockId)
+
+      if (blockInLoadedPages) {
+        setTimelineContextBlocks([])
+      } else {
+        const contextBlocks = await changbu.blocks.getContext(blockId, {
+          before: 4,
+          after: 4,
+        })
+
+        if (contextBlocks.length === 0 || !contextBlocks.some((block) => block.id === blockId)) {
+          toast('error', '未能在时间轴中定位该块。')
+          return false
+        }
+
+        setTimelineContextBlocks(contextBlocks)
+      }
+
+      setActiveView('timeline')
+      setFocusedBlockId(blockId)
+      return true
+    } catch (reason) {
+      toast('error', reason instanceof Error ? reason.message : '跳转到时间轴失败。')
+      return false
+    } finally {
+      setJumpingToTimelineBlockId((current) => (current === blockId ? null : current))
+    }
+  }
+
   const selectedGraphBlock = resolveSelectedGraphBlock(blocks, selectedGraphBlockId, selectedGraphBlockFallback)
   const recentResults: SearchResult[] = blocks.slice(0, 5).map((block) => ({
     block,
@@ -674,7 +876,7 @@ function AppInner() {
     'data-management': '数据管理',
   }[activeView]
 
-  function renderActiveView(): React.ReactNode {
+  function renderActiveView(): ReactNode {
     switch (activeView) {
       case 'timeline':
         return (
@@ -683,7 +885,8 @@ function AppInner() {
               <div className="rounded border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">{error}</div>
             ) : null}
             <TimelineWorkspace
-              blocks={blocks}
+              blocks={timelineBlocks}
+              blockChangeHint={timelineBlockChangeHint}
               loading={loading}
               loadingMore={loadingMore}
               hasMore={hasMore}
@@ -721,22 +924,20 @@ function AppInner() {
         )
       case 'calendar':
         return (
-          <CalendarView
+          <LazyCalendarView
             settings={calendarSettings}
             selectedDateOverride={calendarSelectedDateOverride}
             onSelectedDateOverrideHandled={() => {
               setCalendarSelectedDateOverride(null)
             }}
             onJumpToBlock={async (blockId) => {
-              await ensureBlockLoaded(blockId)
-              setActiveView('timeline')
-              setFocusedBlockId(blockId)
+              await handleJumpToTimeline(blockId)
             }}
           />
         )
       case 'notebooks':
         return (
-          <NotebookWorkspace
+          <LazyNotebookWorkspace
             notebooks={notebooks}
             selectedNotebookId={selectedNotebookId}
             selectedNotebook={selectedNotebook}
@@ -796,7 +997,7 @@ function AppInner() {
         )
       case 'search':
         return (
-          <SearchPanel
+          <LazySearchPanel
             query={searchQuery}
             results={displayedSearchResults}
             resultsTitle={searchResultsTitle}
@@ -810,6 +1011,7 @@ function AppInner() {
             document={document}
             documentReferences={documentReferences}
             documentReferencesLoading={documentReferencesLoading}
+            notebooks={notebooks}
             selectedNotebook={selectedNotebook ? { id: selectedNotebook.id, title: selectedNotebook.title } : null}
             documentDepositAction={documentDepositAction}
             onQueryChange={(value) => {
@@ -843,14 +1045,27 @@ function AppInner() {
             onTagClick={(tagName) => {
               void handleBrowseTag(tagName)
             }}
+            onJumpToTimeline={handleJumpToTimeline}
+            jumpingToTimelineBlockId={jumpingToTimelineBlockId}
+            tagSuggestions={tags}
+            onUpdateResult={updateBlock}
+            onDeleteResult={removeBlock}
+            onAddTagToResult={addTag}
+            onRemoveTagFromResult={removeTag}
+            onFindRelatedResult={(blockId) => {
+              void handleFindRelated(blockId)
+            }}
+            onAddResultToNotebook={handleAddBlockToNotebook}
+            onCreateNotebookWithResult={handleCreateNotebookWithBlock}
             inputRef={searchInputRef}
           />
         )
       case 'graph':
         return (
-          <GraphView
+          <LazyGraphView
             nodes={graphData.nodes}
             edges={graphData.edges}
+            graphData={graphData.forceGraphData}
             loading={graphLoading}
             selectedBlockId={selectedGraphBlockId}
             selectedBlock={selectedGraphBlock}
@@ -887,16 +1102,17 @@ function AppInner() {
               }
             }}
             onJumpToBlock={async (blockId) => {
-              await ensureBlockLoaded(blockId)
-              setActiveView('timeline')
-              setFocusedBlockId(blockId)
-              setSelectedGraphBlockId(blockId)
+              const jumped = await handleJumpToTimeline(blockId)
+
+              if (jumped) {
+                setSelectedGraphBlockId(blockId)
+              }
             }}
           />
         )
       case 'snapshots':
         return (
-          <SnapshotsView
+          <LazySnapshotsView
             snapshots={snapshots}
             selectedSnapshotId={selectedSnapshotId}
             snapshotQuery={snapshotQuery}
@@ -961,7 +1177,7 @@ function AppInner() {
           />
         )
       case 'data-management':
-        return <DataManagementView />
+        return <LazyDataManagementView />
     }
   }
 
@@ -975,7 +1191,13 @@ function AppInner() {
           blockCount={meta?.totalBlockCount ?? blocks.length}
           aiStatusLabel={aiStatusLabel}
           meta={meta}
-          onSelectView={setActiveView}
+          onSelectView={(view) => {
+            if (view === 'timeline') {
+              setTimelineContextBlocks([])
+            }
+
+            setActiveView(view)
+          }}
           onPrefetchView={prefetchViewResources}
           onOpenSettings={() => {
             void changbu.settings.openWindow()
@@ -995,9 +1217,11 @@ function AppInner() {
             </div>
 
             <div className="flex min-h-0 min-w-0 flex-1 px-4 pb-2.5 pt-1.5 lg:px-6 lg:pt-2">
-              <div key={activeView} className="flex min-h-0 min-w-0 flex-1 animate-[fadeIn_200ms_ease-out] overflow-hidden">
-                {renderActiveView()}
-              </div>
+              <Suspense fallback={<ViewLoadingMask title={activeViewTitle} />}>
+                <div key={activeView} className="flex min-h-0 min-w-0 flex-1 animate-[fadeIn_200ms_ease-out] overflow-hidden">
+                  {renderActiveView()}
+                </div>
+              </Suspense>
             </div>
           </div>
 
@@ -1056,4 +1280,22 @@ function applyDocChunk(current: DocumentState, chunk: DocGenerationChunk): Docum
     mode: chunk.mode,
     error: chunk.error ?? null,
   }
+}
+
+function ViewLoadingMask({ title }: { title: string }) {
+  return (
+    <div className="flex min-h-0 min-w-0 flex-1 items-center justify-center overflow-hidden">
+      <div className="relative flex w-full max-w-2xl flex-col items-center justify-center overflow-hidden rounded-[28px] border border-black/[0.06] bg-[linear-gradient(180deg,rgba(255,255,255,0.96),rgba(246,241,233,0.92))] px-8 py-14 text-center shadow-[0_24px_60px_rgba(28,25,23,0.08)]">
+        <div className="absolute inset-0 bg-[radial-gradient(circle_at_top,rgba(255,255,255,0.95),rgba(255,255,255,0)_60%)]" />
+        <div className="relative flex h-12 w-12 items-center justify-center rounded-full border border-stone-200 bg-white/90 shadow-sm">
+          <div className="h-6 w-6 animate-spin rounded-full border-2 border-stone-200 border-t-stone-700" />
+        </div>
+        <p className="relative mt-5 text-sm font-medium tracking-[0.08em] text-stone-500">正在准备 {title}</p>
+        <h3 className="relative mt-2 text-[22px] font-semibold tracking-[-0.02em] text-stone-900">模块加载完成后再一次性呈现</h3>
+        <p className="relative mt-3 max-w-lg text-sm leading-7 text-stone-500">
+          当前已用遮罩隐藏底层布局，避免切换时出现未完成页面。
+        </p>
+      </div>
+    </div>
+  )
 }

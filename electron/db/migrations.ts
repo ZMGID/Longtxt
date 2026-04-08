@@ -29,6 +29,8 @@ CREATE TABLE IF NOT EXISTS block_tags (
 CREATE INDEX IF NOT EXISTS idx_block_tags_block_id ON block_tags (block_id);
 CREATE INDEX IF NOT EXISTS idx_block_tags_tag_id ON block_tags (tag_id);
 CREATE INDEX IF NOT EXISTS idx_blocks_created_at ON blocks (created_at);
+CREATE INDEX IF NOT EXISTS idx_blocks_updated_at ON blocks (updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_blocks_created_at_id ON blocks (created_at DESC, id DESC);
 
 CREATE TABLE IF NOT EXISTS pending_block_vectors (
   block_id TEXT PRIMARY KEY REFERENCES blocks(id) ON DELETE CASCADE,

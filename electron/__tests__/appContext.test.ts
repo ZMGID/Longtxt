@@ -261,9 +261,9 @@ describe('app context', () => {
     await context.whenIdle()
 
     const listed = await context.listBlocks()
-    expect(listed).toHaveLength(1)
-    expect(listed[0].status).toBe('ready')
-    expect(listed[0].tags.map((tag) => tag.name)).toContain('前端')
+    expect(listed.items).toHaveLength(1)
+    expect(listed.items[0].status).toBe('ready')
+    expect(listed.items[0].tags.map((tag) => tag.name)).toContain('前端')
     expect((await context.getBlock(created.id)).id).toBe(created.id)
 
     const searchResults = await context.searchBlocks('React')
@@ -291,7 +291,7 @@ describe('app context', () => {
     await context.updateBlock(created.id, '继续推进 Electron 打包和数据库 schema')
     await context.whenIdle()
 
-    const preserved = (await context.listBlocks())[0]
+    const preserved = (await context.listBlocks()).items[0]
     expect(preserved.tags.some((tag) => tag.name === '重要' && tag.source === 'manual')).toBe(true)
 
     const byTagResults = await context.searchByTag('重要')
@@ -300,7 +300,7 @@ describe('app context', () => {
 
     await context.removeBlock(created.id)
     const afterDelete = await context.listBlocks()
-    expect(afterDelete).toHaveLength(0)
+    expect(afterDelete.items).toHaveLength(0)
   })
 
   it('keeps tag enrichment working when corpus scoring only uses recent blocks', async () => {
@@ -331,11 +331,32 @@ describe('app context', () => {
     const third = await context.createBlock('第三条最新的记录。')
     await context.whenIdle()
 
-    const firstPage = await context.listBlocks({ offset: 0, limit: 2 })
-    const secondPage = await context.listBlocks({ offset: 2, limit: 2 })
+    const firstPage = await context.listBlocks({ limit: 2 })
+    const secondPage = await context.listBlocks({ cursor: firstPage.nextCursor, limit: 2 })
 
-    expect(firstPage.map((block) => block.id)).toEqual([third.id, second.id])
-    expect(secondPage.map((block) => block.id)).toEqual([first.id])
+    expect(firstPage.items.map((block) => block.id)).toEqual([third.id, second.id])
+    expect(secondPage.items.map((block) => block.id)).toEqual([first.id])
+    expect(firstPage.hasMore).toBe(true)
+    expect(secondPage.hasMore).toBe(false)
+  })
+
+  it('loads only the target block and its nearby context without walking every timeline page', async () => {
+    const context = makeContext()
+    const created: string[] = []
+
+    for (let index = 0; index < 7; index += 1) {
+      const block = await context.createBlock(`上下文块 ${index + 1}`)
+      created.push(block.id)
+      await new Promise((resolve) => setTimeout(resolve, 5))
+    }
+
+    await context.whenIdle()
+
+    const targetId = created[3]
+    const contextBlocks = await context.getBlockContext(targetId, { before: 2, after: 2 })
+
+    expect(contextBlocks.map((block) => block.id)).toEqual(created.slice(1, 6).reverse())
+    expect(contextBlocks[2]?.id).toBe(targetId)
   })
 
   it('supports notebook creation, collection, ordering, and notebook-local block creation', async () => {
@@ -406,7 +427,7 @@ describe('app context', () => {
     const context = makeContext()
 
     await expect(context.createNotebookBlock('missing-notebook', '不应该被创建的块')).rejects.toThrow()
-    expect(await context.listBlocks()).toEqual([])
+    expect((await context.listBlocks()).items).toEqual([])
   })
 
   it('rejects unsupported notebook structure item types', async () => {
@@ -1017,7 +1038,7 @@ describe('app context', () => {
     await context.whenIdle()
 
     await expect(context.getBlock(created.id)).rejects.toThrow(`Block ${created.id} not found`)
-    expect(await context.listBlocks()).toEqual([])
+    expect((await context.listBlocks()).items).toEqual([])
     expect(events.filter((event) => event.block.id === created.id).map((event) => event.reason)).toEqual(['created', 'deleted'])
     expect(fetchMock).toHaveBeenCalledTimes(2)
 
@@ -1217,11 +1238,11 @@ describe('app context', () => {
     await context.whenIdle()
 
     const blocks = await context.listBlocks()
-    expect(blocks).toHaveLength(1)
-    expect(blocks[0].status).toBe('ready')
+    expect(blocks.items).toHaveLength(1)
+    expect(blocks.items[0].status).toBe('ready')
 
     const results = await context.searchBlocks('后台向量补齐')
-    expect(results.some((item) => item.block.id === blocks[0].id && item.matchSource.includes('vector'))).toBe(true)
+    expect(results.some((item) => item.block.id === blocks.items[0].id && item.matchSource.includes('vector'))).toBe(true)
     expect(global.fetch).toHaveBeenCalledTimes(3)
 
     global.fetch = originalFetch
@@ -1244,8 +1265,8 @@ describe('app context', () => {
     expect(imported.imported).toBe(1)
 
     const blocks = await context.listBlocks()
-    expect(blocks).toHaveLength(1)
-    expect(blocks[0].content).toContain('![外部图片](../outside.png)')
+    expect(blocks.items).toHaveLength(1)
+    expect(blocks.items[0].content).toContain('![外部图片](../outside.png)')
 
     const db = openDb(directory)
     const attachmentCount = db.prepare('SELECT COUNT(*) AS total FROM attachments').get() as { total: number }

@@ -639,7 +639,7 @@ export function MarkdownLivePreview({
   }, [placeholder])
 
   return (
-    <div className={`min-w-0 flex-1 ${className ?? ''}`}>
+    <div className={`min-h-0 min-w-0 flex-1 ${className ?? ''}`}>
       <CodeMirror
         value={value}
         onChange={onValueChange}

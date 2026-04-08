@@ -94,9 +94,9 @@ describe('v2 features', () => {
     await importContext.whenIdle()
 
     const blocks = await importContext.listBlocks()
-    expect(blocks).toHaveLength(1)
-    expect(blocks[0].tags.length).toBeGreaterThan(0)
-    expect(blocks[0].content).toContain('SQLite')
+    expect(blocks.items).toHaveLength(1)
+    expect(blocks.items[0].tags.length).toBeGreaterThan(0)
+    expect(blocks.items[0].content).toContain('SQLite')
 
     void block
   })
@@ -138,11 +138,11 @@ describe('v2 features', () => {
     await importContext.whenIdle()
 
     const importedBlocks = await importContext.listBlocks()
-    expect(importedBlocks[0].tags.some((tag) => tag.name === '项目')).toBe(true)
-    expect(importedBlocks[0].summary).toBe('保留这条摘要')
-    expect(importedBlocks[0].status).toBe('error')
-    expect(importedBlocks[0].aiMode).toBe('live')
-    expect(importedBlocks[0].errorMessage).toBe('备份前的运行错误')
+    expect(importedBlocks.items[0].tags.some((tag) => tag.name === '项目')).toBe(true)
+    expect(importedBlocks.items[0].summary).toBe('保留这条摘要')
+    expect(importedBlocks.items[0].status).toBe('error')
+    expect(importedBlocks.items[0].aiMode).toBe('live')
+    expect(importedBlocks.items[0].errorMessage).toBe('备份前的运行错误')
   })
 
   it('exports complete json backup with settings snapshot and restores it on import', async () => {

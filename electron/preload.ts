@@ -1,7 +1,9 @@
 import { contextBridge, ipcRenderer } from 'electron'
 
+import { expandBlockChangedEvents } from '../shared/eventBatch'
 import { IPC_CHANNELS } from '../shared/ipc'
 import type {
+  AppEventBatch,
   AppQuitStateChangedEvent,
   BlockChangedEvent,
   CalendarChangedEvent,
@@ -13,6 +15,7 @@ import type {
   RendererExportOptions,
 } from '../shared/types'
 
+const batchListeners = new Set<(batch: AppEventBatch) => void>()
 const blockListeners = new Set<(event: BlockChangedEvent) => void>()
 const notebookListeners = new Set<(event: NotebookChangedEvent) => void>()
 const metaListeners = new Set<(event: MetaChangedEvent) => void>()
@@ -30,27 +33,35 @@ function sanitizeExportOptions(options: Partial<RendererExportOptions> | undefin
   }
 }
 
-ipcRenderer.on(IPC_CHANNELS.events.blockChanged, (_event, payload: BlockChangedEvent) => {
-  for (const listener of blockListeners) {
+ipcRenderer.on(IPC_CHANNELS.events.batch, (_event, payload: AppEventBatch) => {
+  for (const listener of batchListeners) {
     listener(payload)
   }
-})
 
-ipcRenderer.on(IPC_CHANNELS.events.notebooksChanged, (_event, payload: NotebookChangedEvent) => {
-  for (const listener of notebookListeners) {
-    listener(payload)
+  const blockEvents = expandBlockChangedEvents(payload)
+
+  for (const blockEvent of blockEvents) {
+    for (const listener of blockListeners) {
+      listener(blockEvent)
+    }
   }
-})
 
-ipcRenderer.on(IPC_CHANNELS.events.metaChanged, (_event, payload: MetaChangedEvent) => {
-  for (const listener of metaListeners) {
-    listener(payload)
+  for (const notebookEvent of payload.notebookChanges) {
+    for (const listener of notebookListeners) {
+      listener(notebookEvent)
+    }
   }
-})
 
-ipcRenderer.on(IPC_CHANNELS.events.calendarChanged, (_event, payload: CalendarChangedEvent) => {
-  for (const listener of calendarListeners) {
-    listener(payload)
+  for (const metaEvent of payload.metaChanges) {
+    for (const listener of metaListeners) {
+      listener(metaEvent)
+    }
+  }
+
+  for (const calendarEvent of payload.calendarChanges) {
+    for (const listener of calendarListeners) {
+      listener(calendarEvent)
+    }
   }
 })
 
@@ -76,6 +87,8 @@ const api: ChangbuApi = {
   blocks: {
     create: (content) => ipcRenderer.invoke(IPC_CHANNELS.blocks.create, content),
     get: (id) => ipcRenderer.invoke(IPC_CHANNELS.blocks.get, id),
+    getMany: (ids) => ipcRenderer.invoke(IPC_CHANNELS.blocks.getMany, ids),
+    getContext: (id, options) => ipcRenderer.invoke(IPC_CHANNELS.blocks.getContext, id, options),
     list: (params) => ipcRenderer.invoke(IPC_CHANNELS.blocks.list, params),
     listByDate: (date) => ipcRenderer.invoke(IPC_CHANNELS.blocks.listByDate, date),
     update: (id, content) => ipcRenderer.invoke(IPC_CHANNELS.blocks.update, id, content),
@@ -179,6 +192,12 @@ const api: ChangbuApi = {
     retryFailed: () => ipcRenderer.invoke(IPC_CHANNELS.vectors.retryFailed),
   },
   events: {
+    onBatch(listener) {
+      batchListeners.add(listener)
+      return () => {
+        batchListeners.delete(listener)
+      }
+    },
     onBlockChanged(listener) {
       blockListeners.add(listener)
       return () => {

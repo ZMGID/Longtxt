@@ -96,6 +96,34 @@ describe('graph data', () => {
     expect(graph.edges).toHaveLength(0)
   })
 
+  it('keeps manual edge weighting when the same tag is manual on some blocks and auto on others', () => {
+    const db = makeDb()
+    const projectTag = getOrCreateTag(db, '项目', 'detail')
+
+    db.prepare(`UPDATE tags SET is_default = 1 WHERE id = ?`).run(projectTag.id)
+
+    for (let index = 0; index < 10; index += 1) {
+      const blockId = `mixed-${index}`
+      insertReadyBlock(db, blockId, `混合来源标签块 ${index}`)
+
+      if (index < 6) {
+        syncAutoBlockTags(db, blockId, [projectTag])
+      }
+    }
+
+    addManualTagToBlock(db, 'mixed-0', projectTag)
+    addManualTagToBlock(db, 'mixed-1', projectTag)
+
+    const graph = getGraphData(db)
+
+    expect(graph.nodes).toHaveLength(10)
+    expect(graph.edges).toContainEqual(expect.objectContaining({
+      sharedTags: ['项目'],
+    }))
+    const projectEdge = graph.edges.find((edge) => edge.sharedTags.length === 1 && edge.sharedTags[0] === '项目')
+    expect(new Set([projectEdge?.source, projectEdge?.target])).toEqual(new Set(['mixed-0', 'mixed-1']))
+  })
+
   it('counts blocks rather than tag rows when limiting graph data', () => {
     const db = makeDb()
 

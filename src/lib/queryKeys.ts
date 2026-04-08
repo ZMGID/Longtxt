@@ -1,5 +1,6 @@
 export const queryKeys = {
   blocks: () => ['blocks'] as const,
+  blocksFlat: () => ['blocks-flat'] as const,
   blocksByDate: (date: string) => ['blocks', 'by-date', date] as const,
   blockCleanupDays: () => ['blocks', 'cleanup-days'] as const,
   tags: () => ['tags'] as const,

@@ -1,9 +1,30 @@
-import type { ReactNode } from 'react'
+import type { CSSProperties, ReactNode } from 'react'
+import { forwardRef } from 'react'
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 
 import type { SearchResult } from '../../shared/types'
 import { NotebookWorkspace } from './NotebookWorkspace'
+
+vi.mock('react-virtuoso', async () => {
+  type MockVirtuosoProps<T> = {
+    data: T[]
+    itemContent: (index: number, item: T) => ReactNode
+    style?: CSSProperties
+  }
+
+  const MockVirtuoso = forwardRef<HTMLDivElement, MockVirtuosoProps<unknown>>(function MockVirtuoso(props, _ref) {
+    return (
+      <div data-testid="mock-virtuoso" style={props.style}>
+        {props.data.map((item, index) => props.itemContent(index, item))}
+      </div>
+    )
+  })
+
+  return {
+    Virtuoso: MockVirtuoso,
+  }
+})
 
 vi.mock('./BlockCard', () => ({
   BlockCard: ({ block, headerActions }: { block: { content: string }; headerActions?: ReactNode }) => (
@@ -196,6 +217,7 @@ describe('NotebookWorkspace', () => {
     await waitFor(() => {
       expect(screen.getByTestId('notebook-layout')).toHaveAttribute('data-search-mode', 'docked')
     })
+    expect(screen.getAllByTestId('mock-virtuoso').length).toBeGreaterThan(0)
     expect(screen.getByText('检索补料')).toBeInTheDocument()
     expect(screen.getByText('全文命中')).toBeInTheDocument()
     expect(screen.getByText('向量命中')).toBeInTheDocument()

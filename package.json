@@ -1,15 +1,15 @@
 {
   "name": "changbu",
   "private": true,
-  "version": "1.4.7",
+  "version": "1.4.8",
   "type": "module",
   "main": "dist-electron/main.cjs",
   "scripts": {
     "dev": "pnpm dev:prepare-bundle && concurrently -k \"pnpm dev:renderer\" \"pnpm dev:electron\" \"pnpm dev:app\"",
     "dev:prepare-bundle": "node ./electron/prepareDevBundle.mjs",
-    "dev:renderer": "vite --host 127.0.0.1 --port 5173",
+    "dev:renderer": "vite --host 127.0.0.1 --strictPort --port 5173",
     "dev:electron": "tsup --watch",
-    "dev:app": "wait-on tcp:5173 file:dist-electron/main.cjs file:dist-electron/preload.cjs && cross-env VITE_DEV_SERVER_URL=http://127.0.0.1:5173 electronmon --watch dist-electron/main.cjs --watch dist-electron/preload.cjs dist-electron/main.cjs",
+    "dev:app": "wait-on tcp:5173 file:dist-electron/main.cjs file:dist-electron/preload.cjs file:dist-electron/appContextWorker.cjs && cross-env VITE_DEV_SERVER_URL=http://127.0.0.1:5173 electronmon --watch dist-electron/main.cjs --watch dist-electron/preload.cjs --watch dist-electron/appContextWorker.cjs dist-electron/main.cjs",
     "typecheck": "tsc -b",
     "build": "pnpm typecheck && vite build && tsup",
     "package:dir": "pnpm build && electron-builder --dir",

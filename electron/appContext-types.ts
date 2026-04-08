@@ -9,6 +9,8 @@ import type {
   AiInsightResult,
   AiInsightSnapshotInput,
   Block,
+  BlockListInput,
+  BlockListPage,
   BlockBatchRemoveResult,
   BlockChangedEvent,
   CalendarChangedEvent,
@@ -38,7 +40,6 @@ import type {
   NotebookStructureItemPatch,
   NotebookSummary,
   DataManagementOverview,
-  PaginationInput,
   RelatedBlockResult,
   ReviewGenerationChunk,
   ReviewGenerationStart,
@@ -90,7 +91,9 @@ export interface AppContextOptions {
 export interface AppContext {
   createBlock(content: string): Promise<Block>
   getBlock(id: string): Promise<Block>
-  listBlocks(params?: PaginationInput): Promise<Block[]>
+  getBlocks(ids: string[]): Promise<Block[]>
+  getBlockContext(id: string, options?: { before?: number; after?: number }): Promise<Block[]>
+  listBlocks(params?: BlockListInput): Promise<BlockListPage>
   listBlocksByDate(date: string): Promise<Block[]>
   updateBlock(id: string, content: string): Promise<Block>
   removeBlock(id: string): Promise<void>

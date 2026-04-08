@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 
 import { useQueryClient } from '@tanstack/react-query'
 
-import type { Block, CalendarEntry } from '../../shared/types'
+import type { CalendarEntry } from '../../shared/types'
 import { useUpcomingCalendarEntries } from '../hooks/useCalendar'
 import { formatDateKeyLabel } from '../lib/format'
 import { changbu } from '../lib/changbu'
@@ -10,14 +10,13 @@ import { formatCalendarTimeLabel } from '../lib/calendar'
 import { queryKeys } from '../lib/queryKeys'
 import { REVIEW_MODES, type TimelineReviewMode } from '../lib/timelineReview'
 import {
-  buildTimelineDateCountMap,
   buildTimelineMonthGrid,
   formatTimelineMonthTitle,
   shiftTimelineMonth,
 } from '../lib/timelineSidebar'
 
 interface TimelineSidebarProps {
-  blocks: Block[]
+  dateCounts: Map<string, number>
   upcomingDays: number
   activeDateKey: string | null
   onSelectDate: (dateKey: string) => void
@@ -68,7 +67,7 @@ function formatTodoMeta(entry: CalendarEntry): string {
 }
 
 export function TimelineSidebar({
-  blocks,
+  dateCounts,
   upcomingDays,
   activeDateKey,
   onSelectDate,
@@ -83,7 +82,6 @@ export function TimelineSidebar({
   const [sidebarHeight, setSidebarHeight] = useState(0)
   const [activeMode, setActiveMode] = useState<TimelineSidebarMode>('scheduled-todo')
   const [entryActionId, setEntryActionId] = useState<string | null>(null)
-  const dateCounts = useMemo(() => buildTimelineDateCountMap(blocks), [blocks])
   const upcomingQuery = useUpcomingCalendarEntries(upcomingDays)
   const monthGrid = useMemo(
     () => buildTimelineMonthGrid(visibleMonthDateKey, activeDateKey, dateCounts, today),

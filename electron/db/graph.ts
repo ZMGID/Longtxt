@@ -17,6 +17,7 @@ const SUPPRESSED_META_TAGS = new Set(['TODO', '重要', '临时', '归档'])
 const COMMON_DEFAULT_TAG_RATIO = 0.18
 const MIN_COMMON_DEFAULT_BLOCKS = 5
 const MIN_EDGE_WEIGHT = 0.7
+const GRAPH_BLOCK_LIMIT = 240
 
 interface BlockTagRow {
   block_id: string
@@ -43,6 +44,20 @@ interface GraphNodeState {
 
 interface CandidateEdge extends GraphEdge {
   key: string
+  sharedTagWeights: Map<string, number>
+}
+
+function mergeEdgeTagInfo(left: GraphTagInfo, right: GraphTagInfo): GraphTagInfo {
+  return {
+    name: left.name,
+    kind: left.kind === 'user' || right.kind === 'user'
+      ? 'user'
+      : left.kind === 'detail' || right.kind === 'detail'
+        ? 'detail'
+        : 'category',
+    isDefault: left.isDefault && right.isDefault,
+    source: left.source === 'manual' || right.source === 'manual' ? 'manual' : 'auto',
+  }
 }
 
 function summarize(content: string, maxLength = 20): string {
@@ -144,7 +159,7 @@ export function getGraphData(db: Database.Database, tagNames: string[] = []): { 
                 WHERE t2.name IN (${normalizedTags.map(() => '?').join(', ')})
               )
               ORDER BY b.updated_at DESC
-              LIMIT 400
+              LIMIT ${GRAPH_BLOCK_LIMIT}
             )
             SELECT
               sb.id AS block_id,
@@ -168,7 +183,7 @@ export function getGraphData(db: Database.Database, tagNames: string[] = []): { 
               SELECT b.id, b.content, b.summary, b.updated_at
               FROM blocks b
               ORDER BY b.updated_at DESC
-              LIMIT 400
+              LIMIT ${GRAPH_BLOCK_LIMIT}
             )
             SELECT
               sb.id AS block_id,
@@ -210,61 +225,80 @@ export function getGraphData(db: Database.Database, tagNames: string[] = []): { 
   const ids = Array.from(nodeMap.keys())
   const totalNodes = ids.length
   const tagBlockCounts = new Map<string, number>()
+  const tagToBlockEntries = new Map<string, Array<{ blockId: string; tagInfo: GraphTagInfo }>>()
 
-  for (const block of nodeMap.values()) {
-    for (const tagName of block.tags.keys()) {
+  for (const [blockId, block] of nodeMap.entries()) {
+    for (const [tagName, tagInfo] of block.tags.entries()) {
       tagBlockCounts.set(tagName, (tagBlockCounts.get(tagName) ?? 0) + 1)
+      const tagBlockEntries = tagToBlockEntries.get(tagName)
+
+      if (tagBlockEntries) {
+        tagBlockEntries.push({ blockId, tagInfo })
+      } else {
+        tagToBlockEntries.set(tagName, [{ blockId, tagInfo }])
+      }
     }
   }
 
-  const candidateEdges: CandidateEdge[] = []
+  const idOrder = new Map(ids.map((id, index) => [id, index]))
+  const candidateEdgeMap = new Map<string, CandidateEdge>()
 
-  for (let index = 0; index < ids.length; index += 1) {
-    for (let nextIndex = index + 1; nextIndex < ids.length; nextIndex += 1) {
-      const sourceId = ids[index]
-      const targetId = ids[nextIndex]
-      const sourceTags = nodeMap.get(sourceId)?.tags ?? new Map<string, GraphTagInfo>()
-      const targetTags = nodeMap.get(targetId)?.tags ?? new Map<string, GraphTagInfo>()
-      const sharedTags = Array.from(sourceTags.keys())
-        .filter((tagName) => targetTags.has(tagName))
-        .map((tagName) => {
-          const sourceTag = sourceTags.get(tagName)!
-          const targetTag = targetTags.get(tagName)!
-          return {
-            name: tagName,
-            kind: sourceTag.kind,
-            isDefault: sourceTag.isDefault,
-            source: sourceTag.source === 'manual' || targetTag.source === 'manual' ? 'manual' : 'auto',
-          } satisfies GraphTagInfo
-        })
-        .filter((tag) => shouldUseTagForEdge(tag, tagBlockCounts.get(tag.name) ?? 0, totalNodes))
-        .sort((left, right) => {
-          const leftCount = tagBlockCounts.get(left.name) ?? 0
-          const rightCount = tagBlockCounts.get(right.name) ?? 0
-          return getTagEdgeWeight(right, rightCount, totalNodes) - getTagEdgeWeight(left, leftCount, totalNodes)
-        })
+  for (const [tagName, blockEntries] of tagToBlockEntries.entries()) {
+    const tagBlockCount = tagBlockCounts.get(tagName) ?? 0
 
-      if (sharedTags.length === 0) {
-        continue
+    if (tagBlockCount < 2) {
+      continue
+    }
+
+    for (let index = 0; index < blockEntries.length; index += 1) {
+      for (let nextIndex = index + 1; nextIndex < blockEntries.length; nextIndex += 1) {
+        const leftEntry = blockEntries[index]!
+        const rightEntry = blockEntries[nextIndex]!
+        const pairTagInfo = mergeEdgeTagInfo(leftEntry.tagInfo, rightEntry.tagInfo)
+
+        if (!shouldUseTagForEdge(pairTagInfo, tagBlockCount, totalNodes)) {
+          continue
+        }
+
+        const tagWeight = getTagEdgeWeight(pairTagInfo, tagBlockCount, totalNodes)
+        const leftId = leftEntry.blockId
+        const rightId = rightEntry.blockId
+        const leftOrder = idOrder.get(leftId) ?? 0
+        const rightOrder = idOrder.get(rightId) ?? 0
+        const sourceId = leftOrder <= rightOrder ? leftId : rightId
+        const targetId = leftOrder <= rightOrder ? rightId : leftId
+        const edgeKey = `${sourceId}::${targetId}`
+        const current = candidateEdgeMap.get(edgeKey)
+
+        if (!current) {
+          candidateEdgeMap.set(edgeKey, {
+            key: edgeKey,
+            source: sourceId,
+            target: targetId,
+            weight: Number(tagWeight.toFixed(3)),
+            sharedTags: [tagName],
+            sharedTagWeights: new Map([[tagName, tagWeight]]),
+          })
+          continue
+        }
+
+        current.weight = Number((current.weight + tagWeight).toFixed(3))
+        current.sharedTags.push(tagName)
+        current.sharedTagWeights.set(tagName, tagWeight)
       }
-
-      const weight = sharedTags.reduce((sum, tag) => {
-        return sum + getTagEdgeWeight(tag, tagBlockCounts.get(tag.name) ?? 0, totalNodes)
-      }, 0)
-
-      if (weight < MIN_EDGE_WEIGHT) {
-        continue
-      }
-
-      candidateEdges.push({
-        key: `${sourceId}::${targetId}`,
-        source: sourceId,
-        target: targetId,
-        weight: Number(weight.toFixed(3)),
-        sharedTags: sharedTags.map((tag) => tag.name),
-      })
     }
   }
+
+  const candidateEdges = Array.from(candidateEdgeMap.values())
+    .map((edge) => ({
+      ...edge,
+      sharedTags: edge.sharedTags.sort((left, right) => {
+        const leftWeight = edge.sharedTagWeights.get(left) ?? 0
+        const rightWeight = edge.sharedTagWeights.get(right) ?? 0
+        return rightWeight - leftWeight
+      }),
+    }))
+    .filter((edge) => edge.weight >= MIN_EDGE_WEIGHT)
 
   const edgeBuckets = new Map<string, CandidateEdge[]>()
   for (const edge of candidateEdges) {

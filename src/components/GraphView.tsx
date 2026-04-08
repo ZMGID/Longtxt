@@ -9,6 +9,10 @@ import { StatusPill } from './StatusPill'
 interface GraphViewProps {
   nodes: GraphNode[]
   edges: GraphEdge[]
+  graphData: {
+    nodes: GraphNode[]
+    links: GraphEdge[]
+  }
   loading: boolean
   selectedBlockId: string | null
   selectedBlock: Block | null
@@ -126,6 +130,7 @@ function GraphSelectionDetail({ block, loading, activeTagFilters, onToggleTagFil
 export function GraphView({
   nodes,
   edges,
+  graphData,
   loading,
   selectedBlockId,
   selectedBlock,
@@ -143,6 +148,10 @@ export function GraphView({
   const [hoveredNodeId, setHoveredNodeId] = useState<string | null>(null)
   const tagLookup = useMemo(() => new Map(availableTags.map((tag) => [tag.name, tag])), [availableTags])
   const activeTagSet = useMemo(() => new Set(activeTagFilters), [activeTagFilters])
+  const graphInstanceKey = useMemo(
+    () => `${activeTagFilters.join('|')}::${nodes.map((node) => node.id).join('|')}`,
+    [activeTagFilters, nodes],
+  )
 
   const tagCounts = useMemo(() => {
     const counts = new Map<string, number>()
@@ -215,14 +224,6 @@ export function GraphView({
       .slice(0, 24)
   }, [activeTagFilters, activeTagSet, tagCounts, tagLookup])
 
-  const graphData = useMemo(
-    () => ({
-      nodes: nodes.map((node) => ({ ...node })),
-      links: edges.map((edge) => ({ ...edge })),
-    }),
-    [nodes, edges],
-  )
-
   useEffect(() => {
     const container = containerRef.current
 
@@ -251,6 +252,11 @@ export function GraphView({
   }, [])
 
   useEffect(() => {
+    setHoveredNodeId(null)
+    lastClickRef.current = { id: null, time: 0 }
+  }, [graphInstanceKey])
+
+  useEffect(() => {
     if (nodes.length === 0) {
       return
     }
@@ -272,6 +278,7 @@ export function GraphView({
 
       fg.d3Force('charge')?.strength?.(-260)
       fg.d3Force('link')?.distance?.((link: { weight?: number }) => 110 - Math.min(50, (link.weight ?? 1) * 10))
+      fg.d3ReheatSimulation()
 
       fitTimer = setTimeout(() => {
         if (!cancelled) {
@@ -319,12 +326,14 @@ export function GraphView({
                 </div>
               ) : (
                 <ForceGraph2D
+                  key={graphInstanceKey}
                   ref={graphRef}
                   width={size.width}
                   height={size.height}
                   graphData={graphData}
                   nodeRelSize={4}
                   backgroundColor="#fafaf9"
+                  warmupTicks={24}
                   cooldownTicks={72}
                   nodeLabel={(node) => {
                     const graphNode = node as GraphNode

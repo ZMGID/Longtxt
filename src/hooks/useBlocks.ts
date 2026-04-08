@@ -1,127 +1,61 @@
-import { useMemo } from 'react'
+import { useEffect, useRef } from 'react'
 
-import { QueryClient, useInfiniteQuery, useQueryClient } from '@tanstack/react-query'
-import type { InfiniteData } from '@tanstack/react-query'
+import { useInfiniteQuery, useQuery, useQueryClient } from '@tanstack/react-query'
 
-import type { Block, BlockBatchRemoveResult } from '../../shared/types'
+import type { BlockBatchRemoveResult, BlockListCursor, BlockListPage } from '../../shared/types'
 import { changbu } from '../lib/changbu'
+import {
+  buildFlatBlockListDataFromInfiniteData,
+  createEmptyFlatBlockListData,
+  prependBlocksToFlatBlockList,
+  insertBlockIntoCache,
+  removeBlockFromFlatBlockList,
+  removeBlocksFromFlatBlockList,
+  removeBlockFromCache,
+  removeBlocksFromCache,
+  replaceBlockInFlatBlockList,
+  replaceBlockInCache,
+  syncFlatBlockListWithInfiniteData,
+  updateFlatBlockListCache,
+  updateBlockListCache,
+  type BlockListInfiniteData,
+} from '../lib/blockListCache'
 import { removeBlocksCompat } from '../lib/blockCleanupCompat'
 import { queryKeys } from '../lib/queryKeys'
 
 const PAGE_SIZE = 40
 
-function sortBlocks(blocks: Block[]): Block[] {
-  return [...blocks].sort((left, right) => new Date(right.createdAt).getTime() - new Date(left.createdAt).getTime())
-}
-
-function flattenPages(data?: InfiniteData<Block[]>): Block[] {
-  if (!data) {
-    return []
-  }
-
-  const blockMap = new Map<string, Block>()
-
-  for (const page of data.pages) {
-    for (const block of page) {
-      if (!blockMap.has(block.id)) {
-        blockMap.set(block.id, block)
-      }
-    }
-  }
-
-  return sortBlocks(Array.from(blockMap.values()))
-}
-
-function updateBlockPages(
-  data: InfiniteData<Block[]> | undefined,
-  updater: (page: Block[]) => Block[],
-): InfiniteData<Block[]> | undefined {
-  if (!data) {
-    return data
-  }
-
-  return {
-    ...data,
-    pages: data.pages.map((page) => updater(page)),
-  }
-}
-
-function insertBlockIntoCache(
-  data: InfiniteData<Block[]> | undefined,
-  block: Block,
-): InfiniteData<Block[]> {
-  if (!data) {
-    return {
-      pageParams: [0],
-      pages: [[block]],
-    }
-  }
-
-  const [firstPage = [], ...restPages] = data.pages
-
-  return {
-    ...data,
-    pages: [[block, ...firstPage.filter((item) => item.id !== block.id)], ...restPages],
-  }
-}
-
-function replaceBlockInCache(
-  data: InfiniteData<Block[]> | undefined,
-  block: Block,
-): InfiniteData<Block[]> | undefined {
-  return updateBlockPages(data, (page) => page.map((item) => (item.id === block.id ? block : item)))
-}
-
-function removeBlockFromCache(
-  data: InfiniteData<Block[]> | undefined,
-  blockId: string,
-): InfiniteData<Block[]> | undefined {
-  return updateBlockPages(data, (page) => page.filter((item) => item.id !== blockId))
-}
-
-function removeBlocksFromCache(
-  data: InfiniteData<Block[]> | undefined,
-  blockIds: string[],
-): InfiniteData<Block[]> | undefined {
-  const blockIdSet = new Set(blockIds)
-  return updateBlockPages(data, (page) => page.filter((item) => !blockIdSet.has(item.id)))
-}
-
-function primeBlockCache(
-  queryClient: QueryClient,
-  updater: (data: InfiniteData<Block[]> | undefined) => InfiniteData<Block[]> | undefined,
-): void {
-  queryClient.setQueryData<InfiniteData<Block[]>>(queryKeys.blocks(), updater)
-}
-
 export function useBlocks() {
   const queryClient = useQueryClient()
-  const query = useInfiniteQuery({
+  const query = useInfiniteQuery<
+    BlockListPage,
+    Error,
+    BlockListInfiniteData,
+    ReturnType<typeof queryKeys.blocks>,
+    BlockListCursor | null
+  >({
     queryKey: queryKeys.blocks(),
-    initialPageParam: 0,
-    queryFn: ({ pageParam }) => changbu.blocks.list({ offset: pageParam, limit: PAGE_SIZE }),
-    getNextPageParam: (lastPage, allPages) => (
-      lastPage.length === PAGE_SIZE
-        ? allPages.reduce((count, page) => count + page.length, 0)
-        : undefined
-    ),
+    initialPageParam: null,
+    queryFn: ({ pageParam }) => changbu.blocks.list({ cursor: pageParam, limit: PAGE_SIZE }),
+    getNextPageParam: (lastPage) => lastPage.nextCursor ?? undefined,
   })
-  const blocks = useMemo(() => flattenPages(query.data), [query.data])
+  const flatQuery = useQuery({
+    queryKey: queryKeys.blocksFlat(),
+    queryFn: async () => createEmptyFlatBlockListData(),
+    initialData: createEmptyFlatBlockListData,
+    enabled: false,
+  })
+  const previousDataRef = useRef<BlockListInfiniteData | undefined>(undefined)
 
-  function getLoadedBlocks(): Block[] {
-    return flattenPages(queryClient.getQueryData<InfiniteData<Block[]>>(queryKeys.blocks()))
-  }
+  useEffect(() => {
+    updateFlatBlockListCache(queryClient, (current) => syncFlatBlockListWithInfiniteData(current, previousDataRef.current, query.data))
+    previousDataRef.current = query.data
+  }, [query.data, queryClient])
 
-  function hasMorePages(): boolean {
-    const cached = queryClient.getQueryData<InfiniteData<Block[]>>(queryKeys.blocks())
-    const lastPage = cached?.pages.at(-1)
-
-    if (!lastPage) {
-      return true
-    }
-
-    return lastPage.length === PAGE_SIZE
-  }
+  const flatState = flatQuery.data && (flatQuery.data.blocks.length > 0 || !query.data)
+    ? flatQuery.data
+    : buildFlatBlockListDataFromInfiniteData(query.data)
+  const blocks = flatState.blocks
 
   async function loadMore(): Promise<void> {
     if (!query.hasNextPage || query.isFetchingNextPage) {
@@ -131,36 +65,30 @@ export function useBlocks() {
     await query.fetchNextPage()
   }
 
-  async function ensureBlockLoaded(blockId: string): Promise<void> {
-    if (!query.data && !query.isPending) {
-      await query.refetch()
-    }
-
-    while (!getLoadedBlocks().some((block) => block.id === blockId) && hasMorePages()) {
-      await query.fetchNextPage()
-    }
-  }
-
   async function createBlock(content: string): Promise<void> {
     const block = await changbu.blocks.create(content)
-    primeBlockCache(queryClient, (current) => insertBlockIntoCache(current, block))
+    updateBlockListCache(queryClient, (current) => insertBlockIntoCache(current, block))
+    updateFlatBlockListCache(queryClient, (current) => prependBlocksToFlatBlockList(current, [block]))
   }
 
   async function updateBlock(id: string, content: string): Promise<void> {
     const block = await changbu.blocks.update(id, content)
-    primeBlockCache(queryClient, (current) => replaceBlockInCache(current, block))
+    updateBlockListCache(queryClient, (current) => replaceBlockInCache(current, block))
+    updateFlatBlockListCache(queryClient, (current) => replaceBlockInFlatBlockList(current, block))
   }
 
   async function removeBlock(id: string): Promise<void> {
     await changbu.blocks.remove(id)
-    primeBlockCache(queryClient, (current) => removeBlockFromCache(current, id))
+    updateBlockListCache(queryClient, (current) => removeBlockFromCache(current, id))
+    updateFlatBlockListCache(queryClient, (current) => removeBlockFromFlatBlockList(current, id))
   }
 
   async function removeBlocks(ids: string[]): Promise<BlockBatchRemoveResult> {
     const result = await removeBlocksCompat(ids)
 
     if (result.removedIds.length > 0) {
-      primeBlockCache(queryClient, (current) => removeBlocksFromCache(current, result.removedIds))
+      updateBlockListCache(queryClient, (current) => removeBlocksFromCache(current, result.removedIds))
+      updateFlatBlockListCache(queryClient, (current) => removeBlocksFromFlatBlockList(current, result.removedIds))
     }
 
     return result
@@ -176,6 +104,7 @@ export function useBlocks() {
 
   return {
     blocks,
+    blockChangeHint: flatState.lastChange,
     loading: query.isPending,
     loadingInitial: query.isPending,
     loadingMore: query.isFetchingNextPage,
@@ -188,6 +117,5 @@ export function useBlocks() {
     addTag,
     removeTag,
     loadMore,
-    ensureBlockLoaded,
   }
 }

@@ -53,6 +53,7 @@ export interface SearchResult {
   block: Block
   score: number
   matchSource: MatchSource[]
+  preview?: string | null
 }
 
 export interface GraphNode {
@@ -380,9 +381,20 @@ export interface ExternalAccessStatus {
   issues: string[]
 }
 
-export interface PaginationInput {
-  offset?: number
+export interface BlockListCursor {
+  createdAt: string
+  id: string
+}
+
+export interface BlockListInput {
   limit?: number
+  cursor?: BlockListCursor | null
+}
+
+export interface BlockListPage {
+  items: Block[]
+  nextCursor: BlockListCursor | null
+  hasMore: boolean
 }
 
 export interface ApiTestResult {
@@ -544,9 +556,24 @@ export interface CalendarSuggestionAcceptInput {
   linkedBlockId?: string | null
 }
 
+export type BlockChangeReason = 'created' | 'updated' | 'enriched' | 'deleted' | 'tagged'
+
 export interface BlockChangedEvent {
   block: Block
-  reason: 'created' | 'updated' | 'enriched' | 'deleted' | 'tagged'
+  reason: BlockChangeReason
+}
+
+export interface LightweightBlockChangedEvent {
+  blockId: string
+  reason: BlockChangeReason
+}
+
+export interface AppEventBatch {
+  blockChanges: LightweightBlockChangedEvent[]
+  blockPayloads: Record<string, Block>
+  notebookChanges: NotebookChangedEvent[]
+  metaChanges: MetaChangedEvent[]
+  calendarChanges: CalendarChangedEvent[]
 }
 
 export interface NotebookChangedEvent {
@@ -610,7 +637,9 @@ export interface ChangbuApi {
   blocks: {
     create(content: string): Promise<Block>
     get(id: string): Promise<Block>
-    list(params?: PaginationInput): Promise<Block[]>
+    getMany(ids: string[]): Promise<Block[]>
+    getContext(id: string, options?: { before?: number; after?: number }): Promise<Block[]>
+    list(params?: BlockListInput): Promise<BlockListPage>
     listByDate(date: string): Promise<Block[]>
     update(id: string, content: string): Promise<Block>
     remove(id: string): Promise<void>
@@ -715,6 +744,7 @@ export interface ChangbuApi {
     retryFailed(): Promise<number>
   }
   events: {
+    onBatch(listener: (batch: AppEventBatch) => void): () => void
     onBlockChanged(listener: (event: BlockChangedEvent) => void): () => void
     onNotebooksChanged(listener: (event: NotebookChangedEvent) => void): () => void
     onMetaChanged(listener: (event: MetaChangedEvent) => void): () => void

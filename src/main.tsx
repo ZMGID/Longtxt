@@ -4,6 +4,7 @@ import { createRoot } from 'react-dom/client'
 import { QueryClientProvider } from '@tanstack/react-query'
 
 import App from './App'
+import { GlobalScrollbarManager } from './components/GlobalScrollbarManager'
 import ReviewWindowApp from './ReviewWindowApp'
 import SettingsWindowApp from './SettingsWindowApp'
 import './index.css'
@@ -19,6 +20,7 @@ const rootAppElement = windowMode === 'settings'
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
     <QueryClientProvider client={queryClient}>
+      <GlobalScrollbarManager />
       {rootAppElement}
     </QueryClientProvider>
   </StrictMode>,

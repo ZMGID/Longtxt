@@ -1,4 +1,8 @@
-import type { AIExecutionMode, SearchResult } from '../../shared/types'
+import { useEffect, useState } from 'react'
+import { Virtuoso } from 'react-virtuoso'
+
+import type { AIExecutionMode, NotebookSummary, SearchResult, TagSuggestion } from '../../shared/types'
+import { AddToNotebookMenu } from './AddToNotebookMenu'
 import { MarkdownContent } from './MarkdownContent'
 import { SearchResultCard } from './SearchResultCard'
 import { useToast } from './toast-context'
@@ -18,6 +22,7 @@ interface SearchPanelProps {
   results: SearchResult[]
   resultsTitle: string
   resultsEmptyHint: string
+  tagSuggestions?: TagSuggestion[]
   showResultScore?: boolean
   resultMetaLabel?: string | null
   browseTag: string | null
@@ -27,6 +32,7 @@ interface SearchPanelProps {
   document: DocumentState
   documentReferences: SearchResult[]
   documentReferencesLoading: boolean
+  notebooks: NotebookSummary[]
   selectedNotebook: { id: string; title: string } | null
   documentDepositAction: 'create' | 'append' | null
   onQueryChange: (value: string) => void
@@ -37,7 +43,27 @@ interface SearchPanelProps {
   onDepositToCurrentNotebook: () => void
   onClearBrowseTag: () => void
   onTagClick: (tagName: string) => void
+  onJumpToTimeline: (blockId: string) => Promise<boolean>
+  jumpingToTimelineBlockId: string | null
+  onUpdateResult?: (id: string, content: string) => Promise<void>
+  onDeleteResult?: (id: string) => Promise<void>
+  onAddTagToResult?: (blockId: string, tagName: string) => Promise<void>
+  onRemoveTagFromResult?: (blockId: string, tagId: string) => Promise<void>
+  onFindRelatedResult?: (blockId: string) => void
+  onAddResultToNotebook: (notebookId: string, blockId: string) => Promise<void>
+  onCreateNotebookWithResult: (blockId: string) => Promise<void>
   inputRef?: React.RefObject<HTMLTextAreaElement | null>
+}
+
+const SEARCH_DOCUMENT_PANEL_MIN_WIDTH = 1320
+const SEARCH_DOCUMENT_PANEL_MIN_HEIGHT = 820
+
+function shouldShowSearchDocumentPanel(): boolean {
+  if (typeof window === 'undefined') {
+    return true
+  }
+
+  return window.innerWidth >= SEARCH_DOCUMENT_PANEL_MIN_WIDTH && window.innerHeight >= SEARCH_DOCUMENT_PANEL_MIN_HEIGHT
 }
 
 export function SearchPanel({
@@ -45,6 +71,7 @@ export function SearchPanel({
   results,
   resultsTitle,
   resultsEmptyHint,
+  tagSuggestions = [],
   showResultScore = true,
   resultMetaLabel = null,
   browseTag,
@@ -54,6 +81,7 @@ export function SearchPanel({
   document,
   documentReferences,
   documentReferencesLoading,
+  notebooks,
   selectedNotebook,
   documentDepositAction,
   onQueryChange,
@@ -64,11 +92,111 @@ export function SearchPanel({
   onDepositToCurrentNotebook,
   onClearBrowseTag,
   onTagClick,
+  onJumpToTimeline,
+  jumpingToTimelineBlockId,
+  onUpdateResult,
+  onDeleteResult,
+  onAddTagToResult,
+  onRemoveTagFromResult,
+  onFindRelatedResult,
+  onAddResultToNotebook,
+  onCreateNotebookWithResult,
   inputRef,
 }: SearchPanelProps) {
   const { toast } = useToast()
+  const [showDocumentPanel, setShowDocumentPanel] = useState(() => shouldShowSearchDocumentPanel())
   const canCopyDocument = document.content.trim().length > 0
   const canShowReferences = document.status === 'done' && canCopyDocument
+
+  useEffect(() => {
+    inputRef?.current?.focus()
+  }, [inputRef])
+
+  useEffect(() => {
+    if (typeof window === 'undefined') {
+      return
+    }
+
+    function handleResize(): void {
+      setShowDocumentPanel(shouldShowSearchDocumentPanel())
+    }
+
+    window.addEventListener('resize', handleResize)
+    return () => {
+      window.removeEventListener('resize', handleResize)
+    }
+  }, [])
+
+  const resultsPane = (
+    <aside className="flex min-h-0 min-w-0 flex-1 flex-col gap-3 overflow-hidden">
+      {searchError ? (
+        <p className="shrink-0 rounded-lg border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">{searchError}</p>
+      ) : null}
+
+      <p className="shrink-0 px-1 text-xs text-stone-400">{resultsTitle}</p>
+
+      {results.length > 0 ? (
+        <div data-testid="search-results-scroll" className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden pr-1">
+          <Virtuoso
+            style={{ height: '100%' }}
+            data={results}
+            overscan={320}
+            increaseViewportBy={360}
+            computeItemKey={(_index, result) => result.block.id}
+            itemContent={(_index, result) => (
+              <div className="pb-2">
+                <SearchResultCard
+                  result={result}
+                  query={query}
+                  editable
+                  tagSuggestions={tagSuggestions}
+                  onTagClick={onTagClick}
+                  onSave={onUpdateResult}
+                  onDelete={onDeleteResult}
+                  onAddTag={onAddTagToResult}
+                  onRemoveTag={onRemoveTagFromResult}
+                  onFindRelated={onFindRelatedResult}
+                  showScore={showResultScore}
+                  metaLabel={resultMetaLabel}
+                  headerActions={(
+                    <div className="flex items-center gap-1">
+                      <button
+                        type="button"
+                        aria-label="跳转到时间轴"
+                        title="跳转到时间轴"
+                        onClick={() => {
+                          void onJumpToTimeline(result.block.id)
+                        }}
+                        disabled={jumpingToTimelineBlockId !== null}
+                        className={`flex h-8 w-8 items-center justify-center rounded-full border text-stone-500 transition ${
+                          jumpingToTimelineBlockId === result.block.id
+                            ? 'border-stone-300 bg-white text-stone-900 shadow-sm'
+                            : 'border-transparent hover:border-stone-200 hover:bg-stone-50 hover:text-stone-900'
+                        } disabled:cursor-wait disabled:opacity-60`}
+                      >
+                        {jumpingToTimelineBlockId === result.block.id ? <span className="spinner" /> : <TimelineJumpIcon />}
+                      </button>
+
+                      <AddToNotebookMenu
+                        blockId={result.block.id}
+                        notebooks={notebooks}
+                        onAddToNotebook={onAddResultToNotebook}
+                        onCreateNotebookWithBlock={onCreateNotebookWithResult}
+                      />
+                    </div>
+                  )}
+                />
+              </div>
+            )}
+          />
+        </div>
+      ) : (
+        <div className="rounded-lg border border-dashed border-stone-200 bg-stone-50/80 px-4 py-4 text-sm leading-6 text-stone-500">
+          {resultsEmptyHint}
+        </div>
+      )}
+    </aside>
+  )
 
   return (
     <div className="flex min-h-0 min-w-0 flex-1 flex-col gap-4 overflow-hidden">
@@ -103,37 +231,19 @@ export function SearchPanel({
             {generating ? '生成中…' : '生成文档'}
           </button>
         </div>
+
+        {!showDocumentPanel ? (
+          <p className="mt-2 text-xs leading-5 text-stone-400">
+            当前窗口较小，已自动收起生成区；放大窗口后可查看生成文档与参考块。
+          </p>
+        ) : null}
       </div>
 
-      <div className="grid min-h-0 min-w-0 flex-1 gap-4 grid-rows-[minmax(0,1fr)_minmax(0,1fr)] lg:grid-cols-[minmax(14rem,20rem)_minmax(0,1fr)] lg:grid-rows-1 2xl:grid-cols-[minmax(15rem,22rem)_minmax(0,1fr)]">
-        <aside className="flex min-h-0 min-w-0 flex-col gap-3 overflow-hidden">
-          {searchError ? (
-            <p className="shrink-0 rounded-lg border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">{searchError}</p>
-          ) : null}
+      {showDocumentPanel ? (
+        <div className="grid min-h-0 min-w-0 flex-1 gap-4 grid-rows-[minmax(0,1fr)_minmax(0,1fr)] lg:grid-cols-[minmax(14rem,20rem)_minmax(0,1fr)] lg:grid-rows-1 2xl:grid-cols-[minmax(15rem,22rem)_minmax(0,1fr)]">
+          {resultsPane}
 
-          <p className="shrink-0 px-1 text-xs text-stone-400">{resultsTitle}</p>
-
-          {results.length > 0 ? (
-            <div data-testid="search-results-scroll" className="min-h-0 flex-1 space-y-2 overflow-y-auto pr-1">
-              {results.map((result) => (
-                <SearchResultCard
-                  key={result.block.id}
-                  result={result}
-                  query={query}
-                  onTagClick={onTagClick}
-                  showScore={showResultScore}
-                  metaLabel={resultMetaLabel}
-                />
-              ))}
-            </div>
-          ) : (
-            <div className="rounded-lg border border-dashed border-stone-200 bg-stone-50/80 px-4 py-4 text-sm leading-6 text-stone-500">
-              {resultsEmptyHint}
-            </div>
-          )}
-        </aside>
-
-        <section className="flex min-h-0 min-w-0 flex-col gap-3 overflow-hidden">
+          <section data-testid="search-document-panel" className="flex min-h-0 min-w-0 flex-col gap-3 overflow-hidden">
           <div className="flex shrink-0 items-center justify-between gap-3">
             <div className="min-w-0">
               <p className="text-xs font-medium uppercase tracking-wider text-stone-400">生成文档</p>
@@ -223,8 +333,32 @@ export function SearchPanel({
               </div>
             </aside>
           </div>
-        </section>
-      </div>
+          </section>
+        </div>
+      ) : (
+        <div className="flex min-h-0 min-w-0 flex-1 overflow-hidden">
+          {resultsPane}
+        </div>
+      )}
     </div>
+  )
+}
+
+function TimelineJumpIcon() {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      aria-hidden="true"
+      className="h-4 w-4"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      <path d="M7 6.5h10A1.5 1.5 0 0 1 18.5 8v8A1.5 1.5 0 0 1 17 17.5H7A1.5 1.5 0 0 1 5.5 16V8A1.5 1.5 0 0 1 7 6.5Z" />
+      <path d="M9 12h6" />
+      <path d="m12 9 3 3-3 3" />
+    </svg>
   )
 }

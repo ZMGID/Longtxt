@@ -19,7 +19,9 @@ export function createIpcHandlers(context: AppContext, extraHandlers: Record<str
   return {
     [IPC_CHANNELS.blocks.create]: (_event: unknown, content: string) => context.createBlock(content),
     [IPC_CHANNELS.blocks.get]: (_event: unknown, id: string) => context.getBlock(id),
-    [IPC_CHANNELS.blocks.list]: (_event: unknown, params?: { offset?: number; limit?: number }) => context.listBlocks(params),
+    [IPC_CHANNELS.blocks.getMany]: (_event: unknown, ids: string[]) => context.getBlocks(ids),
+    [IPC_CHANNELS.blocks.getContext]: (_event: unknown, id: string, options?: { before?: number; after?: number }) => context.getBlockContext(id, options),
+    [IPC_CHANNELS.blocks.list]: (_event: unknown, params?: { limit?: number; cursor?: { createdAt: string; id: string } | null }) => context.listBlocks(params),
     [IPC_CHANNELS.blocks.listByDate]: (_event: unknown, date: string) => context.listBlocksByDate(date),
     [IPC_CHANNELS.blocks.update]: (_event: unknown, id: string, content: string) => context.updateBlock(id, content),
     [IPC_CHANNELS.blocks.remove]: (_event: unknown, id: string) => context.removeBlock(id),

@@ -2,7 +2,13 @@ import { useMemo, useState } from 'react'
 
 import { QueryClient, useQuery, useQueryClient } from '@tanstack/react-query'
 
-import type { Notebook, NotebookMutationResult, NotebookStructureItemInput, NotebookStructureItemPatch } from '../../shared/types'
+import type {
+  Notebook,
+  NotebookMutationResult,
+  NotebookStructureItemInput,
+  NotebookStructureItemPatch,
+  NotebookSummary,
+} from '../../shared/types'
 import { changbu } from '../lib/changbu'
 import { queryKeys } from '../lib/queryKeys'
 
@@ -10,19 +16,71 @@ function toVisibleNotebook(notebook: Notebook): Notebook {
   return notebook
 }
 
-async function invalidateNotebookQueries(
-  queryClient: QueryClient,
-  notebookIds: string[] = [],
-): Promise<void> {
-  const invalidations = [queryClient.invalidateQueries({ queryKey: queryKeys.notebooks() })]
+function compareNotebookSummaries(a: NotebookSummary, b: NotebookSummary): number {
+  const updatedAtDelta = new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime()
 
-  if (notebookIds.length === 0) {
-    invalidations.push(queryClient.invalidateQueries({ queryKey: queryKeys.notebookRoot() }))
-  } else {
-    invalidations.push(...notebookIds.map((notebookId) => queryClient.invalidateQueries({ queryKey: queryKeys.notebook(notebookId) })))
+  if (updatedAtDelta !== 0) {
+    return updatedAtDelta
   }
 
-  await Promise.all(invalidations)
+  const createdAtDelta = new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+
+  if (createdAtDelta !== 0) {
+    return createdAtDelta
+  }
+
+  return a.title.localeCompare(b.title, 'zh-CN')
+}
+
+function toNotebookSummary(notebook: Notebook): NotebookSummary {
+  return {
+    id: notebook.id,
+    title: notebook.title,
+    createdAt: notebook.createdAt,
+    updatedAt: notebook.updatedAt,
+    itemCount: notebook.itemCount,
+    blockCount: notebook.blockCount,
+    structureCount: notebook.structureCount,
+  }
+}
+
+function upsertNotebookSummary(list: NotebookSummary[], summary: NotebookSummary): NotebookSummary[] {
+  const next = list.some((item) => item.id === summary.id)
+    ? list.map((item) => (item.id === summary.id ? summary : item))
+    : [...list, summary]
+
+  return next.sort(compareNotebookSummaries)
+}
+
+function patchNotebookCaches(
+  queryClient: QueryClient,
+  notebook: Notebook,
+): Notebook {
+  const visibleNotebook = toVisibleNotebook(notebook)
+  const summary = toNotebookSummary(visibleNotebook)
+
+  queryClient.setQueryData(queryKeys.notebook(visibleNotebook.id), visibleNotebook)
+  queryClient.setQueryData<NotebookSummary[]>(
+    queryKeys.notebooks(),
+    (current) => upsertNotebookSummary(current ?? [], summary),
+  )
+
+  return visibleNotebook
+}
+
+function removeNotebookFromCaches(queryClient: QueryClient, notebookId: string): NotebookSummary[] {
+  let nextNotebooks: NotebookSummary[] = []
+
+  queryClient.setQueryData<NotebookSummary[]>(
+    queryKeys.notebooks(),
+    (current) => {
+      nextNotebooks = (current ?? []).filter((notebook) => notebook.id !== notebookId)
+      return nextNotebooks
+    },
+  )
+  queryClient.removeQueries({ queryKey: queryKeys.notebook(notebookId) })
+
+  return nextNotebooks
 }
 
 export function useNotebooks() {
@@ -57,80 +115,70 @@ export function useNotebooks() {
 
   async function createNotebook(title?: string): Promise<Notebook> {
     const notebook = await changbu.notebooks.create(title)
+
     setPreferredNotebookId(notebook.id)
-    await invalidateNotebookQueries(queryClient, [notebook.id])
-    return toVisibleNotebook(notebook)
+
+    return patchNotebookCaches(queryClient, notebook)
   }
 
   async function updateNotebook(id: string, title: string): Promise<Notebook> {
     const notebook = await changbu.notebooks.update(id, title)
-    await invalidateNotebookQueries(queryClient, [id])
-    return toVisibleNotebook(notebook)
+
+    return patchNotebookCaches(queryClient, notebook)
   }
 
   async function removeNotebook(id: string): Promise<void> {
     await changbu.notebooks.remove(id)
-    queryClient.removeQueries({ queryKey: queryKeys.notebook(id) })
-    const nextNotebooks = await queryClient.fetchQuery({
-      queryKey: queryKeys.notebooks(),
-      queryFn: () => changbu.notebooks.list(),
-    })
+    const nextNotebooks = removeNotebookFromCaches(queryClient, id)
     const nextSelectedNotebookId = selectedNotebookId === id ? nextNotebooks[0]?.id ?? null : selectedNotebookId
 
     setPreferredNotebookId(nextSelectedNotebookId)
-
-    if (nextSelectedNotebookId) {
-      await queryClient.invalidateQueries({ queryKey: queryKeys.notebook(nextSelectedNotebookId) })
-    }
   }
 
   async function addBlockToNotebook(notebookId: string, blockId: string): Promise<NotebookMutationResult> {
     const result = await changbu.notebooks.addBlock(notebookId, blockId)
-    await invalidateNotebookQueries(queryClient, [notebookId])
+
     return {
       ...result,
-      notebook: toVisibleNotebook(result.notebook),
+      notebook: patchNotebookCaches(queryClient, result.notebook),
     }
   }
 
   async function createNotebookWithBlock(blockId: string, title?: string): Promise<NotebookMutationResult> {
     const notebook = await changbu.notebooks.create(title)
-    const result = await changbu.notebooks.addBlock(notebook.id, blockId)
     setPreferredNotebookId(notebook.id)
-    await invalidateNotebookQueries(queryClient, [notebook.id])
+    patchNotebookCaches(queryClient, notebook)
+
+    const result = await changbu.notebooks.addBlock(notebook.id, blockId)
+
     return {
       ...result,
-      notebook: toVisibleNotebook(result.notebook),
+      notebook: patchNotebookCaches(queryClient, result.notebook),
     }
   }
 
   async function removeNotebookItem(notebookId: string, itemId: string): Promise<Notebook> {
     const notebook = await changbu.notebooks.removeItem(notebookId, itemId)
-    await invalidateNotebookQueries(queryClient, [notebookId])
-    return toVisibleNotebook(notebook)
+
+    return patchNotebookCaches(queryClient, notebook)
   }
 
   async function reorderItems(notebookId: string, itemIds: string[]): Promise<Notebook> {
     const notebook = await changbu.notebooks.reorderItems(notebookId, itemIds)
-    await invalidateNotebookQueries(queryClient, [notebookId])
-    return toVisibleNotebook(notebook)
+
+    return patchNotebookCaches(queryClient, notebook)
   }
 
   async function createBlockInNotebook(notebookId: string, content: string): Promise<Notebook> {
     const notebook = await changbu.notebooks.createBlock(notebookId, content)
-    await invalidateNotebookQueries(queryClient, [notebookId])
-    await Promise.all([
-      queryClient.invalidateQueries({ queryKey: queryKeys.blocks() }),
-      queryClient.invalidateQueries({ queryKey: queryKeys.tags() }),
-      queryClient.invalidateQueries({ queryKey: queryKeys.graphRoot() }),
-    ])
-    return toVisibleNotebook(notebook)
+
+    return patchNotebookCaches(queryClient, notebook)
   }
 
   async function createNotebookStructureItem(notebookId: string, input: NotebookStructureItemInput): Promise<Notebook> {
     const notebook = await changbu.notebooks.createStructureItem(notebookId, input)
-    await invalidateNotebookQueries(queryClient, [notebookId])
-    return toVisibleNotebook(notebook)
+
+    return patchNotebookCaches(queryClient, notebook)
   }
 
   async function updateNotebookStructureItem(
@@ -139,8 +187,8 @@ export function useNotebooks() {
     patch: NotebookStructureItemPatch,
   ): Promise<Notebook> {
     const notebook = await changbu.notebooks.updateStructureItem(notebookId, itemId, patch)
-    await invalidateNotebookQueries(queryClient, [notebookId])
-    return toVisibleNotebook(notebook)
+
+    return patchNotebookCaches(queryClient, notebook)
   }
 
   return {

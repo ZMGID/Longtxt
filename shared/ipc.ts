@@ -2,6 +2,8 @@ export const IPC_CHANNELS = {
   blocks: {
     create: 'blocks:create',
     get: 'blocks:get',
+    getMany: 'blocks:get-many',
+    getContext: 'blocks:get-context',
     list: 'blocks:list',
     listByDate: 'blocks:list-by-date',
     update: 'blocks:update',
@@ -102,6 +104,7 @@ export const IPC_CHANNELS = {
     retryFailed: 'vectors:retry-failed',
   },
   events: {
+    batch: 'events:batch',
     blockChanged: 'events:block-changed',
     notebooksChanged: 'events:notebooks-changed',
     metaChanged: 'events:meta-changed',

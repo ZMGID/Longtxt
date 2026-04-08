@@ -9,6 +9,7 @@ import { GraphView } from './GraphView'
 const graphMethodMocks = vi.hoisted(() => ({
   chargeStrength: vi.fn(),
   linkDistance: vi.fn(),
+  reheatSimulation: vi.fn(),
   zoomToFit: vi.fn(),
 }))
 
@@ -26,6 +27,7 @@ vi.mock('react-force-graph-2d', () => ({
 
         return null
       },
+      d3ReheatSimulation: graphMethodMocks.reheatSimulation,
       zoomToFit: graphMethodMocks.zoomToFit,
     }))
 
@@ -86,6 +88,10 @@ function renderGraph(overrides: Partial<ComponentProps<typeof GraphView>> = {}) 
   const props: ComponentProps<typeof GraphView> = {
     nodes,
     edges,
+    graphData: {
+      nodes: nodes.map((node) => ({ ...node })),
+      links: edges.map((edge) => ({ ...edge })),
+    },
     loading: false,
     selectedBlockId: selectedBlock.id,
     selectedBlock,
@@ -106,6 +112,7 @@ describe('GraphView', () => {
   beforeEach(() => {
     graphMethodMocks.chargeStrength.mockReset()
     graphMethodMocks.linkDistance.mockReset()
+    graphMethodMocks.reheatSimulation.mockReset()
     graphMethodMocks.zoomToFit.mockReset()
 
     class ResizeObserverMock {
@@ -171,5 +178,72 @@ describe('GraphView', () => {
     renderGraph({ loading: true, nodes: [], edges: [], selectedBlockId: null, selectedBlock: null, activeTagFilters: [] })
 
     expect(screen.getByText('正在构建连接图…')).toBeInTheDocument()
+  })
+
+  it('reheats the force simulation when graph data changes after filter toggles', () => {
+    const nextNode: GraphNode = {
+      id: 'block-3',
+      label: '新节点',
+      summary: '筛选切换后恢复的节点',
+      tags: ['项目'],
+      color: '#57534e',
+      size: 6,
+    }
+    const nextProps = {
+      nodes: [...nodes, nextNode],
+      edges,
+      graphData: {
+        nodes: [...nodes, nextNode].map((node) => ({ ...node })),
+        links: edges.map((edge) => ({ ...edge })),
+      },
+      activeTagFilters: [],
+    } satisfies Partial<ComponentProps<typeof GraphView>>
+    const props = {
+      nodes,
+      edges,
+      graphData: {
+        nodes: nodes.map((node) => ({ ...node })),
+        links: edges.map((edge) => ({ ...edge })),
+      },
+      activeTagFilters: ['项目'],
+    } satisfies Partial<ComponentProps<typeof GraphView>>
+    const { rerender } = render(
+      <GraphView
+        nodes={props.nodes ?? nodes}
+        edges={props.edges ?? edges}
+        graphData={props.graphData ?? { nodes: [], links: [] }}
+        loading={false}
+        selectedBlockId={selectedBlock.id}
+        selectedBlock={selectedBlock}
+        availableTags={availableTags}
+        activeTagFilters={props.activeTagFilters ?? []}
+        onToggleTagFilter={vi.fn()}
+        onClearFilters={vi.fn()}
+        onSelectNode={vi.fn()}
+        onJumpToBlock={vi.fn()}
+      />,
+    )
+
+    const reheatCallsAfterInitialRender = graphMethodMocks.reheatSimulation.mock.calls.length
+    expect(reheatCallsAfterInitialRender).toBeGreaterThan(0)
+
+    rerender(
+      <GraphView
+        nodes={nextProps.nodes ?? nodes}
+        edges={nextProps.edges ?? edges}
+        graphData={nextProps.graphData ?? { nodes: [], links: [] }}
+        loading={false}
+        selectedBlockId={selectedBlock.id}
+        selectedBlock={selectedBlock}
+        availableTags={availableTags}
+        activeTagFilters={nextProps.activeTagFilters ?? []}
+        onToggleTagFilter={vi.fn()}
+        onClearFilters={vi.fn()}
+        onSelectNode={vi.fn()}
+        onJumpToBlock={vi.fn()}
+      />,
+    )
+
+    expect(graphMethodMocks.reheatSimulation.mock.calls.length).toBeGreaterThan(reheatCallsAfterInitialRender)
   })
 })
