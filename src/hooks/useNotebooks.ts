@@ -10,6 +10,7 @@ import type {
   NotebookSummary,
 } from '../../shared/types'
 import { changbu } from '../lib/changbu'
+import { compareText, getCurrentLanguage } from '../i18n/locale'
 import { queryKeys } from '../lib/queryKeys'
 
 function toVisibleNotebook(notebook: Notebook): Notebook {
@@ -29,7 +30,7 @@ function compareNotebookSummaries(a: NotebookSummary, b: NotebookSummary): numbe
     return createdAtDelta
   }
 
-  return a.title.localeCompare(b.title, 'zh-CN')
+  return compareText(a.title, b.title)
 }
 
 function toNotebookSummary(notebook: Notebook): NotebookSummary {
@@ -197,7 +198,7 @@ export function useNotebooks() {
     selectedNotebook,
     loading: notebooksQuery.isPending,
     loadingNotebook,
-    error: notebooksQuery.error instanceof Error ? notebooksQuery.error.message : notebooksQuery.error ? '加载笔记本失败。' : null,
+    error: notebooksQuery.error instanceof Error ? notebooksQuery.error.message : notebooksQuery.error ? (getCurrentLanguage() === 'en' ? 'Failed to load notebooks.' : '加载笔记本失败。') : null,
     selectNotebook,
     createNotebook,
     updateNotebook,

@@ -24,6 +24,19 @@ interface AttachmentReference {
   sortOrder: number
 }
 
+export interface ResolvedBlockImageInput {
+  index: number
+  altText: string | null
+  url: string
+  mimeType: string | null
+}
+
+export interface ResolvedBlockImageInputResult {
+  images: ResolvedBlockImageInput[]
+  skippedCount: number
+  totalCount: number
+}
+
 interface AttachmentRow {
   id: string
   file_url: string
@@ -102,6 +115,11 @@ function extractAttachmentReferences(content: string): AttachmentReference[] {
   }
 
   return references
+}
+
+export function hasMarkdownImages(content: string): boolean {
+  IMAGE_MARKDOWN_PATTERN.lastIndex = 0
+  return IMAGE_MARKDOWN_PATTERN.test(content)
 }
 
 function toLocalAttachmentPath(url: string, dataDirectory: string): string | null {
@@ -355,6 +373,61 @@ export function listBlockAttachments(
 export async function readAttachmentBase64(filePath: string): Promise<string> {
   const buffer = await readFile(filePath)
   return buffer.toString('base64')
+}
+
+export async function resolveBlockImageInputs(
+  dataDirectory: string,
+  content: string,
+  maxImages = 4,
+): Promise<ResolvedBlockImageInputResult> {
+  const references = extractAttachmentReferences(content)
+  const images: ResolvedBlockImageInput[] = []
+  let skippedCount = 0
+
+  for (const reference of references) {
+    if (images.length >= maxImages) {
+      skippedCount += 1
+      continue
+    }
+
+    if (/^https?:\/\//i.test(reference.url)) {
+      images.push({
+        index: reference.sortOrder,
+        altText: reference.altText || null,
+        url: reference.url,
+        mimeType: null,
+      })
+      continue
+    }
+
+    const localPath = toLocalAttachmentPath(reference.url, dataDirectory)
+
+    if (!localPath) {
+      skippedCount += 1
+      continue
+    }
+
+    const mimeType = getMimeTypeFromFilename(localPath)
+
+    if (!mimeType) {
+      skippedCount += 1
+      continue
+    }
+
+    const base64 = await readAttachmentBase64(localPath)
+    images.push({
+      index: reference.sortOrder,
+      altText: reference.altText || null,
+      url: `data:${mimeType};base64,${base64}`,
+      mimeType,
+    })
+  }
+
+  return {
+    images,
+    skippedCount,
+    totalCount: references.length,
+  }
 }
 
 export async function rebuildAttachmentIndex(db: Database.Database, dataDirectory: string): Promise<AttachmentIndexRebuildResult> {

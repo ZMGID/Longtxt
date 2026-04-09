@@ -3,6 +3,8 @@ import { useMemo } from 'react'
 import { useQueries } from '@tanstack/react-query'
 
 import type { CalendarDayDetail } from '../../shared/types'
+import { translateMessage } from '../i18n/messages'
+import { getCurrentLanguage } from '../i18n/locale'
 import { changbu } from '../lib/changbu'
 import { queryKeys } from '../lib/queryKeys'
 import { buildTimelineReviewDateRange } from '../lib/timelineReview'
@@ -26,7 +28,11 @@ export function useTimelineReviewWindow(anchorDateKey: string) {
 
     return {
       loading,
-      error: errorQuery?.error instanceof Error ? errorQuery.error.message : errorQuery?.error ? '加载回顾数据失败。' : null,
+      error: errorQuery?.error instanceof Error
+        ? errorQuery.error.message
+        : errorQuery?.error
+          ? translateMessage('timelineReviewWindow.loadFailed', getCurrentLanguage())
+          : null,
       blocks: details.flatMap((detail) => detail.blocks),
       entries: details.flatMap((detail) => detail.entries),
     }

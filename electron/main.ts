@@ -2,25 +2,59 @@ import { readFile } from 'node:fs/promises'
 import { extname, isAbsolute, join, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-import { app, BrowserWindow, dialog, nativeImage, protocol, shell } from 'electron'
+import { app, BrowserWindow, dialog, nativeImage, protocol, screen, shell } from 'electron'
 
 import { IPC_CHANNELS } from '../shared/ipc'
-import type { AppEventBatch, BlockChangedEvent, CalendarChangedEvent, DocGenerationChunk, MetaChangedEvent, NotebookChangedEvent, ReviewGenerationChunk } from '../shared/types'
+import {
+  getAppDisplayName,
+  getWindowTitle,
+  parseUISettings,
+  UI_SETTINGS_KEY,
+} from '../shared/config'
+import type {
+  AppEventBatch,
+  AppLanguage,
+  BlockChangedEvent,
+  CalendarChangedEvent,
+  DocGenerationChunk,
+  MetaChangedEvent,
+  NotebookChangedEvent,
+  ReviewGenerationChunk,
+  ReviewMode,
+} from '../shared/types'
 import { createAppContext, type AppContext } from './appContext'
 import { createAppContextWorkerClient, type AppContextWorkerClient } from './appContextWorkerClient'
 import { runChangbuCli } from './cli'
 import { registerIpcHandlers } from './ipc/register'
+import { createSettingsFileStore, readSettingFromDisk, type SettingsFileStore } from './settingsFile'
+import { normalizeSavedWindowState, parseSavedWindowState, type SavedWindowState } from './windowState'
 
 const isDevelopment = Boolean(process.env.VITE_DEV_SERVER_URL)
-const APP_NAME = '长布'
 const DEFAULT_ZOOM_FACTOR = 1.1
 const APP_IDLE_TIMEOUT_MS = 15_000
 const EVENT_BATCH_WINDOW_MS = 80
+const MAIN_WINDOW_STATE_KEY = 'main_window_state'
+const MAIN_WINDOW_DEFAULT_WIDTH = 1220
+const MAIN_WINDOW_DEFAULT_HEIGHT = 820
+const MAIN_WINDOW_MIN_WIDTH = 620
+const MAIN_WINDOW_MIN_HEIGHT = 560
+const SETTINGS_WINDOW_STATE_KEY = 'settings_window_state'
+const SETTINGS_WINDOW_DEFAULT_WIDTH = 980
+const SETTINGS_WINDOW_DEFAULT_HEIGHT = 700
+const SETTINGS_WINDOW_MIN_WIDTH = 820
+const SETTINGS_WINDOW_MIN_HEIGHT = 560
+const REVIEW_WINDOW_STATE_KEY = 'review_window_state'
+const REVIEW_WINDOW_DEFAULT_WIDTH = 920
+const REVIEW_WINDOW_DEFAULT_HEIGHT = 700
+const REVIEW_WINDOW_MIN_WIDTH = 760
+const REVIEW_WINDOW_MIN_HEIGHT = 560
 const preloadPath = join(__dirname, 'preload.cjs')
 const ATTACHMENT_PROTOCOL = 'changbu-attachment'
 let mainWindow: BrowserWindow | null = null
 let settingsWindow: BrowserWindow | null = null
 let reviewWindow: BrowserWindow | null = null
+let reviewWindowMode: ReviewMode = 'daily-review'
+let settingsStore: SettingsFileStore | null = null
 let appContext: AppContext | null = null
 let appContextClient: AppContextWorkerClient | null = null
 let unregisterHandlers: (() => void) | null = null
@@ -61,6 +95,36 @@ function sendEvent(
     if (!window.isDestroyed()) {
       window.webContents.send(channel, payload)
     }
+  }
+}
+
+function readUiLanguageFromSettingsFile(settingsFilePath: string): AppLanguage {
+  return parseUISettings(readSettingFromDisk(settingsFilePath, UI_SETTINGS_KEY)).language
+}
+
+function getCurrentUiLanguage(): AppLanguage {
+  if (!settingsStore) {
+    return 'zh'
+  }
+
+  return readUiLanguageFromSettingsFile(settingsStore.filePath)
+}
+
+function refreshWindowTitles(): void {
+  const language = getCurrentUiLanguage()
+
+  app.setName(getAppDisplayName(language))
+
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.setTitle(getWindowTitle('main', language))
+  }
+
+  if (settingsWindow && !settingsWindow.isDestroyed()) {
+    settingsWindow.setTitle(getWindowTitle('settings', language))
+  }
+
+  if (reviewWindow && !reviewWindow.isDestroyed()) {
+    reviewWindow.setTitle(getWindowTitle('review', language, { reviewMode: reviewWindowMode }))
   }
 }
 
@@ -388,15 +452,116 @@ function loadRendererWindow(
   void window.loadFile(join(__dirname, '..', 'dist', 'index.html'))
 }
 
+interface WindowStateConfig {
+  key: string
+  defaultWidth: number
+  defaultHeight: number
+  minWidth: number
+  minHeight: number
+}
+
+function resolveInitialWindowState(config: WindowStateConfig): SavedWindowState {
+  const savedWindowState = parseSavedWindowState(settingsStore?.get(config.key) ?? null)
+  const targetDisplay = savedWindowState
+    ? screen.getDisplayMatching({
+        x: savedWindowState.x ?? 0,
+        y: savedWindowState.y ?? 0,
+        width: savedWindowState.width,
+        height: savedWindowState.height,
+      })
+    : screen.getPrimaryDisplay()
+
+  return normalizeSavedWindowState({
+    savedState: savedWindowState,
+    workArea: targetDisplay.workArea,
+    defaultWidth: config.defaultWidth,
+    defaultHeight: config.defaultHeight,
+    minWidth: config.minWidth,
+    minHeight: config.minHeight,
+  })
+}
+
+function attachWindowStatePersistence(window: BrowserWindow, stateKey: string): void {
+  let pendingWindowStateSaveTimer: ReturnType<typeof setTimeout> | null = null
+
+  const flushWindowState = (): void => {
+    if (!settingsStore || window.isDestroyed()) {
+      return
+    }
+
+    const bounds = window.getNormalBounds()
+    settingsStore.set(stateKey, JSON.stringify({
+      x: bounds.x,
+      y: bounds.y,
+      width: bounds.width,
+      height: bounds.height,
+      isMaximized: window.isMaximized(),
+    }))
+  }
+
+  const scheduleWindowStateSave = (): void => {
+    if (pendingWindowStateSaveTimer) {
+      clearTimeout(pendingWindowStateSaveTimer)
+    }
+
+    pendingWindowStateSaveTimer = setTimeout(() => {
+      pendingWindowStateSaveTimer = null
+      flushWindowState()
+    }, 150)
+  }
+
+  window.on('close', () => {
+    if (pendingWindowStateSaveTimer) {
+      clearTimeout(pendingWindowStateSaveTimer)
+      pendingWindowStateSaveTimer = null
+    }
+
+    flushWindowState()
+  })
+
+  window.on('resize', () => {
+    scheduleWindowStateSave()
+  })
+
+  window.on('move', () => {
+    scheduleWindowStateSave()
+  })
+
+  window.on('maximize', () => {
+    scheduleWindowStateSave()
+  })
+
+  window.on('unmaximize', () => {
+    scheduleWindowStateSave()
+  })
+
+  window.on('closed', () => {
+    if (pendingWindowStateSaveTimer) {
+      clearTimeout(pendingWindowStateSaveTimer)
+      pendingWindowStateSaveTimer = null
+    }
+  })
+}
+
 function createMainWindow(): BrowserWindow {
+  const language = getCurrentUiLanguage()
+  const restoredWindowState = resolveInitialWindowState({
+    key: MAIN_WINDOW_STATE_KEY,
+    defaultWidth: MAIN_WINDOW_DEFAULT_WIDTH,
+    defaultHeight: MAIN_WINDOW_DEFAULT_HEIGHT,
+    minWidth: MAIN_WINDOW_MIN_WIDTH,
+    minHeight: MAIN_WINDOW_MIN_HEIGHT,
+  })
   const icon = resolveWindowIcon()
   const window = new BrowserWindow({
-    width: 1220,
-    height: 820,
-    minWidth: 620,
-    minHeight: 560,
+    width: restoredWindowState.width,
+    height: restoredWindowState.height,
+    ...(typeof restoredWindowState.x === 'number' ? { x: restoredWindowState.x } : {}),
+    ...(typeof restoredWindowState.y === 'number' ? { y: restoredWindowState.y } : {}),
+    minWidth: MAIN_WINDOW_MIN_WIDTH,
+    minHeight: MAIN_WINDOW_MIN_HEIGHT,
     backgroundColor: '#f5f5f5',
-    title: '长布',
+    title: getWindowTitle('main', language),
     titleBarStyle: 'hiddenInset',
     titleBarOverlay: {
       height: 28,
@@ -411,6 +576,7 @@ function createMainWindow(): BrowserWindow {
   })
 
   loadRendererWindow(window, 'main')
+  attachWindowStatePersistence(window, MAIN_WINDOW_STATE_KEY)
 
   window.webContents.on('did-finish-load', () => {
     window.webContents.setZoomFactor(DEFAULT_ZOOM_FACTOR)
@@ -430,18 +596,32 @@ function createMainWindow(): BrowserWindow {
     requestAppQuit()
   })
 
+  if (restoredWindowState.isMaximized) {
+    window.maximize()
+  }
+
   return window
 }
 
 function createSettingsWindow(): BrowserWindow {
+  const language = getCurrentUiLanguage()
+  const restoredWindowState = resolveInitialWindowState({
+    key: SETTINGS_WINDOW_STATE_KEY,
+    defaultWidth: SETTINGS_WINDOW_DEFAULT_WIDTH,
+    defaultHeight: SETTINGS_WINDOW_DEFAULT_HEIGHT,
+    minWidth: SETTINGS_WINDOW_MIN_WIDTH,
+    minHeight: SETTINGS_WINDOW_MIN_HEIGHT,
+  })
   const icon = resolveWindowIcon()
   const window = new BrowserWindow({
-    width: 980,
-    height: 700,
-    minWidth: 820,
-    minHeight: 560,
+    width: restoredWindowState.width,
+    height: restoredWindowState.height,
+    ...(typeof restoredWindowState.x === 'number' ? { x: restoredWindowState.x } : {}),
+    ...(typeof restoredWindowState.y === 'number' ? { y: restoredWindowState.y } : {}),
+    minWidth: SETTINGS_WINDOW_MIN_WIDTH,
+    minHeight: SETTINGS_WINDOW_MIN_HEIGHT,
     backgroundColor: '#f7f5f2',
-    title: '设置 - 长布',
+    title: getWindowTitle('settings', language),
     titleBarStyle: process.platform === 'darwin' ? 'hidden' : 'default',
     ...(icon ? { icon } : {}),
     webPreferences: {
@@ -452,6 +632,7 @@ function createSettingsWindow(): BrowserWindow {
   })
 
   loadRendererWindow(window, 'settings')
+  attachWindowStatePersistence(window, SETTINGS_WINDOW_STATE_KEY)
 
   if (process.platform === 'darwin') {
     window.setWindowButtonVisibility(false)
@@ -466,21 +647,34 @@ function createSettingsWindow(): BrowserWindow {
     return { action: 'deny' }
   })
 
+  if (restoredWindowState.isMaximized) {
+    window.maximize()
+  }
+
   return window
 }
 
 function createReviewWindow(reviewMode: string, dateKey?: string): BrowserWindow {
+  const language = getCurrentUiLanguage()
   const icon = resolveWindowIcon()
-  const reviewWindowTitle = reviewMode === 'ai-insights'
-    ? 'AI 洞察 - 长布'
-    : reviewMode === 'recent-shifts'
-      ? '近期变化 - 长布'
-      : '每日回顾 - 长布'
+  const reviewModeValue: ReviewMode = reviewMode === 'ai-insights' || reviewMode === 'recent-shifts'
+    ? reviewMode as ReviewMode
+    : 'daily-review'
+  const reviewWindowTitle = getWindowTitle('review', language, { reviewMode: reviewModeValue })
+  const restoredWindowState = resolveInitialWindowState({
+    key: REVIEW_WINDOW_STATE_KEY,
+    defaultWidth: REVIEW_WINDOW_DEFAULT_WIDTH,
+    defaultHeight: REVIEW_WINDOW_DEFAULT_HEIGHT,
+    minWidth: REVIEW_WINDOW_MIN_WIDTH,
+    minHeight: REVIEW_WINDOW_MIN_HEIGHT,
+  })
   const window = new BrowserWindow({
-    width: 920,
-    height: 700,
-    minWidth: 760,
-    minHeight: 560,
+    width: restoredWindowState.width,
+    height: restoredWindowState.height,
+    ...(typeof restoredWindowState.x === 'number' ? { x: restoredWindowState.x } : {}),
+    ...(typeof restoredWindowState.y === 'number' ? { y: restoredWindowState.y } : {}),
+    minWidth: REVIEW_WINDOW_MIN_WIDTH,
+    minHeight: REVIEW_WINDOW_MIN_HEIGHT,
     backgroundColor: '#f7f5f2',
     title: reviewWindowTitle,
     titleBarStyle: process.platform === 'darwin' ? 'hidden' : 'default',
@@ -493,6 +687,7 @@ function createReviewWindow(reviewMode: string, dateKey?: string): BrowserWindow
   })
 
   loadRendererWindow(window, 'review', { reviewMode, dateKey })
+  attachWindowStatePersistence(window, REVIEW_WINDOW_STATE_KEY)
 
   if (process.platform === 'darwin') {
     window.setWindowButtonVisibility(false)
@@ -506,6 +701,10 @@ function createReviewWindow(reviewMode: string, dateKey?: string): BrowserWindow
     void shell.openExternal(url)
     return { action: 'deny' }
   })
+
+  if (restoredWindowState.isMaximized) {
+    window.maximize()
+  }
 
   return window
 }
@@ -542,14 +741,13 @@ function openSettingsWindow(): BrowserWindow {
 }
 
 function openReviewWindow(reviewMode: string, dateKey?: string): BrowserWindow {
+  reviewWindowMode = reviewMode === 'ai-insights' || reviewMode === 'recent-shifts'
+    ? reviewMode as ReviewMode
+    : 'daily-review'
+  const language = getCurrentUiLanguage()
+
   if (reviewWindow && !reviewWindow.isDestroyed()) {
-    reviewWindow.setTitle(
-      reviewMode === 'ai-insights'
-        ? 'AI 洞察 - 长布'
-        : reviewMode === 'recent-shifts'
-          ? '近期变化 - 长布'
-          : '每日回顾 - 长布',
-    )
+    reviewWindow.setTitle(getWindowTitle('review', language, { reviewMode: reviewWindowMode }))
     loadRendererWindow(reviewWindow, 'review', { reviewMode, dateKey })
 
     if (reviewWindow.isMinimized()) {
@@ -574,6 +772,10 @@ async function bootstrap(): Promise<void> {
   const userDataDirectory = app.getPath('userData')
   const dataDirectory = join(userDataDirectory, 'data')
   const settingsFilePath = join(userDataDirectory, 'changbu-settings.json')
+
+  settingsStore = createSettingsFileStore({
+    filePath: settingsFilePath,
+  })
 
   applyDevelopmentAppIcon()
   await registerAttachmentProtocol(dataDirectory)
@@ -615,6 +817,14 @@ async function bootstrap(): Promise<void> {
       },
     },
     onEvent: (channel, payload) => {
+      if (channel === IPC_CHANNELS.events.metaChanged) {
+        const metaPayload = payload as MetaChangedEvent
+
+        if (metaPayload.reason === 'settings') {
+          refreshWindowTitles()
+        }
+      }
+
       if (
         channel === IPC_CHANNELS.events.blockChanged
         || channel === IPC_CHANNELS.events.notebooksChanged
@@ -647,12 +857,14 @@ async function bootstrap(): Promise<void> {
   })
 
   openMainWindow()
+  refreshWindowTitles()
 }
 
 async function runCliMode(args: string[]): Promise<void> {
   const userDataDirectory = app.getPath('userData')
   const dataDirectory = join(userDataDirectory, 'data')
   const settingsFilePath = join(userDataDirectory, 'changbu-settings.json')
+  const language = readUiLanguageFromSettingsFile(settingsFilePath)
   const context = createAppContext({
     dataDirectory,
     settingsFilePath,
@@ -665,11 +877,11 @@ async function runCliMode(args: string[]): Promise<void> {
   let exitCode = 0
 
   try {
-    exitCode = await runChangbuCli(context, args)
+    exitCode = await runChangbuCli(context, args, { language })
     await context.whenIdle()
   } catch (error) {
     exitCode = 1
-    process.stderr.write(`${error instanceof Error ? error.message : 'CLI 执行失败。'}\n`)
+    process.stderr.write(`${error instanceof Error ? error.message : language === 'en' ? 'CLI execution failed.' : 'CLI 执行失败。'}\n`)
   } finally {
     context.dispose()
     isQuitting = true
@@ -678,7 +890,9 @@ async function runCliMode(args: string[]): Promise<void> {
 }
 
 app.whenReady().then(() => {
-  app.setName(APP_NAME)
+  const initialLanguage = readUiLanguageFromSettingsFile(join(app.getPath('userData'), 'changbu-settings.json'))
+  const appDisplayName = getAppDisplayName(initialLanguage)
+  app.setName(appDisplayName)
 
   if (isCliMode) {
     void runCliMode(cliArgs ?? [])
@@ -687,7 +901,7 @@ app.whenReady().then(() => {
 
   void bootstrap().catch((error) => {
     console.error('[changbu] bootstrap failed:', error)
-    dialog.showErrorBox(APP_NAME, error instanceof Error ? error.message : '应用启动失败。')
+    dialog.showErrorBox(appDisplayName, error instanceof Error ? error.message : initialLanguage === 'en' ? 'Failed to launch app.' : '应用启动失败。')
     app.exit(1)
   })
 

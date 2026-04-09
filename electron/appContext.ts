@@ -51,11 +51,11 @@ import {
   listBlocksByDate as listBlocksByDateInDb,
   listBlockIdsWithMarkdownImages,
   listRecentBlockContentRows,
-  listRecentBlockContents,
   listBlocks,
   removeTagFromBlock,
   replaceBlockImageDerivedData,
   syncAutoBlockTags,
+  type RecentBlockContentRow,
   updateBlockContent,
   updateBlockEnrichmentResult,
   updateBlockState,
@@ -131,7 +131,7 @@ import {
   type LLMProvider,
 } from './services/ai'
 import { selectDocumentReferenceBlocks, selectDocumentReferenceResults } from './services/docgen'
-import { createTaggerEngine } from './services/tagger'
+import { createTaggerEngine, type TagAssignmentResult } from './services/tagger'
 import {
   cleanupOrphanAttachments as cleanupOrphanAttachmentsService,
   hasMarkdownImages,
@@ -299,7 +299,13 @@ export function createAppContext(options: AppContextOptions): AppContext {
   }
 
   function scheduleBlocksForImageAnalysisRefresh(blockIds: string[]): void {
-    const blocks = getBlocksByIds(db, blockIds)
+    const dedupedBlockIds = Array.from(new Set(blockIds))
+
+    if (dedupedBlockIds.length === 0) {
+      return
+    }
+
+    const blocks = getBlocksByIds(db, dedupedBlockIds)
 
     for (const block of blocks) {
       const enrichGeneration = advanceBlockEnrichGeneration(block.id)
@@ -722,16 +728,64 @@ export function createAppContext(options: AppContextOptions): AppContext {
     }
   }
 
-  function getTaggerImageInputs(content: string): {
+  interface EnrichRuntimeSnapshot {
+    mode: AIExecutionMode
+    llmProvider: LLMProvider
+    tagMemory: ReturnType<typeof getTagMemory>
+    recentCorpusRows: RecentBlockContentRow[]
+    imageAnalysisEnabled: boolean
+  }
+
+  interface CompletedEnrichAssignment {
+    blockId: string
+    content: string
+    generation: number
+    assignment: TagAssignmentResult
+  }
+
+  function createEnrichRuntimeSnapshot(requestCount = 1): EnrichRuntimeSnapshot {
+    const { mode, llmProvider } = getProviders()
+    const config = getSavedConfig()
+
+    return {
+      mode,
+      llmProvider,
+      tagMemory: getTagMemory(db),
+      recentCorpusRows: listRecentBlockContentRows(db, TAGGER_CORPUS_LIMIT + Math.max(1, requestCount)),
+      imageAnalysisEnabled: mode === 'live' && config.multimodalImageAnalysisEnabled,
+    }
+  }
+
+  function buildCorpusContentsFromSnapshot(
+    snapshot: EnrichRuntimeSnapshot,
+    blockId: string,
+    content: string,
+  ): string[] {
+    const corpusContents = [content]
+
+    for (const entry of snapshot.recentCorpusRows) {
+      if (entry.blockId === blockId || entry.content === content) {
+        continue
+      }
+
+      corpusContents.push(entry.content)
+
+      if (corpusContents.length >= TAGGER_CORPUS_LIMIT + 1) {
+        break
+      }
+    }
+
+    return corpusContents
+  }
+
+  function getTaggerImageInputs(content: string, snapshot: EnrichRuntimeSnapshot): {
     images: Awaited<ReturnType<typeof resolveBlockImageInputs>>['images']
     skippedCount: number
   } | Promise<{
     images: Awaited<ReturnType<typeof resolveBlockImageInputs>>['images']
     skippedCount: number
   }> {
-    const config = getSavedConfig()
-
-    if (getExecutionMode() !== 'live' || !config.multimodalImageAnalysisEnabled || !hasMarkdownImages(content)) {
+    if (!snapshot.imageAnalysisEnabled || !hasMarkdownImages(content)) {
       return {
         images: [],
         skippedCount: 0,
@@ -742,6 +796,83 @@ export function createAppContext(options: AppContextOptions): AppContext {
       images: resolved.images,
       skippedCount: resolved.skippedCount,
     }))
+  }
+
+  function applyCompletedEnrichAssignments(
+    entries: CompletedEnrichAssignment[],
+    snapshot: Pick<EnrichRuntimeSnapshot, 'llmProvider' | 'mode'>,
+    previousSearchTextMap?: Map<string, string>,
+  ): void {
+    if (entries.length === 0) {
+      return
+    }
+
+    const freshEntries = entries
+      .map((entry) => {
+        const currentBlock = getFreshBlockForEnrich(entry.blockId, entry.generation)
+
+        if (!currentBlock) {
+          return null
+        }
+
+        return {
+          ...entry,
+          currentBlock,
+        }
+      })
+      .filter((entry): entry is CompletedEnrichAssignment & { currentBlock: Block } => Boolean(entry))
+
+    if (freshEntries.length === 0) {
+      return
+    }
+
+    const resolvedPreviousSearchTextMap = previousSearchTextMap
+      ?? getBlockSearchTextsByIds(db, freshEntries.map((entry) => entry.blockId))
+    const updatedBlocks: Block[] = []
+    const reindexBlocks: Array<Pick<Block, 'id' | 'updatedAt'>> = []
+
+    for (const entry of freshEntries) {
+      const tags = [
+        ...entry.assignment.categories.map((tagName) => getOrCreateTag(db, tagName, 'category')),
+        ...entry.assignment.detailTags.map((tagName) => getOrCreateTag(db, tagName, 'detail')),
+      ]
+
+      syncAutoBlockTags(db, entry.blockId, tags)
+
+      const previousSearchText = resolvedPreviousSearchTextMap.get(entry.blockId) ?? entry.content
+      const nextSearchText = buildBlockSearchText(entry.content, entry.assignment.imageAnnotations)
+      const block = updateBlockEnrichmentResult(db, {
+        id: entry.blockId,
+        status: 'ready',
+        aiMode: snapshot.mode,
+        summary: entry.assignment.summary,
+        imageAnnotations: entry.assignment.imageAnnotations,
+        searchText: nextSearchText,
+        updatedAt: entry.currentBlock.updatedAt,
+      })
+
+      updatedBlocks.push(block)
+
+      if (nextSearchText !== previousSearchText) {
+        reindexBlocks.push(block)
+      }
+    }
+
+    for (const block of updatedBlocks) {
+      emitBlockChangedWithDerivedInvalidation({
+        block,
+        reason: 'enriched',
+      })
+    }
+
+    if (reindexBlocks.length > 0) {
+      enqueueBlocksForVectorReindex(reindexBlocks)
+      scheduleCurrentVectorReindex()
+    }
+
+    for (const entry of freshEntries) {
+      void trackTask(syncCalendarSuggestionsForBlock(entry.blockId, entry.generation, snapshot.llmProvider, snapshot.mode))
+    }
   }
 
   async function syncCalendarSuggestionsForBlock(
@@ -1209,72 +1340,47 @@ export function createAppContext(options: AppContextOptions): AppContext {
     blockId: string,
     content: string,
     generation: number,
+    runtimeSnapshot = createEnrichRuntimeSnapshot(),
   ): Promise<boolean> {
-    const { mode, llmProvider } = getProviders()
-    const tagMemory = getTagMemory(db)
-    const imageInputResult = getTaggerImageInputs(content)
+    const imageInputResult = getTaggerImageInputs(content, runtimeSnapshot)
     const { images, skippedCount } = imageInputResult instanceof Promise
       ? await imageInputResult
       : imageInputResult
     const assignment = await tagger.assign(content, {
-      corpusContents: [content, ...listRecentBlockContents(db, TAGGER_CORPUS_LIMIT, blockId)],
-      liveLlmProvider: mode === 'live' ? llmProvider : null,
+      corpusContents: buildCorpusContentsFromSnapshot(runtimeSnapshot, blockId, content),
+      liveLlmProvider: runtimeSnapshot.mode === 'live' ? runtimeSnapshot.llmProvider : null,
       imageInputs: images,
       skippedImageCount: skippedCount,
-      tagMemory,
+      tagMemory: runtimeSnapshot.tagMemory,
     })
-    const currentBlock = getFreshBlockForEnrich(blockId, generation)
 
-    if (!currentBlock) {
-      return false
-    }
-
-    const tags = [
-      ...assignment.categories.map((tagName) => getOrCreateTag(db, tagName, 'category')),
-      ...assignment.detailTags.map((tagName) => getOrCreateTag(db, tagName, 'detail')),
-    ]
-    syncAutoBlockTags(db, blockId, tags)
-
-    if (mode === 'live') {
+    if (runtimeSnapshot.mode === 'live') {
       clearRuntimeAiError()
     }
 
-    const previousSearchText = getBlockSearchTextsByIds(db, [blockId]).get(blockId) ?? content
-    const nextSearchText = buildBlockSearchText(content, assignment.imageAnnotations)
-    const block = updateBlockEnrichmentResult(db, {
-      id: blockId,
-      status: 'ready',
-      aiMode: mode,
-      summary: assignment.summary,
-      imageAnnotations: assignment.imageAnnotations,
-      searchText: nextSearchText,
-      updatedAt: currentBlock.updatedAt,
-    })
+    applyCompletedEnrichAssignments([
+      {
+        blockId,
+        content,
+        generation,
+        assignment,
+      },
+    ], runtimeSnapshot)
 
-    emitBlockChangedWithDerivedInvalidation({
-      block,
-      reason: 'enriched',
-    })
-
-    if (nextSearchText !== previousSearchText) {
-      enqueueBlocksForVectorReindex([block])
-      scheduleCurrentVectorReindex()
-    }
-    void trackTask(syncCalendarSuggestionsForBlock(blockId, generation, llmProvider, mode))
-
-    return true
+    return Boolean(getFreshBlockForEnrich(blockId, generation))
   }
 
   async function runEnrichWithRetry(
     blockId: string,
     content: string,
     generation: number,
+    runtimeSnapshot?: EnrichRuntimeSnapshot,
   ): Promise<boolean> {
     const aiMode = getExecutionMode()
 
     for (let attempt = 0; attempt <= MAX_ENRICH_RETRIES; attempt += 1) {
       try {
-        return await enrichBlock(blockId, content, generation)
+        return await enrichBlock(blockId, content, generation, runtimeSnapshot ?? createEnrichRuntimeSnapshot())
       } catch (error) {
         const currentBlock = getFreshBlockForEnrich(blockId, generation)
 
@@ -1376,7 +1482,6 @@ export function createAppContext(options: AppContextOptions): AppContext {
       return
     }
 
-    const { llmProvider } = getProviders()
     const batchOptions = getQueuedEnrichBatchOptions()
 
     for (let attempt = 0; attempt <= MAX_ENRICH_RETRIES; attempt += 1) {
@@ -1386,11 +1491,13 @@ export function createAppContext(options: AppContextOptions): AppContext {
         return
       }
 
+      const runtimeSnapshot = createEnrichRuntimeSnapshot(currentRequests.length)
+
       const imageRequests = currentRequests.filter((request) => request.hasImages)
 
       if (imageRequests.length > 0) {
         for (const request of imageRequests) {
-          await runEnrichWithRetry(request.blockId, request.content, request.generation)
+          await runEnrichWithRetry(request.blockId, request.content, request.generation, runtimeSnapshot)
         }
       }
 
@@ -1401,84 +1508,32 @@ export function createAppContext(options: AppContextOptions): AppContext {
       }
 
       try {
-        const tagMemory = getTagMemory(db)
-        const recentCorpusSnapshot = listRecentBlockContentRows(db, TAGGER_CORPUS_LIMIT + textOnlyRequests.length)
         const assignments = await tagger.assignBatch(
           textOnlyRequests.map((request) => ({
             content: request.content,
             options: {
-              corpusContents: (() => {
-                const corpusContents = [request.content]
-
-                for (const entry of recentCorpusSnapshot) {
-                  if (entry.blockId === request.blockId || entry.content === request.content) {
-                    continue
-                  }
-
-                  corpusContents.push(entry.content)
-
-                  if (corpusContents.length >= TAGGER_CORPUS_LIMIT + 1) {
-                    break
-                  }
-                }
-
-                return corpusContents
-              })(),
-              liveLlmProvider: llmProvider,
+              corpusContents: buildCorpusContentsFromSnapshot(runtimeSnapshot, request.blockId, request.content),
+              liveLlmProvider: runtimeSnapshot.mode === 'live' ? runtimeSnapshot.llmProvider : null,
               batchOptions: {
                 maxBatchBlocks: batchOptions.maxBatchBlocks,
                 responseReserveTokens: batchOptions.responseReserveTokens,
               },
-              tagMemory,
+              tagMemory: runtimeSnapshot.tagMemory,
             },
           })),
         )
 
         clearRuntimeAiError()
-        let shouldReindexAfterBatch = false
-
-        for (const [index, request] of textOnlyRequests.entries()) {
-          const currentBlock = getFreshBlockForEnrich(request.blockId, request.generation)
-
-          if (!currentBlock) {
-            continue
-          }
-
-          const assignment = assignments[index]
-          const tags = [
-            ...assignment.categories.map((tagName) => getOrCreateTag(db, tagName, 'category')),
-            ...assignment.detailTags.map((tagName) => getOrCreateTag(db, tagName, 'detail')),
-          ]
-
-          syncAutoBlockTags(db, request.blockId, tags)
-
-          const previousSearchText = getBlockSearchTextsByIds(db, [request.blockId]).get(request.blockId) ?? request.content
-          const nextSearchText = buildBlockSearchText(request.content, assignment.imageAnnotations)
-          const block = updateBlockEnrichmentResult(db, {
-            id: request.blockId,
-            status: 'ready',
-            aiMode: 'live',
-            summary: assignment.summary,
-            imageAnnotations: assignment.imageAnnotations,
-            searchText: nextSearchText,
-            updatedAt: currentBlock.updatedAt,
-          })
-
-          emitBlockChangedWithDerivedInvalidation({
-            block,
-            reason: 'enriched',
-          })
-
-          if (nextSearchText !== previousSearchText) {
-            enqueueBlocksForVectorReindex([block])
-            shouldReindexAfterBatch = true
-          }
-          void trackTask(syncCalendarSuggestionsForBlock(request.blockId, request.generation, llmProvider, 'live'))
-        }
-
-        if (shouldReindexAfterBatch) {
-          scheduleCurrentVectorReindex()
-        }
+        applyCompletedEnrichAssignments(
+          textOnlyRequests.map((request, index) => ({
+            blockId: request.blockId,
+            content: request.content,
+            generation: request.generation,
+            assignment: assignments[index],
+          })),
+          runtimeSnapshot,
+          getBlockSearchTextsByIds(db, textOnlyRequests.map((request) => request.blockId)),
+        )
 
         return
       } catch (error) {

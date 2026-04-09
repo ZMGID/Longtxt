@@ -96,6 +96,15 @@ function createNotebookApiMock() {
         content: 'content',
         blockIds: [],
         createdAt: '2026-04-01T09:00:00.000Z',
+        updatedAt: '2026-04-01T09:00:00.000Z',
+      }),
+      update: async () => ({
+        id: 'snapshot-1',
+        topic: 'topic',
+        content: 'content',
+        blockIds: [],
+        createdAt: '2026-04-01T09:00:00.000Z',
+        updatedAt: '2026-04-01T09:05:00.000Z',
       }),
       list: async () => [],
       get: async () => ({
@@ -104,6 +113,7 @@ function createNotebookApiMock() {
         content: 'content',
         blockIds: [],
         createdAt: '2026-04-01T09:00:00.000Z',
+        updatedAt: '2026-04-01T09:00:00.000Z',
       }),
       remove: async () => undefined,
     },
@@ -298,6 +308,7 @@ function createNotebookApiMock() {
         content: '# 每日回顾 2026-04-01',
         blockIds: [],
         createdAt: '2026-04-01T09:00:00.000Z',
+        updatedAt: '2026-04-01T09:00:00.000Z',
       }),
       saveInsightSnapshot: async () => ({
         id: 'snapshot-2',
@@ -305,6 +316,7 @@ function createNotebookApiMock() {
         content: '# AI 洞察｜默认洞察｜2026-03-19～2026-04-01',
         blockIds: [],
         createdAt: '2026-04-01T09:00:00.000Z',
+        updatedAt: '2026-04-01T09:00:00.000Z',
       }),
     },
     tags: {
@@ -321,6 +333,7 @@ function createNotebookApiMock() {
         embeddingOk: true,
         llmOk: true,
         llmStreamingOk: true,
+        llmMultimodalOk: false,
         resolvedBaseUrl: 'https://api.example.com',
         embeddingModel: 'text-embedding-3-small',
         embeddingDimension: 4,

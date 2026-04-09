@@ -16,17 +16,44 @@ export type BlockListChangeHint =
 
 export interface FlatBlockListData {
   blocks: Block[]
-  indexById: Record<string, number>
+  indexById: Map<string, number>
   lastChange: BlockListChangeHint
 }
 
 export const NOOP_BLOCK_LIST_CHANGE: BlockListChangeHint = { type: 'noop' }
 
-function buildIndexById(blocks: Block[]): Record<string, number> {
-  return blocks.reduce<Record<string, number>>((indexById, block, index) => {
-    indexById[block.id] = index
-    return indexById
-  }, {})
+function buildIndexById(blocks: Block[]): Map<string, number> {
+  const indexById = new Map<string, number>()
+
+  blocks.forEach((block, index) => {
+    indexById.set(block.id, index)
+  })
+
+  return indexById
+}
+
+function cloneIndexById(indexById: Map<string, number>): Map<string, number> {
+  return new Map(indexById)
+}
+
+function areImageAnnotationsEquivalent(
+  left: Block['imageAnnotations'],
+  right: Block['imageAnnotations'],
+): boolean {
+  const normalizedLeft = left ?? []
+  const normalizedRight = right ?? []
+
+  if (normalizedLeft.length !== normalizedRight.length) {
+    return false
+  }
+
+  return normalizedLeft.every((annotation, index) => {
+    const other = normalizedRight[index]
+
+    return Boolean(other)
+      && annotation.index === other.index
+      && annotation.annotation === other.annotation
+  })
 }
 
 function areTagsEquivalent(left: Block['tags'], right: Block['tags']): boolean {
@@ -49,6 +76,7 @@ function areBlocksEquivalent(left: Block, right: Block): boolean {
   return left.id === right.id
     && left.content === right.content
     && left.summary === right.summary
+    && areImageAnnotationsEquivalent(left.imageAnnotations, right.imageAnnotations)
     && left.createdAt === right.createdAt
     && left.updatedAt === right.updatedAt
     && left.status === right.status
@@ -57,12 +85,20 @@ function areBlocksEquivalent(left: Block, right: Block): boolean {
     && areTagsEquivalent(left.tags, right.tags)
 }
 
-function createFlatBlockListData(blocks: Block[], lastChange: BlockListChangeHint): FlatBlockListData {
+function createFlatBlockListDataWithIndex(
+  blocks: Block[],
+  indexById: Map<string, number>,
+  lastChange: BlockListChangeHint,
+): FlatBlockListData {
   return {
     blocks,
-    indexById: buildIndexById(blocks),
+    indexById,
     lastChange,
   }
+}
+
+function createFlatBlockListData(blocks: Block[], lastChange: BlockListChangeHint): FlatBlockListData {
+  return createFlatBlockListDataWithIndex(blocks, buildIndexById(blocks), lastChange)
 }
 
 function dedupeBlocks(blocks: Block[]): Block[] {
@@ -221,6 +257,42 @@ function withNoopChange(current?: FlatBlockListData): FlatBlockListData {
   return current ?? createEmptyFlatBlockListData()
 }
 
+function mergeBlockChangedEvent(previous: BlockChangedEvent | undefined, next: BlockChangedEvent): BlockChangedEvent {
+  if (next.reason === 'created' || next.reason === 'deleted') {
+    return next
+  }
+
+  if (previous?.reason === 'created') {
+    return {
+      reason: 'created',
+      block: next.block,
+    }
+  }
+
+  return next
+}
+
+export function coalesceBlockChangedEvents(events: BlockChangedEvent[]): BlockChangedEvent[] {
+  if (events.length <= 1) {
+    return events
+  }
+
+  const eventByBlockId = new Map<string, { event: BlockChangedEvent; lastIndex: number }>()
+
+  events.forEach((event, index) => {
+    const previous = eventByBlockId.get(event.block.id)?.event
+
+    eventByBlockId.set(event.block.id, {
+      event: mergeBlockChangedEvent(previous, event),
+      lastIndex: index,
+    })
+  })
+
+  return Array.from(eventByBlockId.values())
+    .sort((left, right) => left.lastIndex - right.lastIndex)
+    .map((entry) => entry.event)
+}
+
 export function prependBlocksToFlatBlockList(
   current: FlatBlockListData | undefined,
   prependedBlocks: Block[],
@@ -248,13 +320,20 @@ export function appendBlocksToFlatBlockList(
   }
 
   const base = current ?? createEmptyFlatBlockListData()
-  const dedupedAppendedBlocks = appendedBlocks.filter((block) => base.indexById[block.id] === undefined)
+  const dedupedAppendedBlocks = appendedBlocks.filter((block) => !base.indexById.has(block.id))
 
   if (dedupedAppendedBlocks.length === 0) {
     return base
   }
 
-  return createFlatBlockListData([...base.blocks, ...dedupedAppendedBlocks], {
+  const nextBlocks = [...base.blocks, ...dedupedAppendedBlocks]
+  const nextIndexById = cloneIndexById(base.indexById)
+
+  dedupedAppendedBlocks.forEach((block, index) => {
+    nextIndexById.set(block.id, base.blocks.length + index)
+  })
+
+  return createFlatBlockListDataWithIndex(nextBlocks, nextIndexById, {
     type: 'append',
     blocks: dedupedAppendedBlocks,
   })
@@ -265,7 +344,7 @@ export function replaceBlockInFlatBlockList(
   block: Block,
 ): FlatBlockListData {
   const base = current ?? createEmptyFlatBlockListData()
-  const blockIndex = base.indexById[block.id]
+  const blockIndex = base.indexById.get(block.id)
 
   if (blockIndex === undefined) {
     return base
@@ -280,7 +359,7 @@ export function replaceBlockInFlatBlockList(
   const nextBlocks = base.blocks.slice()
   nextBlocks[blockIndex] = block
 
-  return createFlatBlockListData(nextBlocks, {
+  return createFlatBlockListDataWithIndex(nextBlocks, base.indexById, {
     type: 'replace',
     block,
     previousBlock,
@@ -292,7 +371,7 @@ export function removeBlockFromFlatBlockList(
   blockId: string,
 ): FlatBlockListData {
   const base = current ?? createEmptyFlatBlockListData()
-  const blockIndex = base.indexById[blockId]
+  const blockIndex = base.indexById.get(blockId)
 
   if (blockIndex === undefined) {
     return base

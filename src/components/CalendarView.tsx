@@ -4,6 +4,8 @@ import { useQueryClient } from '@tanstack/react-query'
 
 import type { CalendarEntry, CalendarSettings, CalendarSuggestion } from '../../shared/types'
 import { useCalendarDayDetail, useCalendarHeatmap, useCalendarYears, useUpcomingCalendarEntries } from '../hooks/useCalendar'
+import { formatDateByLanguage } from '../i18n/locale'
+import { useI18n } from '../i18n/useI18n'
 import { buildCalendarHeatmapColumns, formatCalendarDateLabel, formatCalendarTimeLabel, groupUpcomingEntries } from '../lib/calendar'
 import { changbu } from '../lib/changbu'
 import { queryKeys } from '../lib/queryKeys'
@@ -69,14 +71,17 @@ function getColumnAnchorDate(column: ReturnType<typeof buildCalendarHeatmapColum
   return column.days.find((day) => day)?.date ?? null
 }
 
-function getColumnMonthFallbackLabel(column: ReturnType<typeof buildCalendarHeatmapColumns>[number]): string | null {
+function getColumnMonthFallbackLabel(
+  column: ReturnType<typeof buildCalendarHeatmapColumns>[number],
+  language: ReturnType<typeof useI18n>['language'],
+): string | null {
   const anchorDate = getColumnAnchorDate(column)
 
   if (!anchorDate) {
     return null
   }
 
-  return new Intl.DateTimeFormat('en-US', { month: 'short' }).format(new Date(`${anchorDate}T00:00:00`))
+  return formatDateByLanguage(new Date(`${anchorDate}T00:00:00`), { month: 'short' }, language)
 }
 
 function buildEntryDraft(date: string): CalendarEntryDraft {
@@ -100,10 +105,10 @@ function buildEntryPayload(draft: CalendarEntryDraft) {
 }
 
 function formatBlockTime(value: string): string {
-  return new Intl.DateTimeFormat('zh-CN', {
+  return formatDateByLanguage(new Date(value), {
     hour: '2-digit',
     minute: '2-digit',
-  }).format(new Date(value))
+  })
 }
 
 export function CalendarView({
@@ -112,6 +117,7 @@ export function CalendarView({
   selectedDateOverride,
   onSelectedDateOverrideHandled,
 }: CalendarViewProps) {
+  const { language } = useI18n()
   const { toast } = useToast()
   const queryClient = useQueryClient()
   const heatmapContainerRef = useRef<HTMLDivElement | null>(null)
@@ -148,7 +154,7 @@ export function CalendarView({
   const upcomingQuery = useUpcomingCalendarEntries(settings.upcomingDays)
   const heatmap = heatmapQuery.data
   const dayDetail = dayDetailQuery.data
-  const columns = useMemo(() => buildCalendarHeatmapColumns(heatmap?.days ?? []), [heatmap?.days])
+  const columns = useMemo(() => buildCalendarHeatmapColumns(heatmap?.days ?? [], language), [heatmap?.days, language])
   const visibleHeatmapColumns = useMemo(() => {
     if (columns.length === 0 || heatmapDisplayMode === 'full-year' || !heatmapVisibleColumnCount || heatmapVisibleColumnCount >= columns.length) {
       return columns
@@ -177,12 +183,136 @@ export function CalendarView({
       index === 0 && !column.monthLabel
         ? {
             ...column,
-            monthLabel: getColumnMonthFallbackLabel(column),
+            monthLabel: getColumnMonthFallbackLabel(column, language),
           }
         : column
     ))
-  }, [activeYear, columns, currentYear, heatmapDisplayMode, heatmapVisibleColumnCount, selectedDate, today])
+  }, [activeYear, columns, currentYear, heatmapDisplayMode, heatmapVisibleColumnCount, language, selectedDate, today])
   const groupedUpcoming = useMemo(() => groupUpcomingEntries(upcomingQuery.data ?? []), [upcomingQuery.data])
+  const copy = {
+    zh: {
+      createSuccess: '日历安排已创建。',
+      createFailed: '创建安排失败。',
+      detailEntriesLabel: '安排',
+      detailEntriesTitle: '当天安排',
+      detailEntriesEmpty: '这一天还没有正式安排。可以在侧边栏手动添加，或把 AI 建议采纳进来。',
+      detailSuggestionsLabel: 'AI 建议',
+      detailSuggestionsTitleAuto: 'AI 建议（自动加入已开启）',
+      detailSuggestionsTitle: '待确认建议',
+      detailSuggestionsEmptyAuto: '已开启自动加入日历。新识别到的明确安排会直接进入“安排”，这里只会保留尚未被自动处理的旧建议。',
+      detailSuggestionsEmpty: '当前没有待确认的日期建议。含有明确日期的块在 enrich 完成后会出现在这里。',
+      detailBlocksLabel: '当天块',
+      detailBlocksTitle: '当天写下的块',
+      detailBlocksEmpty: '这一天没有写入块。',
+      newEntryTitle: `为 ${selectedDate} 添加安排`,
+      newEntryHint: '默认围绕当前选中日期创建，也可以在提交前改到别的日期。',
+      fieldTitle: '标题',
+      fieldDate: '日期',
+      fieldAllDay: '全天安排',
+      fieldStartTime: '开始时间',
+      fieldNotes: '备注',
+      newEntryEyebrow: '新建安排',
+      upcomingEyebrow: '未来安排',
+      titlePlaceholder: '例如：和设计师过一遍首屏',
+      notesPlaceholder: '可选，补充上下文。',
+      creating: '创建中…',
+      createEntry: '创建安排',
+      upcomingTitle: `未来 ${settings.upcomingDays} 天`,
+      upcomingHint: '保留未来安排概览，方便从日视图直接切过去处理。',
+      upcomingLoading: '正在加载未来安排…',
+      statusPlanned: '待办',
+      statusDone: '已完成',
+      statusCanceled: '已取消',
+      upcomingEmpty: '未来几天还没有安排。',
+      sidebarTitle: '安排与未来',
+      sidebarLabel: '侧边栏',
+      sidebarCreate: '新建安排',
+      sidebarUpcoming: '未来安排',
+      heatmapTitle: '全年热力图',
+      heatmapLoading: '正在加载年度热力图…',
+      heatmapEmpty: '当前年份还没有可展示的日历记录。',
+      heatmapFocused: '已聚焦当前日期附近',
+      density: '密度',
+      less: '少',
+      more: '多',
+      hasEntries: '已有安排',
+      hasSuggestions: 'AI 建议',
+      detailLabel: '当天详情',
+      detailCurrent: '当前 {{title}} · {{count}} 项',
+      collapseSidebar: '收起侧边栏',
+      openSidebar: '打开侧边栏',
+      blocksSuffix: '个块',
+      detailLoading: '正在加载当天详情…',
+      weekLabels: ['一', '', '三', '', '五', '', ''] as const,
+    },
+    en: {
+      createSuccess: 'Calendar entry created.',
+      createFailed: 'Failed to create calendar entry.',
+      detailEntriesLabel: 'Entries',
+      detailEntriesTitle: 'Entries for this day',
+      detailEntriesEmpty: 'No formal entries for this day yet. Add one manually from sidebar or accept an AI suggestion.',
+      detailSuggestionsLabel: 'AI suggestions',
+      detailSuggestionsTitleAuto: 'AI suggestions (auto-add on)',
+      detailSuggestionsTitle: 'Pending suggestions',
+      detailSuggestionsEmptyAuto: 'Auto-add is enabled. Clearly identified future plans go directly into Entries, and only older unresolved suggestions stay here.',
+      detailSuggestionsEmpty: 'No pending date suggestions right now. Blocks with explicit future dates will appear here after enrich finishes.',
+      detailBlocksLabel: 'Blocks',
+      detailBlocksTitle: 'Blocks written that day',
+      detailBlocksEmpty: 'No blocks were written on this day.',
+      newEntryTitle: `Add an entry for ${selectedDate}`,
+      newEntryHint: 'Creation defaults to the selected date, but you can change the date before submitting.',
+      fieldTitle: 'Title',
+      fieldDate: 'Date',
+      fieldAllDay: 'All-day entry',
+      fieldStartTime: 'Start time',
+      fieldNotes: 'Notes',
+      newEntryEyebrow: 'New Entry',
+      upcomingEyebrow: 'Upcoming',
+      titlePlaceholder: 'Example: review hero section with designer',
+      notesPlaceholder: 'Optional extra context.',
+      creating: 'Creating…',
+      createEntry: 'Create entry',
+      upcomingTitle: `Next ${settings.upcomingDays} days`,
+      upcomingHint: 'Keep a compact overview of upcoming items so you can jump over from the day view quickly.',
+      upcomingLoading: 'Loading upcoming entries…',
+      statusPlanned: 'Planned',
+      statusDone: 'Done',
+      statusCanceled: 'Canceled',
+      upcomingEmpty: 'No upcoming entries in the next few days.',
+      sidebarTitle: 'Entries & upcoming',
+      sidebarLabel: 'Sidebar',
+      sidebarCreate: 'New entry',
+      sidebarUpcoming: 'Upcoming',
+      heatmapTitle: 'Year heatmap',
+      heatmapLoading: 'Loading yearly heatmap…',
+      heatmapEmpty: 'No calendar activity to display for this year yet.',
+      heatmapFocused: 'Focused around current date',
+      density: 'Density',
+      less: 'Less',
+      more: 'More',
+      hasEntries: 'Has entries',
+      hasSuggestions: 'AI suggestions',
+      detailLabel: 'Day detail',
+      detailCurrent: 'Current {{title}} · {{count}} items',
+      collapseSidebar: 'Hide sidebar',
+      openSidebar: 'Show sidebar',
+      blocksSuffix: 'blocks',
+      detailLoading: 'Loading day detail…',
+      weekLabels: ['Mon', '', 'Wed', '', 'Fri', '', ''] as const,
+    },
+  }[language]
+
+  function entryStatusLabel(status: CalendarEntry['status']): string {
+    if (status === 'done') {
+      return copy.statusDone
+    }
+
+    if (status === 'canceled') {
+      return copy.statusCanceled
+    }
+
+    return copy.statusPlanned
+  }
 
   const resetScrollPosition = useCallback((): void => {
     const scrollRoot = scrollRootRef.current
@@ -434,9 +564,9 @@ export function CalendarView({
       setDraft(buildEntryDraft(selectedDate))
       setDetailTab('entries')
       setSidebarTab('create')
-      toast('success', '日历安排已创建。')
+      toast('success', copy.createSuccess)
     } catch (reason) {
-      toast('error', reason instanceof Error ? reason.message : '创建安排失败。')
+      toast('error', reason instanceof Error ? reason.message : copy.createFailed)
     } finally {
       setCreating(false)
     }
@@ -477,26 +607,26 @@ export function CalendarView({
   }> = [
     {
       key: 'entries',
-      label: '安排',
-      title: '当天安排',
+      label: copy.detailEntriesLabel,
+      title: copy.detailEntriesTitle,
       count: dayDetail?.entries.length ?? 0,
-      emptyText: '这一天还没有正式安排。可以在侧边栏手动添加，或把 AI 建议采纳进来。',
+      emptyText: copy.detailEntriesEmpty,
     },
     {
       key: 'suggestions',
-      label: 'AI 建议',
-      title: settings.autoAcceptAiSuggestions ? 'AI 建议（自动加入已开启）' : '待确认建议',
+      label: copy.detailSuggestionsLabel,
+      title: settings.autoAcceptAiSuggestions ? copy.detailSuggestionsTitleAuto : copy.detailSuggestionsTitle,
       count: dayDetail?.suggestions.length ?? 0,
       emptyText: settings.autoAcceptAiSuggestions
-        ? '已开启自动加入日历。新识别到的明确安排会直接进入“安排”，这里只会保留尚未被自动处理的旧建议。'
-        : '当前没有待确认的日期建议。含有明确日期的块在 enrich 完成后会出现在这里。',
+        ? copy.detailSuggestionsEmptyAuto
+        : copy.detailSuggestionsEmpty,
     },
     {
       key: 'blocks',
-      label: '当天块',
-      title: '当天写下的块',
+      label: copy.detailBlocksLabel,
+      title: copy.detailBlocksTitle,
       count: dayDetail?.blocks.length ?? 0,
-      emptyText: '这一天没有写入块。',
+      emptyText: copy.detailBlocksEmpty,
     },
   ]
 
@@ -505,7 +635,7 @@ export function CalendarView({
   let detailContent: ReactNode
 
   if (dayDetailQuery.isPending) {
-    detailContent = <p className="text-sm text-stone-400">正在加载当天详情…</p>
+    detailContent = <p className="text-sm text-stone-400">{copy.detailLoading}</p>
   } else if (detailTab === 'entries') {
     detailContent = dayDetail && dayDetail.entries.length > 0 ? (
       <div className="divide-y divide-stone-200">
@@ -555,22 +685,22 @@ export function CalendarView({
   const createSection = (
     <section>
       <div className="min-w-0">
-        <SectionEyebrow>New Entry</SectionEyebrow>
-        <h4 className="mt-3 break-words text-lg font-semibold text-stone-900">为 {selectedDate} 添加安排</h4>
-        <p className="mt-2 text-sm leading-6 text-stone-500">默认围绕当前选中日期创建，也可以在提交前改到别的日期。</p>
+        <SectionEyebrow>{copy.newEntryEyebrow}</SectionEyebrow>
+        <h4 className="mt-3 break-words text-lg font-semibold text-stone-900">{copy.newEntryTitle}</h4>
+        <p className="mt-2 text-sm leading-6 text-stone-500">{copy.newEntryHint}</p>
       </div>
       <div className="mt-5 space-y-4">
         <label className="block space-y-1.5">
-          <span className="text-xs font-medium text-stone-500">标题</span>
+          <span className="text-xs font-medium text-stone-500">{copy.fieldTitle}</span>
           <input
             value={draft.title}
             onChange={(event) => setDraft((current) => ({ ...current, title: event.target.value }))}
-            placeholder="例如：和设计师过一遍首屏"
+            placeholder={copy.titlePlaceholder}
             className="w-full rounded-lg border border-stone-200 bg-stone-50 px-3 py-2.5 text-sm text-stone-900 outline-none transition focus:border-stone-400 focus:bg-white"
           />
         </label>
         <label className="block space-y-1.5">
-          <span className="text-xs font-medium text-stone-500">日期</span>
+          <span className="text-xs font-medium text-stone-500">{copy.fieldDate}</span>
           <input
             type="date"
             value={draft.date}
@@ -585,11 +715,11 @@ export function CalendarView({
             onChange={(event) => setDraft((current) => ({ ...current, allDay: event.target.checked, startTime: event.target.checked ? '' : current.startTime }))}
             className="h-4 w-4 rounded border-stone-300"
           />
-          全天安排
+          {copy.fieldAllDay}
         </label>
         {!draft.allDay ? (
           <label className="block space-y-1.5">
-            <span className="text-xs font-medium text-stone-500">开始时间</span>
+            <span className="text-xs font-medium text-stone-500">{copy.fieldStartTime}</span>
             <input
               type="time"
               value={draft.startTime}
@@ -599,12 +729,12 @@ export function CalendarView({
           </label>
         ) : null}
         <label className="block space-y-1.5">
-          <span className="text-xs font-medium text-stone-500">备注</span>
+          <span className="text-xs font-medium text-stone-500">{copy.fieldNotes}</span>
           <textarea
             value={draft.notes}
             onChange={(event) => setDraft((current) => ({ ...current, notes: event.target.value }))}
             rows={3}
-            placeholder="可选，补充上下文。"
+            placeholder={copy.notesPlaceholder}
             className="w-full rounded-lg border border-stone-200 bg-stone-50 px-3 py-2.5 text-sm text-stone-900 outline-none transition focus:border-stone-400 focus:bg-white"
           />
         </label>
@@ -616,7 +746,7 @@ export function CalendarView({
           disabled={creating}
           className="w-full rounded-lg bg-stone-900 px-4 py-2.5 text-sm font-medium text-white transition hover:bg-stone-800 disabled:opacity-50"
         >
-          {creating ? '创建中…' : '创建安排'}
+          {creating ? copy.creating : copy.createEntry}
         </button>
       </div>
     </section>
@@ -625,13 +755,13 @@ export function CalendarView({
   const upcomingSection = (
     <section>
       <div className="min-w-0">
-        <SectionEyebrow>Upcoming</SectionEyebrow>
-        <h4 className="mt-3 text-lg font-semibold text-stone-900">未来 {settings.upcomingDays} 天</h4>
-        <p className="mt-2 text-sm leading-6 text-stone-500">保留未来安排概览，方便从日视图直接切过去处理。</p>
+        <SectionEyebrow>{copy.upcomingEyebrow}</SectionEyebrow>
+        <h4 className="mt-3 text-lg font-semibold text-stone-900">{copy.upcomingTitle}</h4>
+        <p className="mt-2 text-sm leading-6 text-stone-500">{copy.upcomingHint}</p>
       </div>
       <div className="mt-5 space-y-5">
         {upcomingQuery.isPending ? (
-          <p className="text-sm text-stone-400">正在加载未来安排…</p>
+          <p className="text-sm text-stone-400">{copy.upcomingLoading}</p>
         ) : groupedUpcoming.length > 0 ? (
           groupedUpcoming.map((group) => (
             <div key={group.date}>
@@ -650,7 +780,7 @@ export function CalendarView({
                     <div className="min-w-0">
                       <div className="break-words text-sm font-medium text-stone-900">{entry.title}</div>
                       <div className="mt-1 text-xs text-stone-500">
-                        {entry.status === 'planned' ? '待办' : entry.status === 'done' ? '已完成' : '已取消'}
+                        {entryStatusLabel(entry.status)}
                       </div>
                     </div>
                     <span className="shrink-0 text-xs text-stone-400">{formatCalendarTimeLabel(entry.startTime)}</span>
@@ -660,7 +790,7 @@ export function CalendarView({
             </div>
           ))
         ) : (
-          <p className="text-sm text-stone-400">未来几天还没有安排。</p>
+          <p className="text-sm text-stone-400">{copy.upcomingEmpty}</p>
         )}
       </div>
     </section>
@@ -672,8 +802,8 @@ export function CalendarView({
         <>
           <div className="flex items-center justify-between gap-3">
             <div>
-              <p className="text-[11px] font-semibold tracking-[0.18em] text-stone-400">侧边栏</p>
-              <h3 className="mt-1 text-base font-semibold text-stone-900">安排与未来</h3>
+              <p className="text-[11px] font-semibold tracking-[0.18em] text-stone-400">{copy.sidebarLabel}</p>
+              <h3 className="mt-1 text-base font-semibold text-stone-900">{copy.sidebarTitle}</h3>
             </div>
             <div className="flex items-center gap-4 text-sm" data-testid="calendar-sidebar-tablist">
               <button
@@ -682,7 +812,7 @@ export function CalendarView({
                 aria-pressed={sidebarTab === 'create'}
                 className={`border-b pb-1 transition ${sidebarTab === 'create' ? 'border-stone-900 text-stone-900' : 'border-transparent text-stone-400 hover:text-stone-700'}`}
               >
-                新建安排
+                {copy.sidebarCreate}
               </button>
               <button
                 type="button"
@@ -690,7 +820,7 @@ export function CalendarView({
                 aria-pressed={sidebarTab === 'upcoming'}
                 className={`border-b pb-1 transition ${sidebarTab === 'upcoming' ? 'border-stone-900 text-stone-900' : 'border-transparent text-stone-400 hover:text-stone-700'}`}
               >
-                未来安排
+                {copy.sidebarUpcoming}
               </button>
             </div>
           </div>
@@ -701,8 +831,8 @@ export function CalendarView({
       ) : (
         <>
           <div>
-            <p className="text-[11px] font-semibold tracking-[0.18em] text-stone-400">侧边栏</p>
-            <h3 className="mt-1 text-base font-semibold text-stone-900">安排与未来</h3>
+            <p className="text-[11px] font-semibold tracking-[0.18em] text-stone-400">{copy.sidebarLabel}</p>
+            <h3 className="mt-1 text-base font-semibold text-stone-900">{copy.sidebarTitle}</h3>
           </div>
           <div className="border-t border-stone-200 pt-6">{createSection}</div>
           <div className="border-t border-stone-200 pt-6">{upcomingSection}</div>
@@ -715,7 +845,7 @@ export function CalendarView({
     <section className="min-w-0 shrink-0 border-b border-stone-200 pb-6">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="min-w-0">
-          <p className="text-[11px] font-semibold tracking-[0.18em] text-stone-400">全年热力图</p>
+          <p className="text-[11px] font-semibold tracking-[0.18em] text-stone-400">{copy.heatmapTitle}</p>
         </div>
 
         <div className="flex flex-wrap items-center gap-4 text-sm">
@@ -733,7 +863,7 @@ export function CalendarView({
       </div>
 
       {heatmapQuery.isPending ? (
-        <div className="mt-4 py-10 text-sm text-stone-400">正在加载年度热力图…</div>
+        <div className="mt-4 py-10 text-sm text-stone-400">{copy.heatmapLoading}</div>
       ) : visibleHeatmapColumns.length > 0 ? (
         <div
           ref={heatmapContainerRef}
@@ -745,7 +875,7 @@ export function CalendarView({
           <div className="flex min-w-0 items-start gap-3">
             {showWeekLabels ? (
               <div className="flex shrink-0 flex-col pt-8 text-[11px] text-stone-500">
-                {['Mon', '', 'Wed', '', 'Fri', '', ''].map((label, index) => (
+                {copy.weekLabels.map((label, index) => (
                   <div
                     key={`${label}-${index}`}
                     className="flex items-center pr-2 leading-none"
@@ -785,7 +915,9 @@ export function CalendarView({
                       }
 
                       const selected = day.date === selectedDate
-                      const dayLabel = `${formatCalendarDateLabel(day.date)} · ${day.blockCount} 个块`
+                      const dayLabel = language === 'en'
+                        ? `${formatCalendarDateLabel(day.date)} · ${day.blockCount} ${copy.blocksSuffix}`
+                        : `${formatCalendarDateLabel(day.date)} · ${day.blockCount} ${copy.blocksSuffix}`
 
                       return (
                         <button
@@ -838,34 +970,34 @@ export function CalendarView({
           </div>
         </div>
       ) : (
-        <div className="mt-6 py-10 text-sm leading-6 text-stone-500">当前年份还没有可展示的日历记录。</div>
+        <div className="mt-6 py-10 text-sm leading-6 text-stone-500">{copy.heatmapEmpty}</div>
       )}
 
       <div className="mt-4 flex flex-wrap items-center gap-x-5 gap-y-2 text-xs text-stone-500">
         {heatmapDisplayMode === 'focused-window' ? (
           <div className="flex items-center gap-2 text-stone-400">
-            <span className="rounded-full border border-stone-200 px-2.5 py-1">已聚焦当前日期附近</span>
+            <span className="rounded-full border border-stone-200 px-2.5 py-1">{copy.heatmapFocused}</span>
           </div>
         ) : null}
         <div className="flex items-center gap-2">
-          <span>密度</span>
-          <span>Less</span>
+          <span>{copy.density}</span>
+          <span>{copy.less}</span>
           {INTENSITY_CLASSES.map((className) => (
             <span key={className} className={`h-4 w-4 rounded-[4px] border border-black/5 ${className}`} />
           ))}
-          <span>More</span>
+          <span>{copy.more}</span>
         </div>
         <div className="flex items-center gap-2">
           <span className="relative block h-4 w-4 rounded-[4px] border border-stone-700/70 bg-stone-100">
             <span className="absolute bottom-[2px] left-1/2 h-[2px] w-[8px] -translate-x-1/2 rounded-full bg-stone-900/85" />
           </span>
-          <span>已有安排</span>
+          <span>{copy.hasEntries}</span>
         </div>
         <div className="flex items-center gap-2">
           <span className="relative block h-4 w-4 rounded-[4px] border border-black/5 bg-stone-100">
             <span className="absolute right-[1px] top-[1px] h-[5px] w-[5px] rounded-full border border-white/85 bg-amber-500" />
           </span>
-          <span>AI 建议</span>
+          <span>{copy.hasSuggestions}</span>
         </div>
       </div>
     </section>
@@ -875,10 +1007,10 @@ export function CalendarView({
     <section className="min-w-0 shrink-0 pt-6">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
         <div className="min-w-0">
-          <p className="text-[11px] font-semibold tracking-[0.18em] text-stone-400">当天详情</p>
+          <p className="text-[11px] font-semibold tracking-[0.18em] text-stone-400">{copy.detailLabel}</p>
           <h3 className="mt-2 break-words text-2xl font-semibold text-stone-900">{formatCalendarDateLabel(selectedDate)}</h3>
         </div>
-        <p className="text-sm text-stone-400">当前 {activeDetailSection.title} · {activeDetailSection.count} 项</p>
+        <p className="text-sm text-stone-400">{copy.detailCurrent.replace('{{title}}', activeDetailSection.title).replace('{{count}}', `${activeDetailSection.count}`)}</p>
       </div>
 
       <div className="mt-4 flex flex-wrap items-center gap-5 border-b border-stone-200 pb-3 text-sm">
@@ -925,7 +1057,7 @@ export function CalendarView({
           {layoutMode === 'single-pane' ? (
             <div className="mb-5 flex items-center justify-between border-b border-stone-200 pb-4">
               <div>
-                <p className="text-[11px] font-semibold tracking-[0.18em] text-stone-400">侧边栏</p>
+                <p className="text-[11px] font-semibold tracking-[0.18em] text-stone-400">{copy.sidebarLabel}</p>
               </div>
               <button
                 type="button"
@@ -933,7 +1065,7 @@ export function CalendarView({
                 onClick={() => setSidebarOpen((current) => !current)}
                 className="rounded-lg border border-stone-200 px-3 py-2 text-sm font-medium text-stone-700 transition hover:bg-stone-50"
               >
-                {sidebarOpen ? '收起侧边栏' : '打开侧边栏'}
+                {sidebarOpen ? copy.collapseSidebar : copy.openSidebar}
               </button>
             </div>
           ) : null}
@@ -965,6 +1097,7 @@ function EditableEntryCard({
   entry: CalendarEntry
   onSaved: () => Promise<void>
 }) {
+  const { language } = useI18n()
   const { toast } = useToast()
   const [draft, setDraft] = useState<CalendarEntryDraft>({
     title: entry.title,
@@ -976,6 +1109,42 @@ function EditableEntryCard({
   const [status, setStatus] = useState(entry.status)
   const [saving, setSaving] = useState(false)
   const [removing, setRemoving] = useState(false)
+  const copy = {
+    zh: {
+      updateSuccess: '安排已更新。',
+      updateFailed: '更新安排失败。',
+      removeSuccess: '安排已删除。',
+      removeFailed: '删除安排失败。',
+      planned: '待办',
+      done: '已完成',
+      canceled: '已取消',
+      allDay: '全天',
+      notes: '备注',
+      manual: '手动创建',
+      accepted: 'AI 建议已采纳',
+      saving: '保存中…',
+      save: '保存',
+      removing: '删除中…',
+      remove: '删除',
+    },
+    en: {
+      updateSuccess: 'Entry updated.',
+      updateFailed: 'Failed to update entry.',
+      removeSuccess: 'Entry removed.',
+      removeFailed: 'Failed to remove entry.',
+      planned: 'Planned',
+      done: 'Done',
+      canceled: 'Canceled',
+      allDay: 'All day',
+      notes: 'Notes',
+      manual: 'Created manually',
+      accepted: 'Accepted AI suggestion',
+      saving: 'Saving…',
+      save: 'Save',
+      removing: 'Removing…',
+      remove: 'Remove',
+    },
+  }[language]
 
   useEffect(() => {
     setDraft({
@@ -997,9 +1166,9 @@ function EditableEntryCard({
         status,
       })
       await onSaved()
-      toast('success', '安排已更新。')
+      toast('success', copy.updateSuccess)
     } catch (reason) {
-      toast('error', reason instanceof Error ? reason.message : '更新安排失败。')
+      toast('error', reason instanceof Error ? reason.message : copy.updateFailed)
     } finally {
       setSaving(false)
     }
@@ -1011,9 +1180,9 @@ function EditableEntryCard({
     try {
       await changbu.calendar.removeEntry(entry.id)
       await onSaved()
-      toast('success', '安排已删除。')
+      toast('success', copy.removeSuccess)
     } catch (reason) {
-      toast('error', reason instanceof Error ? reason.message : '删除安排失败。')
+      toast('error', reason instanceof Error ? reason.message : copy.removeFailed)
     } finally {
       setRemoving(false)
     }
@@ -1046,9 +1215,9 @@ function EditableEntryCard({
             onChange={(event) => setStatus(event.target.value as CalendarEntry['status'])}
             className="w-full rounded-lg border border-stone-200 bg-stone-50 px-3 py-2 text-sm text-stone-900 outline-none transition focus:border-stone-400 focus:bg-white"
           >
-            <option value="planned">待办</option>
-            <option value="done">已完成</option>
-            <option value="canceled">已取消</option>
+            <option value="planned">{copy.planned}</option>
+            <option value="done">{copy.done}</option>
+            <option value="canceled">{copy.canceled}</option>
           </select>
         </div>
         <label className="flex items-center gap-2 text-sm text-stone-600">
@@ -1058,17 +1227,17 @@ function EditableEntryCard({
             onChange={(event) => setDraft((current) => ({ ...current, allDay: event.target.checked, startTime: event.target.checked ? '' : current.startTime }))}
             className="h-4 w-4 rounded border-stone-300"
           />
-          全天
+          {copy.allDay}
         </label>
         <textarea
           value={draft.notes}
           onChange={(event) => setDraft((current) => ({ ...current, notes: event.target.value }))}
           rows={2}
-          placeholder="备注"
+          placeholder={copy.notes}
           className="w-full rounded-lg border border-stone-200 bg-stone-50 px-3 py-2 text-sm text-stone-900 outline-none transition focus:border-stone-400 focus:bg-white"
         />
         <div className="flex flex-wrap items-center justify-between gap-2">
-          <span className="text-xs text-stone-400">{entry.source === 'manual' ? '手动创建' : 'AI 建议已采纳'}</span>
+          <span className="text-xs text-stone-400">{entry.source === 'manual' ? copy.manual : copy.accepted}</span>
           <div className="flex gap-2">
             <button
               type="button"
@@ -1078,7 +1247,7 @@ function EditableEntryCard({
               disabled={saving}
               className="rounded-lg bg-stone-900 px-3 py-2 text-sm font-medium text-white transition hover:bg-stone-800 disabled:opacity-50"
             >
-              {saving ? '保存中…' : '保存'}
+              {saving ? copy.saving : copy.save}
             </button>
             <button
               type="button"
@@ -1088,7 +1257,7 @@ function EditableEntryCard({
               disabled={removing}
               className="rounded-lg border border-stone-200 bg-white px-3 py-2 text-sm font-medium text-stone-700 transition hover:bg-stone-50 disabled:opacity-50"
             >
-              {removing ? '删除中…' : '删除'}
+              {removing ? copy.removing : copy.remove}
             </button>
           </div>
         </div>
@@ -1104,6 +1273,7 @@ function SuggestionCard({
   suggestion: CalendarSuggestion
   onUpdated: () => Promise<void>
 }) {
+  const { language } = useI18n()
   const { toast } = useToast()
   const [draft, setDraft] = useState<CalendarEntryDraft>({
     title: suggestion.title,
@@ -1113,6 +1283,36 @@ function SuggestionCard({
     notes: suggestion.notes ?? '',
   })
   const [busy, setBusy] = useState(false)
+  const copy = {
+    zh: {
+      acceptSuccess: 'AI 建议已采纳。',
+      acceptFailed: '采纳建议失败。',
+      dismissSuccess: 'AI 建议已忽略。',
+      dismissFailed: '忽略建议失败。',
+      sourceBlock: '来自块',
+      confidence: '置信度',
+      allDay: '全天安排',
+      notes: '备注',
+      evidence: '证据',
+      busy: '处理中…',
+      accept: '采纳为正式安排',
+      dismiss: '忽略',
+    },
+    en: {
+      acceptSuccess: 'AI suggestion accepted.',
+      acceptFailed: 'Failed to accept suggestion.',
+      dismissSuccess: 'AI suggestion dismissed.',
+      dismissFailed: 'Failed to dismiss suggestion.',
+      sourceBlock: 'From block',
+      confidence: 'Confidence',
+      allDay: 'All-day entry',
+      notes: 'Notes',
+      evidence: 'Evidence',
+      busy: 'Working…',
+      accept: 'Accept as entry',
+      dismiss: 'Dismiss',
+    },
+  }[language]
 
   useEffect(() => {
     setDraft({
@@ -1130,9 +1330,9 @@ function SuggestionCard({
     try {
       await changbu.calendar.acceptSuggestion(suggestion.id, buildEntryPayload(draft))
       await onUpdated()
-      toast('success', 'AI 建议已采纳。')
+      toast('success', copy.acceptSuccess)
     } catch (reason) {
-      toast('error', reason instanceof Error ? reason.message : '采纳建议失败。')
+      toast('error', reason instanceof Error ? reason.message : copy.acceptFailed)
     } finally {
       setBusy(false)
     }
@@ -1144,9 +1344,9 @@ function SuggestionCard({
     try {
       await changbu.calendar.dismissSuggestion(suggestion.id)
       await onUpdated()
-      toast('success', 'AI 建议已忽略。')
+      toast('success', copy.dismissSuccess)
     } catch (reason) {
-      toast('error', reason instanceof Error ? reason.message : '忽略建议失败。')
+      toast('error', reason instanceof Error ? reason.message : copy.dismissFailed)
     } finally {
       setBusy(false)
     }
@@ -1156,8 +1356,8 @@ function SuggestionCard({
     <div className="py-4 first:pt-0">
       <div className="border-l-2 border-amber-400 pl-4">
         <div className="mb-3 flex items-center justify-between gap-3 text-xs text-amber-700">
-          <span className="font-medium uppercase tracking-[0.18em]">来自块 {suggestion.sourceBlockId.slice(0, 8)}</span>
-          <span>置信度 {Math.round(suggestion.confidence * 100)}%</span>
+          <span className="font-medium uppercase tracking-[0.18em]">{copy.sourceBlock} {suggestion.sourceBlockId.slice(0, 8)}</span>
+          <span>{copy.confidence} {Math.round(suggestion.confidence * 100)}%</span>
         </div>
         <div className="grid gap-3">
           <input
@@ -1187,16 +1387,16 @@ function SuggestionCard({
               onChange={(event) => setDraft((current) => ({ ...current, allDay: event.target.checked, startTime: event.target.checked ? '' : current.startTime }))}
               className="h-4 w-4 rounded border-amber-300"
             />
-            全天安排
+            {copy.allDay}
           </label>
           <textarea
             value={draft.notes}
             onChange={(event) => setDraft((current) => ({ ...current, notes: event.target.value }))}
             rows={2}
-            placeholder="备注"
+            placeholder={copy.notes}
             className="w-full rounded-lg border border-amber-200 bg-amber-50/40 px-3 py-2 text-sm text-stone-900 outline-none transition focus:border-amber-400 focus:bg-white"
           />
-          {suggestion.evidenceText ? <p className="text-xs leading-5 text-amber-800">证据：{suggestion.evidenceText}</p> : null}
+          {suggestion.evidenceText ? <p className="text-xs leading-5 text-amber-800">{copy.evidence}: {suggestion.evidenceText}</p> : null}
           <div className="flex gap-2">
             <button
               type="button"
@@ -1206,7 +1406,7 @@ function SuggestionCard({
               disabled={busy}
               className="rounded-lg bg-amber-600 px-3 py-2 text-sm font-medium text-white transition hover:bg-amber-500 disabled:opacity-50"
             >
-              {busy ? '处理中…' : '采纳为正式安排'}
+              {busy ? copy.busy : copy.accept}
             </button>
             <button
               type="button"
@@ -1216,7 +1416,7 @@ function SuggestionCard({
               disabled={busy}
               className="rounded-lg border border-amber-200 bg-white px-3 py-2 text-sm font-medium text-amber-800 transition hover:bg-amber-50 disabled:opacity-50"
             >
-              忽略
+              {copy.dismiss}
             </button>
           </div>
         </div>

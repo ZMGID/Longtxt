@@ -3,12 +3,14 @@ import { useCallback, useEffect, useState } from 'react'
 import type { ExternalAccessStatus } from '../../shared/types'
 import { changbu } from '../lib/changbu'
 import { useToast } from '../components/toast-context'
+import { useI18n } from '../i18n/useI18n'
 
 function getErrorMessage(error: unknown, fallback: string): string {
   return error instanceof Error ? error.message : fallback
 }
 
 export function useExternalAccess() {
+  const { language } = useI18n()
   const { toast } = useToast()
   const [status, setStatus] = useState<ExternalAccessStatus | null>(null)
   const [busyAction, setBusyAction] = useState<'enable' | 'generate' | 'disable' | 'open' | 'refresh' | null>(null)
@@ -40,7 +42,7 @@ export function useExternalAccess() {
         return nextStatus
       } catch (error) {
         if (!silent) {
-          toast('error', getErrorMessage(error, '读取外部接入状态失败。'))
+          toast('error', getErrorMessage(error, language === 'en' ? 'Failed to read external access status.' : '读取外部接入状态失败。'))
         }
 
         return null
@@ -50,7 +52,7 @@ export function useExternalAccess() {
         }
       }
     },
-    [busyAction, toast],
+    [busyAction, language, toast],
   )
 
   useEffect(() => {
@@ -91,13 +93,13 @@ export function useExternalAccess() {
     try {
       const nextStatus = await changbu.settings.enableExternalAccess()
       setStatus(nextStatus)
-      toast('success', '已启用外部接入。')
+      toast('success', language === 'en' ? 'External access enabled.' : '已启用外部接入。')
     } catch (error) {
-      toast('error', getErrorMessage(error, '启用外部接入失败。'))
+      toast('error', getErrorMessage(error, language === 'en' ? 'Failed to enable external access.' : '启用外部接入失败。'))
     } finally {
       setBusyAction(null)
     }
-  }, [busyAction, toast])
+  }, [busyAction, language, toast])
 
   const generate = useCallback(async (): Promise<void> => {
     if (busyAction) {
@@ -109,13 +111,13 @@ export function useExternalAccess() {
     try {
       const nextStatus = await changbu.settings.generateExternalAccessBundle()
       setStatus(nextStatus)
-      toast('success', '接入包已生成到长布本地目录。')
+      toast('success', language === 'en' ? 'Bundle generated to local Changbu directory.' : '接入包已生成到长布本地目录。')
     } catch (error) {
-      toast('error', getErrorMessage(error, '生成接入包失败。'))
+      toast('error', getErrorMessage(error, language === 'en' ? 'Failed to generate bundle.' : '生成接入包失败。'))
     } finally {
       setBusyAction(null)
     }
-  }, [busyAction, toast])
+  }, [busyAction, language, toast])
 
   const disable = useCallback(async (): Promise<void> => {
     if (busyAction) {
@@ -127,13 +129,13 @@ export function useExternalAccess() {
     try {
       const nextStatus = await changbu.settings.disableExternalAccess()
       setStatus(nextStatus)
-      toast('success', '已停用外部接入。')
+      toast('success', language === 'en' ? 'External access disabled.' : '已停用外部接入。')
     } catch (error) {
-      toast('error', getErrorMessage(error, '停用外部接入失败。'))
+      toast('error', getErrorMessage(error, language === 'en' ? 'Failed to disable external access.' : '停用外部接入失败。'))
     } finally {
       setBusyAction(null)
     }
-  }, [busyAction, toast])
+  }, [busyAction, language, toast])
 
   const openDirectory = useCallback(async (): Promise<void> => {
     if (busyAction) {
@@ -144,13 +146,13 @@ export function useExternalAccess() {
 
     try {
       await changbu.settings.openExternalAccessDirectory()
-      toast('success', '已打开接入目录。')
+      toast('success', language === 'en' ? 'Opened external access directory.' : '已打开接入目录。')
     } catch (error) {
-      toast('error', getErrorMessage(error, '打开接入目录失败。'))
+      toast('error', getErrorMessage(error, language === 'en' ? 'Failed to open external access directory.' : '打开接入目录失败。'))
     } finally {
       setBusyAction(null)
     }
-  }, [busyAction, toast])
+  }, [busyAction, language, toast])
 
   return {
     externalAccessStatus: status,

@@ -169,4 +169,28 @@ describe('external access integration', () => {
     expect(status.issues).toContain('CLI 包装脚本仍指向旧的长布可执行文件，请重新生成。')
     expect(status.issues).toContain('CLI 包装脚本与当前长布可执行文件路径不一致，请重新生成。')
   })
+
+  it('generates english guides and status output when ui language is english', async () => {
+    const { context, settingsDirectory } = makeContext()
+    await context.setSetting('ui_settings', JSON.stringify({
+      showMiniTimeline: true,
+      language: 'en',
+    }))
+
+    const enabledStatus = await context.setupExternalAccess()
+    expect(enabledStatus.enabled).toBe(true)
+    expect(enabledStatus.searchCommandExample).toContain('search "server info" --limit 5 --json')
+
+    const integrationReadmePath = join(settingsDirectory, 'external-access', 'README.md')
+    const agentGuidePath = join(settingsDirectory, 'external-access', 'guides', 'AGENTS.md')
+    const skillPath = join(settingsDirectory, 'external-access', 'adapters', 'claude-code', 'changbu-notes', 'SKILL.md')
+
+    const integrationReadme = readFileSync(integrationReadmePath, 'utf8')
+    const agentGuide = readFileSync(agentGuidePath, 'utf8')
+    const skillContent = readFileSync(skillPath, 'utf8')
+
+    expect(integrationReadme).toContain('Changbu External Access')
+    expect(agentGuide).toContain('Notes Integration')
+    expect(skillContent).toContain('search "server info" --limit 5 --json')
+  })
 })

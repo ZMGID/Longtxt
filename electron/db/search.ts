@@ -115,7 +115,7 @@ function searchByFts(db: Database.Database, query: string, limit: number, allowe
         `
           SELECT id
           FROM blocks
-          WHERE content LIKE ? ESCAPE '|'
+          WHERE search_text LIKE ? ESCAPE '|'
           ${fallbackAllowed.sql}
           ORDER BY updated_at DESC
           LIMIT ?

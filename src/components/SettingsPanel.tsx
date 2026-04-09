@@ -361,19 +361,19 @@ function TokenUsagePanel({
         <div className="text-[11px] font-medium text-stone-400">{hasUsage ? (language === 'en' ? `${formatCompactStat(normalizedUsage.requestCount, language)} requests` : `${formatCompactStat(normalizedUsage.requestCount, language)} 次请求`) : (language === 'en' ? 'No calls yet' : '暂无调用')}</div>
       </div>
       <div className="grid grid-cols-2 gap-px bg-stone-200">
-        <div className="bg-[#faf8f4] px-3 py-2.5">
+        <div className="bg-white px-3 py-2.5">
           <div className="text-[10px] font-semibold uppercase tracking-[0.16em] text-stone-400">{language === 'en' ? 'REQUESTS' : '请求'}</div>
           <div className="mt-1 text-[18px] font-semibold tracking-[-0.02em] text-stone-900">{formatCompactStat(normalizedUsage.requestCount, language)}</div>
         </div>
-        <div className="bg-[#faf8f4] px-3 py-2.5">
+        <div className="bg-white px-3 py-2.5">
           <div className="text-[10px] font-semibold uppercase tracking-[0.16em] text-stone-400">Prompt</div>
           <div className="mt-1 text-[18px] font-semibold tracking-[-0.02em] text-stone-900">{formatCompactStat(normalizedUsage.promptTokens, language)}</div>
         </div>
-        <div className="bg-[#faf8f4] px-3 py-2.5">
+        <div className="bg-white px-3 py-2.5">
           <div className="text-[10px] font-semibold uppercase tracking-[0.16em] text-stone-400">Completion</div>
           <div className="mt-1 text-[18px] font-semibold tracking-[-0.02em] text-stone-900">{formatCompactStat(normalizedUsage.completionTokens, language)}</div>
         </div>
-        <div className="bg-[#faf8f4] px-3 py-2.5">
+        <div className="bg-white px-3 py-2.5">
           <div className="text-[10px] font-semibold uppercase tracking-[0.16em] text-stone-400">Total</div>
           <div className="mt-1 text-[18px] font-semibold tracking-[-0.02em] text-stone-900">{formatCompactStat(normalizedUsage.totalTokens, language)}</div>
         </div>
@@ -1508,8 +1508,8 @@ export function SettingsPanel({
   }
 
   return (
-    <section className="flex h-full min-h-0 min-w-0 border-t border-stone-200 bg-[#f7f5f2] text-stone-900">
-      <aside className="w-[250px] shrink-0 border-r border-stone-200 bg-[#f6f4f1] px-4 pb-6 pt-5">
+    <section className="flex h-full min-h-0 min-w-0 border-t border-stone-200 bg-white text-stone-900" data-testid="settings-panel">
+      <aside className="w-[250px] shrink-0 border-r border-stone-200 bg-white px-4 pb-6 pt-5" data-testid="settings-sidebar">
         <div className="space-y-6">
           {navGroups.map((group) => (
             <div key={group.title}>

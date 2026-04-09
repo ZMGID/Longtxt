@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from 'react'
 import { Virtuoso, type VirtuosoHandle } from 'react-virtuoso'
 
 import type { Block, NotebookSummary, TagSuggestion } from '../../shared/types'
+import { useI18n } from '../i18n/useI18n'
 import type { BlockListChangeHint } from '../lib/blockListCache'
 import { getActiveMiniTimelineGroupKey } from '../lib/miniTimeline'
 import { formatDateKeyLabel, formatLocalDateKey } from '../lib/format'
@@ -61,21 +62,27 @@ export function Timeline({
   onActiveDateKeyChange,
   blockChangeHint = { type: 'reset' },
 }: TimelineProps) {
+  const { t, language } = useI18n()
   const virtuosoRef = useRef<VirtuosoHandle | null>(null)
   const previousBlocksRef = useRef<Block[] | null>(null)
-  const miniTimelineStateRef = useRef(buildMiniTimelineDerivedState(blocks))
+  const previousMiniTimelineLanguageRef = useRef(language)
+  const miniTimelineStateRef = useRef(buildMiniTimelineDerivedState(blocks, language))
   const [topVisibleIndex, setTopVisibleIndex] = useState(0)
   const [allowMiniTimeline, setAllowMiniTimeline] = useState(() =>
     typeof window === 'undefined' ? true : window.innerWidth >= MINI_TIMELINE_COLLAPSE_BREAKPOINT,
   )
 
-  if (previousBlocksRef.current !== blocks) {
-    miniTimelineStateRef.current = reconcileMiniTimelineDerivedState(
-      previousBlocksRef.current ? miniTimelineStateRef.current : null,
-      blocks,
-      blockChangeHint,
-    )
+  if (previousBlocksRef.current !== blocks || previousMiniTimelineLanguageRef.current !== language) {
+    miniTimelineStateRef.current = previousMiniTimelineLanguageRef.current !== language
+      ? buildMiniTimelineDerivedState(blocks, language)
+      : reconcileMiniTimelineDerivedState(
+        previousBlocksRef.current ? miniTimelineStateRef.current : null,
+        blocks,
+        blockChangeHint,
+        language,
+      )
     previousBlocksRef.current = blocks
+    previousMiniTimelineLanguageRef.current = language
   }
 
   const miniTimelineState = miniTimelineStateRef.current
@@ -136,7 +143,7 @@ export function Timeline({
   if (loading) {
     return (
       <div className="flex min-h-[400px] items-center justify-center rounded-lg border border-dashed border-stone-200 bg-white/70">
-        <p className="text-sm text-stone-400">加载中…</p>
+        <p className="text-sm text-stone-400">{t('timeline.loading')}</p>
       </div>
     )
   }
@@ -146,7 +153,7 @@ export function Timeline({
       <div className="space-y-2">
         {composer ? composer : null}
         <div className="flex min-h-[300px] items-center justify-center rounded-lg border border-dashed border-stone-200 bg-white/70">
-          <p className="text-sm text-stone-400">还没有块，从上面开始写吧。</p>
+          <p className="text-sm text-stone-400">{t('timeline.empty')}</p>
         </div>
       </div>
     )
@@ -214,7 +221,7 @@ export function Timeline({
             <div className="pb-2">
               {miniTimelineGroupByStartIndex.get(index) ? (
                 <div className="mb-2 border-b border-stone-200 pb-2 pt-1">
-                  <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-stone-400">日期</div>
+                  <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-stone-400">{t('timeline.date')}</div>
                   <div className="mt-1 text-sm font-semibold text-stone-900">
                     {formatDateKeyLabel(miniTimelineGroupByStartIndex.get(index)!.key, { weekday: true })}
                   </div>
@@ -253,11 +260,11 @@ export function Timeline({
                     disabled={loadingMore}
                     className="rounded border border-stone-200 bg-white/70 px-4 py-2 text-sm text-stone-600 transition duration-150 hover:bg-stone-50 active:scale-[0.97] disabled:opacity-50"
                   >
-                    {loadingMore ? '加载中…' : '加载更多'}
+                    {loadingMore ? t('timeline.loading') : t('timeline.loadMore')}
                   </button>
                 </div>
               ) : (
-                <div className="py-6 text-center text-xs text-stone-400">已显示全部块</div>
+                <div className="py-6 text-center text-xs text-stone-400">{t('timeline.allShown')}</div>
               ),
           }}
         />

@@ -3,6 +3,7 @@ import { useEffect, useRef } from 'react'
 import { useInfiniteQuery, useQuery, useQueryClient } from '@tanstack/react-query'
 
 import type { BlockBatchRemoveResult, BlockListCursor, BlockListPage } from '../../shared/types'
+import { getCurrentLanguage } from '../i18n/locale'
 import { changbu } from '../lib/changbu'
 import {
   buildFlatBlockListDataFromInfiniteData,
@@ -109,7 +110,7 @@ export function useBlocks() {
     loadingInitial: query.isPending,
     loadingMore: query.isFetchingNextPage,
     hasMore: Boolean(query.hasNextPage),
-    error: query.error instanceof Error ? query.error.message : query.error ? '加载块列表失败。' : null,
+    error: query.error instanceof Error ? query.error.message : query.error ? (getCurrentLanguage() === 'en' ? 'Failed to load blocks.' : '加载块列表失败。') : null,
     createBlock,
     updateBlock,
     removeBlock,

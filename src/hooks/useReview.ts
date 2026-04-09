@@ -5,15 +5,16 @@ import type { AiInsightHistoryRecord, AiInsightMethodId, AiInsightSnapshotInput,
 import { changbu } from '../lib/changbu'
 import { queryKeys } from '../lib/queryKeys'
 
-export function useDailyReview(dateKey: string, requestVersion: number, forceRefresh = false, enabled = true) {
+export function useDailyReview(language: string, dateKey: string, requestVersion: number, forceRefresh = false, enabled = true) {
   return useQuery({
-    queryKey: queryKeys.reviewDaily(dateKey, requestVersion),
+    queryKey: queryKeys.reviewDaily(language, dateKey, requestVersion),
     queryFn: () => changbu.review.generateDaily(dateKey, forceRefresh),
     enabled: enabled && Boolean(dateKey),
   })
 }
 
 export function useAiInsight(
+  language: string,
   methodId: AiInsightMethodId,
   dateKey: string,
   requestVersion: number,
@@ -21,15 +22,15 @@ export function useAiInsight(
   enabled = true,
 ) {
   return useQuery({
-    queryKey: queryKeys.reviewInsight(methodId, dateKey, requestVersion),
+    queryKey: queryKeys.reviewInsight(language, methodId, dateKey, requestVersion),
     queryFn: () => changbu.review.generateInsight(methodId, dateKey, forceRefresh),
     enabled: enabled && Boolean(methodId) && Boolean(dateKey),
   })
 }
 
-export function useAiInsightHistory(methodId: AiInsightMethodId | null = null, enabled = true, limit = 30) {
+export function useAiInsightHistory(language: string, methodId: AiInsightMethodId | null = null, enabled = true, limit = 30) {
   return useQuery<AiInsightHistoryRecord[]>({
-    queryKey: queryKeys.reviewInsightHistory(methodId, limit),
+    queryKey: queryKeys.reviewInsightHistory(language, methodId, limit),
     queryFn: () => changbu.review.listInsightHistory(methodId, limit),
     enabled,
   })

@@ -1,4 +1,5 @@
 import type { Block, CalendarDaySummary } from '../../shared/types'
+import { formatDateByLanguage, getCurrentLanguage } from '../i18n/locale'
 import { buildCalendarHeatmapColumns, type CalendarHeatmapColumn } from './calendar'
 import { formatLocalDateKey } from './format'
 
@@ -164,5 +165,13 @@ export function buildTimelineHeatmapColumns(
 
 export function formatTimelineMonthTitle(monthDateKey: string): string {
   const date = parseDateKey(monthDateKey)
+
+  if (getCurrentLanguage() === 'en') {
+    return formatDateByLanguage(date, {
+      year: 'numeric',
+      month: 'short',
+    })
+  }
+
   return `${date.getMonth() + 1}月 ${date.getFullYear()}`
 }

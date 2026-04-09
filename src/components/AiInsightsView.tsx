@@ -1,11 +1,17 @@
 import { useQueryClient } from '@tanstack/react-query'
 import { useEffect, useMemo, useRef, useState } from 'react'
 
-import { AI_INSIGHT_METHODS, getAiInsightMethodDefinition, isAiInsightMethodId, type AiInsightIconKey } from '../../shared/aiInsights'
+import {
+  getAiInsightMethodDefinition,
+  getAiInsightMethodDefinitions,
+  isAiInsightMethodId,
+  type AiInsightIconKey,
+} from '../../shared/aiInsights'
 import type { AiInsightHistoryRecord, AiInsightMethodId, AiInsightResult } from '../../shared/types'
 import { changbu } from '../lib/changbu'
 import { useAppMeta } from '../hooks/useAppMeta'
 import { useAiInsight, useAiInsightHistory, useDocGenerationSettings, useSaveAiInsightSnapshot } from '../hooks/useReview'
+import { useI18n } from '../i18n/useI18n'
 import { formatDateKeyLabel, formatTimeLabel } from '../lib/format'
 import { queryKeys } from '../lib/queryKeys'
 import { shiftDateKey } from '../lib/timelineReview'
@@ -37,8 +43,8 @@ function formatRangeLabel(start: string, end: string): string {
   return `${formatDateKeyLabel(start)} — ${formatDateKeyLabel(end)}`
 }
 
-function getAiInsightMethodLabel(methodId: AiInsightMethodId): string {
-  return getAiInsightMethodDefinition(methodId)?.label ?? 'AI 洞察'
+function getAiInsightMethodLabel(methodId: AiInsightMethodId, language: 'zh' | 'en', fallbackLabel: string): string {
+  return getAiInsightMethodDefinition(methodId, language)?.label ?? fallbackLabel
 }
 
 function InsightIcon({ iconKey }: { iconKey: AiInsightIconKey }) {
@@ -71,12 +77,14 @@ function InsightIcon({ iconKey }: { iconKey: AiInsightIconKey }) {
 
 function InsightMethodButton({
   methodId,
+  language,
   onSelect,
 }: {
   methodId: AiInsightMethodId
+  language: 'zh' | 'en'
   onSelect: (methodId: AiInsightMethodId) => void
 }) {
-  const method = getAiInsightMethodDefinition(methodId)
+  const method = getAiInsightMethodDefinition(methodId, language)
 
   if (!method) {
     return null
@@ -125,6 +133,7 @@ function AiInsightSkeleton() {
 }
 
 export function AiInsightsView({ initialDateKey }: AiInsightsViewProps) {
+  const { language, t } = useI18n()
   const { toast } = useToast()
   const queryClient = useQueryClient()
   const metaQuery = useAppMeta()
@@ -152,6 +161,7 @@ export function AiInsightsView({ initialDateKey }: AiInsightsViewProps) {
   const streamOutputEnabled = docGenerationSettingsQuery.data?.streamOutput ?? true
   const effectiveMethodId = selectedMethodId ?? 'default-insight'
   const insightQuery = useAiInsight(
+    language,
     effectiveMethodId,
     initialDateKey,
     requestState.version,
@@ -159,7 +169,7 @@ export function AiInsightsView({ initialDateKey }: AiInsightsViewProps) {
     settingsResolved && Boolean(selectedMethodId) && !streamOutputEnabled,
   )
   const showingGlobalHistory = historyOpen && !selectedMethodId
-  const historyQuery = useAiInsightHistory(null, showingGlobalHistory, HISTORY_LIMIT)
+  const historyQuery = useAiInsightHistory(language, null, showingGlobalHistory, HISTORY_LIMIT)
   const saveSnapshotMutation = useSaveAiInsightSnapshot()
   const generatedResult = streamOutputEnabled ? streamState.result : insightQuery.data
   const currentResult = selectedMethodId ? generatedResult : null
@@ -170,10 +180,11 @@ export function AiInsightsView({ initialDateKey }: AiInsightsViewProps) {
     ? (currentResult?.mode ?? streamState.mode ?? metaQuery.data?.activeAiMode ?? 'mock')
     : (metaQuery.data?.activeAiMode ?? 'mock')
   const fallbackRangeStart = shiftDateKey(initialDateKey, -13)
+  const insightMethods = useMemo(() => getAiInsightMethodDefinitions(language), [language])
   const methodsInColumns = useMemo(() => [
-    AI_INSIGHT_METHODS.filter((_, index) => index % 2 === 0),
-    AI_INSIGHT_METHODS.filter((_, index) => index % 2 === 1),
-  ], [])
+    insightMethods.filter((_, index) => index % 2 === 0),
+    insightMethods.filter((_, index) => index % 2 === 1),
+  ], [insightMethods])
   const historyRecords = historyQuery.data ?? []
   const selectedHistoryRecord = showingGlobalHistory
     ? (historyRecords.find((record) => record.id === selectedHistoryId) ?? historyRecords[0] ?? null)
@@ -234,6 +245,24 @@ export function AiInsightsView({ initialDateKey }: AiInsightsViewProps) {
       queryKey: queryKeys.reviewInsightHistoryRoot(),
     })
   }, [currentResult, queryClient, selectedMethodId])
+
+  useEffect(() => {
+    activeRequestRef.current = {
+      requestId: null,
+      dateKey: initialDateKey,
+      methodId: selectedMethodId,
+    }
+    lastHistoryInvalidateKeyRef.current = null
+    setStreamState({
+      requestId: null,
+      content: '',
+      loading: false,
+      error: null,
+      result: null,
+      mode: null,
+    })
+    setRequestState((current) => ({ version: current.version + 1, forceRefresh: false }))
+  }, [language])
 
   useEffect(() => {
     if (!settingsResolved) {
@@ -299,7 +328,7 @@ export function AiInsightsView({ initialDateKey }: AiInsightsViewProps) {
           requestId: null,
           content: '',
           loading: false,
-          error: error instanceof Error ? error : new Error('AI 洞察生成失败。'),
+          error: error instanceof Error ? error : new Error(t('review.ai.generateFailed')),
           result: null,
           mode: null,
         })
@@ -348,7 +377,7 @@ export function AiInsightsView({ initialDateKey }: AiInsightsViewProps) {
           return {
             ...current,
             loading: false,
-            error: new Error(chunk.error ?? 'AI 洞察生成失败。'),
+            error: new Error(chunk.error ?? t('review.ai.generateFailed')),
             content: chunk.fullText ?? current.content,
             mode: chunk.mode,
           }
@@ -411,13 +440,13 @@ export function AiInsightsView({ initialDateKey }: AiInsightsViewProps) {
             return {
               ...current,
               loading: false,
-              error: error instanceof Error ? error : new Error('AI 洞察生成失败。'),
+              error: error instanceof Error ? error : new Error(t('review.ai.generateFailed')),
               content: chunk.fullText ?? current.content,
             }
           })
         })
     })
-  }, [streamOutputEnabled])
+  }, [streamOutputEnabled, t])
 
   function handleSelectMethod(methodId: AiInsightMethodId) {
     setSelectedMethodId(methodId)
@@ -462,15 +491,15 @@ export function AiInsightsView({ initialDateKey }: AiInsightsViewProps) {
         content: saveableInsight.content,
         blockIds: saveableInsight.blockIds,
       })
-      toast('success', '已保存为文档快照。')
+      toast('success', t('review.ai.snapshotSaved'))
     } catch (error) {
-      toast('error', error instanceof Error ? error.message : '保存快照失败。')
+      toast('error', error instanceof Error ? error.message : t('review.ai.snapshotSaveFailed'))
     }
   }
 
   function renderHistoryListItem(record: AiInsightHistoryRecord) {
     const selected = record.id === selectedHistoryRecord?.id
-    const methodLabel = getAiInsightMethodLabel(record.methodId)
+    const methodLabel = getAiInsightMethodLabel(record.methodId, language, t('review.ai.defaultLabel'))
 
     return (
       <button
@@ -496,19 +525,23 @@ export function AiInsightsView({ initialDateKey }: AiInsightsViewProps) {
         <div className={selected ? 'mt-2 text-[12px] leading-5 text-stone-300' : 'mt-2 text-[12px] leading-5 text-stone-500'}>
           {formatDateKeyLabel(record.date, { weekday: true })}
           {' · '}
-          {record.mode === 'live' ? 'Live AI' : 'Mock AI'}
-          {record.empty ? ' · 空结果' : ''}
+          {record.mode === 'live' ? t('review.common.modeLive') : t('review.common.modeMock')}
+          {record.empty ? ` · ${t('review.ai.emptyResult')}` : ''}
         </div>
       </button>
     )
   }
 
-  const headerEyebrow = showingGlobalHistory ? '历史洞察' : selectedMethodId ? '分析结果' : '分析库'
-  const headerTitle = showingGlobalHistory
-    ? 'AI 洞察历史'
+  const headerEyebrow = showingGlobalHistory
+    ? t('review.ai.historyEyebrow')
     : selectedMethodId
-      ? getAiInsightMethodLabel(selectedMethodId)
-      : '选择分析方法'
+      ? t('review.ai.resultEyebrow')
+      : t('review.ai.libraryEyebrow')
+  const headerTitle = showingGlobalHistory
+    ? t('review.ai.historyTitle')
+    : selectedMethodId
+      ? getAiInsightMethodLabel(selectedMethodId, language, t('review.ai.defaultLabel'))
+      : t('review.ai.selectMethod')
 
   return (
     <section className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden text-stone-900">
@@ -517,7 +550,7 @@ export function AiInsightsView({ initialDateKey }: AiInsightsViewProps) {
           <div className="min-w-0 flex-1">
             <div className="flex flex-wrap items-center gap-2 text-[11px] font-semibold uppercase tracking-[0.18em] text-stone-400">
               <span className={`rounded-full border px-2 py-1 text-[10px] tracking-[0.14em] ${displayedMode === 'live' ? 'border-emerald-200 text-emerald-700' : 'border-stone-200 text-stone-500'}`}>
-                {displayedMode === 'live' ? 'Live AI' : 'Mock AI'}
+                {displayedMode === 'live' ? t('review.common.modeLive') : t('review.common.modeMock')}
               </span>
               <span>{headerEyebrow}</span>
             </div>
@@ -526,27 +559,27 @@ export function AiInsightsView({ initialDateKey }: AiInsightsViewProps) {
               {showingGlobalHistory ? (
                 selectedHistoryRecord ? (
                   <>
-                    <span>{getAiInsightMethodLabel(selectedHistoryRecord.methodId)}</span>
-                    <span className="text-stone-400">锚点日期：{formatDateKeyLabel(selectedHistoryRecord.date, { weekday: true })}</span>
-                    {displayedRangeLabel ? <span className="text-stone-400">观察窗口：{displayedRangeLabel}</span> : null}
-                    {displayedGeneratedAt ? <span className="text-stone-400">生成于 {formatTimeLabel(displayedGeneratedAt)}</span> : null}
+                    <span>{getAiInsightMethodLabel(selectedHistoryRecord.methodId, language, t('review.ai.defaultLabel'))}</span>
+                    <span className="text-stone-400">{t('review.ai.anchorDate', { date: formatDateKeyLabel(selectedHistoryRecord.date, { weekday: true }) })}</span>
+                    {displayedRangeLabel ? <span className="text-stone-400">{t('review.ai.rangeLabel', { range: displayedRangeLabel })}</span> : null}
+                    {displayedGeneratedAt ? <span className="text-stone-400">{t('review.ai.generatedAt', { time: formatTimeLabel(displayedGeneratedAt) })}</span> : null}
                   </>
                 ) : (
                   <>
-                    <span>最近 {HISTORY_LIMIT} 条 AI 洞察记录</span>
-                    <span className="text-stone-400">按生成时间倒序展示全部方法</span>
+                    <span>{t('review.ai.recentHistory', { count: HISTORY_LIMIT })}</span>
+                    <span className="text-stone-400">{t('review.ai.recentHistoryHint')}</span>
                   </>
                 )
               ) : selectedMethodId ? (
                 <>
                   <span>{formatDateKeyLabel(initialDateKey, { weekday: true })}</span>
-                  {displayedRangeLabel ? <span className="text-stone-400">观察窗口：{displayedRangeLabel}</span> : null}
-                  {displayedGeneratedAt ? <span className="text-stone-400">生成于 {formatTimeLabel(displayedGeneratedAt)}</span> : null}
+                  {displayedRangeLabel ? <span className="text-stone-400">{t('review.ai.rangeLabel', { range: displayedRangeLabel })}</span> : null}
+                  {displayedGeneratedAt ? <span className="text-stone-400">{t('review.ai.generatedAt', { time: formatTimeLabel(displayedGeneratedAt) })}</span> : null}
                 </>
               ) : (
                 <>
                   <span>{formatDateKeyLabel(initialDateKey, { weekday: true })}</span>
-                  <span className="text-stone-400">选择一个分析方法，生成最近两周的 AI 洞察</span>
+                  <span className="text-stone-400">{t('review.ai.selectMethodHint')}</span>
                 </>
               )}
             </div>
@@ -554,24 +587,24 @@ export function AiInsightsView({ initialDateKey }: AiInsightsViewProps) {
 
           {showingGlobalHistory ? (
             <div className="flex flex-wrap items-center gap-2">
-              <ActionButton onClick={handleCloseHistory} disabled={saveSnapshotMutation.isPending}>返回分析库</ActionButton>
+              <ActionButton onClick={handleCloseHistory} disabled={saveSnapshotMutation.isPending}>{t('review.ai.backToLibrary')}</ActionButton>
               <ActionButton accent onClick={() => { void handleSaveSnapshot() }} disabled={!saveableInsight || saveSnapshotMutation.isPending}>
-                {saveSnapshotMutation.isPending ? '保存中…' : '保存为快照'}
+                {saveSnapshotMutation.isPending ? t('review.common.savingSnapshot') : t('review.common.saveSnapshot')}
               </ActionButton>
             </div>
           ) : selectedMethodId ? (
             <div className="flex flex-wrap items-center gap-2">
-              <ActionButton onClick={handleBackToLibrary} disabled={isGenerating || saveSnapshotMutation.isPending}>切换方法</ActionButton>
+              <ActionButton onClick={handleBackToLibrary} disabled={isGenerating || saveSnapshotMutation.isPending}>{t('review.ai.switchMethod')}</ActionButton>
               <ActionButton onClick={handleRegenerate} disabled={isGenerating || saveSnapshotMutation.isPending}>
-                {isGenerating ? '生成中…' : '重新生成'}
+                {isGenerating ? t('review.common.generating') : t('review.common.regenerate')}
               </ActionButton>
               <ActionButton accent onClick={() => { void handleSaveSnapshot() }} disabled={!saveableInsight || isGenerating || saveSnapshotMutation.isPending}>
-                {saveSnapshotMutation.isPending ? '保存中…' : '保存为快照'}
+                {saveSnapshotMutation.isPending ? t('review.common.savingSnapshot') : t('review.common.saveSnapshot')}
               </ActionButton>
             </div>
           ) : (
             <div className="flex flex-wrap items-center gap-2">
-              <ActionButton onClick={handleOpenHistory}>历史记录</ActionButton>
+              <ActionButton onClick={handleOpenHistory}>{t('review.ai.historyButton')}</ActionButton>
             </div>
           )}
         </div>
@@ -584,7 +617,7 @@ export function AiInsightsView({ initialDateKey }: AiInsightsViewProps) {
               {methodsInColumns.map((column, columnIndex) => (
                 <div key={columnIndex} className="divide-y divide-stone-200 border-t border-stone-200">
                   {column.map((method) => (
-                    <InsightMethodButton key={method.id} methodId={method.id} onSelect={handleSelectMethod} />
+                    <InsightMethodButton key={method.id} methodId={method.id} language={language} onSelect={handleSelectMethod} />
                   ))}
                 </div>
               ))}
@@ -599,10 +632,10 @@ export function AiInsightsView({ initialDateKey }: AiInsightsViewProps) {
                 {selectedHistoryRecord ? (
                   <>
                     <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-sm text-stone-500">
-                      <span>{getAiInsightMethodLabel(selectedHistoryRecord.methodId)}</span>
-                      <span>{selectedHistoryRecord.mode === 'live' ? 'Live AI' : 'Mock AI'}</span>
-                      <span>{selectedHistoryRecord.empty ? '空结果' : '历史正文'}</span>
-                      <span>生成于 {formatTimeLabel(selectedHistoryRecord.createdAt)}</span>
+                      <span>{getAiInsightMethodLabel(selectedHistoryRecord.methodId, language, t('review.ai.defaultLabel'))}</span>
+                      <span>{selectedHistoryRecord.mode === 'live' ? t('review.common.modeLive') : t('review.common.modeMock')}</span>
+                      <span>{selectedHistoryRecord.empty ? t('review.ai.emptyResult') : t('review.ai.historyContent')}</span>
+                      <span>{t('review.ai.generatedAt', { time: formatTimeLabel(selectedHistoryRecord.createdAt) })}</span>
                     </div>
                     <div className="mt-2 text-sm leading-6 text-stone-400">{formatRangeLabel(selectedHistoryRecord.rangeStart, selectedHistoryRecord.rangeEnd)}</div>
                     <div className="mt-3 text-lg font-medium tracking-[-0.02em] text-stone-900">{selectedHistoryRecord.title}</div>
@@ -614,17 +647,17 @@ export function AiInsightsView({ initialDateKey }: AiInsightsViewProps) {
                   <AiInsightSkeleton />
                 ) : historyQuery.error ? (
                   <div>
-                    <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-rose-400">历史加载失败</div>
+                    <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-rose-400">{t('review.ai.historyLoadingFailed')}</div>
                     <p className="mt-3 max-w-[680px] text-sm leading-7 text-stone-500">
-                      {historyQuery.error instanceof Error ? historyQuery.error.message : '历史记录加载失败。'}
+                      {historyQuery.error instanceof Error ? historyQuery.error.message : t('review.ai.historyFailedHint')}
                     </p>
                   </div>
                 ) : (
                   <div>
-                    <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-stone-400">暂无历史</div>
-                    <div className="mt-2 text-[22px] font-semibold tracking-[-0.02em] text-stone-900">还没有 AI 洞察历史记录</div>
+                    <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-stone-400">{t('review.ai.noHistory')}</div>
+                    <div className="mt-2 text-[22px] font-semibold tracking-[-0.02em] text-stone-900">{t('review.ai.noHistoryTitle')}</div>
                     <p className="mt-3 max-w-[680px] text-sm leading-7 text-stone-500">
-                      先生成一次任意方法的 AI 洞察，历史列表就会自动记录并出现在这里。
+                      {t('review.ai.noHistoryHint')}
                     </p>
                   </div>
                 )}
@@ -633,8 +666,8 @@ export function AiInsightsView({ initialDateKey }: AiInsightsViewProps) {
               <aside className="min-w-0 border-t border-stone-200 pt-6 text-sm text-stone-600">
                 <div className="space-y-4">
                   <div>
-                    <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-stone-400">历史列表</div>
-                    <div className="mt-1 leading-6">显示全部方法最近 {HISTORY_LIMIT} 条记录。</div>
+                    <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-stone-400">{t('review.ai.historyList')}</div>
+                    <div className="mt-1 leading-6">{t('review.ai.historyListHint', { count: HISTORY_LIMIT })}</div>
                   </div>
 
                   <div className="border-t border-stone-200 pt-4">
@@ -645,13 +678,13 @@ export function AiInsightsView({ initialDateKey }: AiInsightsViewProps) {
                         <div className="h-16 animate-pulse rounded-lg bg-stone-100" />
                       </div>
                     ) : historyQuery.error ? (
-                      <div className="text-sm leading-6 text-stone-500">历史记录暂时加载失败。</div>
+                      <div className="text-sm leading-6 text-stone-500">{t('review.ai.historyLoadFailed')}</div>
                     ) : historyRecords.length > 0 ? (
                       <div className="space-y-3">
                         {historyRecords.map(renderHistoryListItem)}
                       </div>
                     ) : (
-                      <div className="text-sm leading-6 text-stone-500">还没有可浏览的历史记录。</div>
+                      <div className="text-sm leading-6 text-stone-500">{t('review.ai.historyNoRecords')}</div>
                     )}
                   </div>
                 </div>
@@ -664,14 +697,14 @@ export function AiInsightsView({ initialDateKey }: AiInsightsViewProps) {
 
         {selectedMethodId && settingsResolved && activeError ? (
           <div className="mx-auto w-full max-w-[1080px] px-6 py-8">
-            <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-rose-400">生成失败</div>
-            <div className="mt-2 text-[22px] font-semibold tracking-[-0.02em] text-stone-900">这篇洞察暂时还没整理出来</div>
+            <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-rose-400">{t('review.ai.errorEyebrow')}</div>
+            <div className="mt-2 text-[22px] font-semibold tracking-[-0.02em] text-stone-900">{t('review.ai.errorTitle')}</div>
             <p className="mt-3 max-w-[680px] text-sm leading-7 text-stone-500">
-              {activeError instanceof Error ? activeError.message : 'AI 洞察生成失败。你可以稍后重试。'}
+              {activeError instanceof Error ? activeError.message : t('review.ai.errorHint')}
             </p>
             <div className="mt-5 flex flex-wrap gap-2">
-              <ActionButton onClick={handleBackToLibrary}>切换方法</ActionButton>
-              <ActionButton onClick={handleRegenerate}>重新生成</ActionButton>
+              <ActionButton onClick={handleBackToLibrary}>{t('review.ai.switchMethod')}</ActionButton>
+              <ActionButton onClick={handleRegenerate}>{t('review.common.regenerate')}</ActionButton>
             </div>
           </div>
         ) : null}
@@ -681,10 +714,10 @@ export function AiInsightsView({ initialDateKey }: AiInsightsViewProps) {
             <div className="grid gap-8 md:grid-cols-[minmax(0,1fr)_240px] md:gap-10">
               <div className="min-w-0 border-t border-stone-200 pt-6">
                 <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-sm text-stone-500">
-                  <span>{currentResult.blockCount} 条块</span>
-                  <span>{currentResult.plannedEntryCount} 项安排</span>
-                  <span>{currentResult.doneEntryCount} 项完成</span>
-                  {currentResult.canceledEntryCount > 0 ? <span>{currentResult.canceledEntryCount} 项取消</span> : null}
+                  <span>{t('review.ai.blocks', { count: currentResult.blockCount })}</span>
+                  <span>{t('review.ai.planned', { count: currentResult.plannedEntryCount })}</span>
+                  <span>{t('review.ai.done', { count: currentResult.doneEntryCount })}</span>
+                  {currentResult.canceledEntryCount > 0 ? <span>{t('review.ai.canceled', { count: currentResult.canceledEntryCount })}</span> : null}
                 </div>
                 {currentResult.topTags.length > 0 ? (
                   <div className="mt-2 text-sm leading-6 text-stone-400">{currentResult.topTags.map((tag) => `#${tag}`).join(' · ')}</div>
@@ -697,18 +730,21 @@ export function AiInsightsView({ initialDateKey }: AiInsightsViewProps) {
               <aside className="min-w-0 border-t border-stone-200 pt-6 text-sm text-stone-600">
                 <div className="space-y-4">
                   <div>
-                    <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-stone-400">范围</div>
+                    <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-stone-400">{t('review.ai.scope')}</div>
                     <div className="mt-1 leading-6">{formatRangeLabel(currentResult.rangeStart, currentResult.rangeEnd)}</div>
                   </div>
 
                   <div className="border-t border-stone-200 pt-4">
-                    <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-stone-400">数据来源</div>
-                    <div className="mt-1 leading-6">引用 {currentResult.sourceBlocks.length} 条块，关联 {currentResult.calendarEntryIds.length} 项安排</div>
+                    <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-stone-400">{t('review.ai.dataSource')}</div>
+                    <div className="mt-1 leading-6">{t('review.ai.dataSourceHint', {
+                      blocks: currentResult.sourceBlocks.length,
+                      entries: currentResult.calendarEntryIds.length,
+                    })}</div>
                   </div>
 
                   <details open={currentResult.sourceBlocks.length > 0} className="border-t border-stone-200 pt-4">
                     <summary className="cursor-pointer list-none text-sm font-medium text-stone-800 marker:hidden">
-                      查看引用内容
+                      {t('review.daily.viewSources')}
                     </summary>
                     <div className="mt-3 divide-y divide-stone-200">
                       {currentResult.sourceBlocks.length > 0 ? currentResult.sourceBlocks.map((block) => (
@@ -720,7 +756,7 @@ export function AiInsightsView({ initialDateKey }: AiInsightsViewProps) {
                           ) : null}
                         </div>
                       )) : (
-                        <div className="py-1 text-sm leading-6 text-stone-500">这个时间窗口还没有可引用的块内容。</div>
+                        <div className="py-1 text-sm leading-6 text-stone-500">{t('review.ai.sourceEmpty')}</div>
                       )}
                     </div>
                   </details>
@@ -742,11 +778,11 @@ export function AiInsightsView({ initialDateKey }: AiInsightsViewProps) {
               <aside className="min-w-0 border-t border-stone-200 pt-6 text-sm text-stone-600">
                 <div className="space-y-4">
                   <div>
-                    <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-stone-400">生成状态</div>
-                    <div className="mt-1 leading-6">正在整理近两周块内容与安排，正文会持续追加。</div>
+                    <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-stone-400">{t('review.common.streamStatus')}</div>
+                    <div className="mt-1 leading-6">{t('review.ai.streamingHint')}</div>
                   </div>
                   <div className="border-t border-stone-200 pt-4 text-xs leading-6 text-stone-400">
-                    已开启流式输出，当前方法会边分析边显示。
+                    {t('review.ai.streamingEnabled')}
                   </div>
                 </div>
               </aside>

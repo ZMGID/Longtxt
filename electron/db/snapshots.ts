@@ -150,8 +150,8 @@ export function listSnapshots(db: Database.Database, query = '', notebookId?: st
   const params: Array<string> = []
 
   if (normalizedQuery) {
-    clauses.push(`s.topic LIKE ?`)
-    params.push(`%${normalizedQuery}%`)
+    clauses.push(`(s.topic LIKE ? OR s.content LIKE ?)`)
+    params.push(`%${normalizedQuery}%`, `%${normalizedQuery}%`)
   }
 
   if (notebookId === null) {

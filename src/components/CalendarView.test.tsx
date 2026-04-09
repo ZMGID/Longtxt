@@ -3,6 +3,7 @@ import { fireEvent, render, screen, waitFor, within } from '@testing-library/rea
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { Block, CalendarDayDetail, CalendarEntry, CalendarHeatmap, CalendarSuggestion } from '../../shared/types'
+import { I18nContext, type I18nContextValue } from '../i18n/context'
 import { formatCalendarDateLabel } from '../lib/calendar'
 import { CalendarView } from './CalendarView'
 
@@ -225,7 +226,22 @@ function parseSizeFromInlineStyle(style: string, property: 'width' | 'height'): 
   return match ? Number(match[1]) : NaN
 }
 
-function renderCalendar(width = 1600) {
+function createI18nValue(language: 'zh' | 'en'): I18nContextValue {
+  return {
+    language,
+    uiSettings: {
+      showMiniTimeline: true,
+      language,
+    },
+    t: (key) => String(key),
+    compareText: (left, right) => left.localeCompare(right),
+    formatNumber: (value) => String(value),
+    formatDate: (value, options) => new Intl.DateTimeFormat(language === 'en' ? 'en-US' : 'zh-CN', options).format(new Date(value)),
+    formatRelativeTime: () => '',
+  }
+}
+
+function renderCalendar(width = 1600, language: 'zh' | 'en' = 'zh') {
   setWindowSize(width, 900)
 
   const queryClient = new QueryClient({
@@ -237,13 +253,16 @@ function renderCalendar(width = 1600) {
   })
   const onJumpToBlock = vi.fn(async () => {})
   const renderResult = render(
-    <QueryClientProvider client={queryClient}>
-      <CalendarView settings={settings} onJumpToBlock={onJumpToBlock} />
-    </QueryClientProvider>,
+    <I18nContext.Provider value={createI18nValue(language)}>
+      <QueryClientProvider client={queryClient}>
+        <CalendarView settings={settings} onJumpToBlock={onJumpToBlock} />
+      </QueryClientProvider>
+    </I18nContext.Provider>,
   )
 
   return {
     ...renderResult,
+    queryClient,
     onJumpToBlock,
   }
 }
@@ -335,6 +354,26 @@ describe('CalendarView', () => {
     expect(selectedDay.getAttribute('style')).toContain('box-shadow: inset 0 0 0 2px #1c1917')
     expect(within(selectedDay).getByTestId('calendar-entry-indicator-2026-04-05')).toBeInTheDocument()
     expect(within(selectedDay).getByTestId('calendar-suggestion-indicator-2026-04-05')).toBeInTheDocument()
+  })
+
+  it('refreshes heatmap month labels when language changes without waiting for heatmap data to change', async () => {
+    const { queryClient, onJumpToBlock, rerender } = renderCalendar(1600, 'zh')
+
+    await waitFor(() => {
+      expect(screen.getByText('1月')).toBeInTheDocument()
+    })
+
+    rerender(
+      <I18nContext.Provider value={createI18nValue('en')}>
+        <QueryClientProvider client={queryClient}>
+          <CalendarView settings={settings} onJumpToBlock={onJumpToBlock} />
+        </QueryClientProvider>
+      </I18nContext.Provider>,
+    )
+
+    await waitFor(() => {
+      expect(screen.getByText('Jan')).toBeInTheDocument()
+    })
   })
 
   it('uses a docked desktop sidebar and collapses it on small screens without adding extra scroll owners', async () => {
@@ -457,7 +496,7 @@ describe('CalendarView', () => {
 
     fireEvent.click(screen.getAllByRole('button', { name: /AI 建议/ })[0])
     expect(screen.getByDisplayValue('第二天 AI 建议')).toBeInTheDocument()
-    expect(screen.getByText('证据：周一全天准备材料。')).toBeInTheDocument()
+    expect(screen.getByText(/证据[:：]\s*周一全天准备材料。/)).toBeInTheDocument()
 
     fireEvent.click(screen.getAllByRole('button', { name: /当天块/ })[0])
     fireEvent.click(screen.getByText('第六天块摘要').closest('button') as HTMLButtonElement)

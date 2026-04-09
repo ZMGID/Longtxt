@@ -1,12 +1,12 @@
 // @vitest-environment node
 
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 
 import { afterEach, describe, expect, it } from 'vitest'
 
-import { createSettingsFileStore, resolveSettingsFilePath } from '../settingsFile'
+import { createSettingsFileStore, readSettingFromDisk, resolveSettingsFilePath } from '../settingsFile'
 
 const directories: string[] = []
 
@@ -40,7 +40,7 @@ describe('settings file store', () => {
     expect(existsSync(filePath)).toBe(true)
     expect(store.get('ai_config')).toContain('api.example.com')
 
-    store.set('ui_settings', '{"showMiniTimeline":false}')
+    store.set('ui_settings', '{"showMiniTimeline":false,"language":"en"}')
 
     const saved = JSON.parse(readFileSync(filePath, 'utf8')) as {
       version: number
@@ -49,6 +49,45 @@ describe('settings file store', () => {
 
     expect(saved.version).toBe(1)
     expect(saved.settings.ai_config).toContain('api.example.com')
-    expect(saved.settings.ui_settings).toBe('{"showMiniTimeline":false}')
+    expect(saved.settings.ui_settings).toBe('{"showMiniTimeline":false,"language":"en"}')
+    expect(readSettingFromDisk(filePath, 'ui_settings')).toBe('{"showMiniTimeline":false,"language":"en"}')
+  })
+
+  it('merges updates from multiple store instances without overwriting unrelated keys', () => {
+    const directory = mkdtempSync(join(tmpdir(), 'changbu-settings-file-'))
+    directories.push(directory)
+    const filePath = join(directory, 'changbu-settings.json')
+    const firstStore = createSettingsFileStore({ filePath })
+    const secondStore = createSettingsFileStore({ filePath })
+
+    firstStore.set('ui_settings', '{"showMiniTimeline":true,"language":"zh"}')
+    secondStore.set('main_window_state', '{"width":1400,"height":900}')
+
+    const saved = JSON.parse(readFileSync(filePath, 'utf8')) as {
+      version: number
+      settings: Record<string, string>
+    }
+
+    expect(saved.settings.ui_settings).toBe('{"showMiniTimeline":true,"language":"zh"}')
+    expect(saved.settings.main_window_state).toBe('{"width":1400,"height":900}')
+    expect(readSettingFromDisk(filePath, 'main_window_state')).toBe('{"width":1400,"height":900}')
+    expect(secondStore.get('ui_settings')).toBe('{"showMiniTimeline":true,"language":"zh"}')
+  })
+
+  it('recovers from a stale settings lock file before writing', () => {
+    const directory = mkdtempSync(join(tmpdir(), 'changbu-settings-file-'))
+    directories.push(directory)
+    const filePath = join(directory, 'changbu-settings.json')
+    const lockPath = `${filePath}.lock`
+    const store = createSettingsFileStore({ filePath })
+
+    writeFileSync(lockPath, 'stale lock')
+    const staleTime = new Date(Date.now() - 10_000)
+    utimesSync(lockPath, staleTime, staleTime)
+
+    store.set('ui_settings', '{"showMiniTimeline":false,"language":"en"}')
+
+    expect(readSettingFromDisk(filePath, 'ui_settings')).toBe('{"showMiniTimeline":false,"language":"en"}')
+    expect(existsSync(lockPath)).toBe(false)
   })
 })

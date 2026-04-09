@@ -98,6 +98,7 @@ describe('mock ai services', () => {
   it('generates a readable mock daily review', async () => {
     const provider = createMockLLMProvider('mock')
     const content = await provider.generateDailyReview({
+      language: 'zh',
       date: '2026-04-08',
       blockCount: 2,
       plannedEntryCount: 1,
@@ -135,6 +136,7 @@ describe('mock ai services', () => {
     const provider = createMockLLMProvider('mock')
 
     const reverseInsight = await provider.generateAiInsight({
+      language: 'zh',
       methodId: 'reverse-thinking',
       methodLabel: '逆向思考',
       promptPreset: '如果要让接下来更糟，会延续哪些模式？',
@@ -182,6 +184,7 @@ describe('mock ai services', () => {
     })
 
     const mbtiInsight = await provider.generateAiInsight({
+      language: 'zh',
       methodId: 'mbti-analysis',
       methodLabel: 'MBTI 分析',
       promptPreset: '只描述偏好，不下人格定论。',
@@ -246,6 +249,7 @@ describe('mock ai services', () => {
         apiKey: 'key',
         model: 'text-embedding-3-small',
       },
+      multimodalImageAnalysisEnabled: false,
     })
 
     global.fetch = vi.fn().mockResolvedValue(
@@ -280,6 +284,7 @@ describe('mock ai services', () => {
     expect(tags).toEqual({
       categories: ['工作'],
       detailTags: ['项目', '自定义标签'],
+      imageAnnotations: [],
       summary: null,
     })
   })
@@ -297,6 +302,7 @@ describe('mock ai services', () => {
         apiKey: 'key',
         model: 'text-embedding-3-small',
       },
+      multimodalImageAnalysisEnabled: false,
     })
 
     global.fetch = vi.fn().mockResolvedValue(
@@ -340,11 +346,13 @@ describe('mock ai services', () => {
       {
         categories: ['工作'],
         detailTags: ['项目'],
+        imageAnnotations: [],
         summary: '项目记录',
       },
       {
         categories: ['技术'],
         detailTags: ['Electron'],
+        imageAnnotations: [],
         summary: 'Electron 记录',
       },
     ])

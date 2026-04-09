@@ -76,7 +76,13 @@ function makeLlmResponse(summary: string, categories: string[] = ['技术'], det
   )
 }
 
-function makeBatchLlmResponse(items: Array<{ index: number; summary: string; categories?: string[]; detailTags?: string[] }>): Response {
+function makeBatchLlmResponse(items: Array<{
+  index: number
+  summary: string
+  categories?: string[]
+  detailTags?: string[]
+  imageAnnotations?: Array<{ index: number; annotation: string }>
+}>): Response {
   return new Response(
     JSON.stringify({
       choices: [
@@ -88,6 +94,7 @@ function makeBatchLlmResponse(items: Array<{ index: number; summary: string; cat
                 categories: item.categories ?? ['技术'],
                 detail_tags: item.detailTags ?? ['Electron'],
                 summary: item.summary,
+                image_annotations: item.imageAnnotations ?? [],
               })),
             }),
           },
@@ -963,6 +970,138 @@ describe('app context', () => {
     global.fetch = originalFetch
   })
 
+  it('coalesces enrich-triggered vector queue emissions across a batch', async () => {
+    const originalFetch = global.fetch
+    const metaEvents: MetaChangedEvent[] = []
+    const context = makeContext({
+      onMetaChanged: (event) => {
+        metaEvents.push(event)
+      },
+    })
+
+    const first = await context.createBlock('旧的第一条内容。')
+    const second = await context.createBlock('旧的第二条内容。')
+    await context.whenIdle()
+
+    await configureLiveMode(context)
+    await context.setSetting(
+      BLOCK_ENRICH_SETTINGS_KEY,
+      JSON.stringify({
+        queueEnabled: true,
+        maxBatchBlocks: 2,
+        queueDebounceMs: 3000,
+        responseReserveTokens: 1600,
+      }),
+    )
+
+    metaEvents.length = 0
+    global.fetch = vi.fn(async (input: string | URL, init?: RequestInit) => {
+      const url = String(input)
+
+      if (url.includes('/chat/completions')) {
+        return makeBatchLlmResponse([
+          {
+            index: 0,
+            summary: '第一条向量批量摘要',
+            detailTags: ['React'],
+            imageAnnotations: [{ index: 0, annotation: '第一条的附加检索说明' }],
+          },
+          {
+            index: 1,
+            summary: '第二条向量批量摘要',
+            detailTags: ['SQLite'],
+            imageAnnotations: [{ index: 0, annotation: '第二条的附加检索说明' }],
+          },
+        ])
+      }
+
+      const body = init?.body ? JSON.parse(String(init.body)) as { input?: string[] } : {}
+      const vectors = (body.input ?? []).map((_, index) => [0.11 + index * 0.1, 0.12, 0.13, 0.14])
+      return makeEmbeddingResponse(vectors)
+    }) as typeof global.fetch
+
+    await context.updateBlock(first.id, '第一条：用于验证批量向量入队。')
+    await context.updateBlock(second.id, '第二条：同一批次一起补向量。')
+    await context.whenIdle()
+
+    expect(metaEvents.filter((event) => event.reason === 'vector-queue')).toHaveLength(5)
+    expect((await context.getBlock(first.id)).imageAnnotations).toHaveLength(1)
+    expect((await context.getBlock(second.id)).imageAnnotations).toHaveLength(1)
+
+    global.fetch = originalFetch
+  })
+
+  it('skips stale queued enrich results before applying batch side effects', async () => {
+    const originalFetch = global.fetch
+    const firstBatchLlm = createDeferredResponse()
+    const secondBatchLlm = createDeferredResponse()
+    const context = makeContext()
+
+    await configureLiveMode(context)
+    await context.setSetting(
+      BLOCK_ENRICH_SETTINGS_KEY,
+      JSON.stringify({
+        queueEnabled: true,
+        maxBatchBlocks: 2,
+        queueDebounceMs: 3000,
+        responseReserveTokens: 1600,
+      }),
+    )
+
+    let chatCallCount = 0
+    const fetchMock = vi.fn(async (input: string | URL, init?: RequestInit) => {
+      const url = String(input)
+
+      if (url.includes('/chat/completions')) {
+        chatCallCount += 1
+        return chatCallCount === 1 ? firstBatchLlm.promise : secondBatchLlm.promise
+      }
+
+      const body = init?.body ? JSON.parse(String(init.body)) as { input?: string[] } : {}
+      const vectors = (body.input ?? []).map((_, index) => [0.11 + index * 0.1, 0.12, 0.13, 0.14])
+      return makeEmbeddingResponse(vectors)
+    })
+
+    global.fetch = fetchMock as typeof global.fetch
+
+    const first = await context.createBlock('第一条旧内容：等待批量 enrich。')
+    const second = await context.createBlock('第二条内容：同批次一起完成。')
+    await waitForCondition(() => fetchMock.mock.calls.length >= 1)
+
+    await context.updateBlock(first.id, '第一条新内容：应该跳过旧批次结果。')
+
+    firstBatchLlm.resolve(makeBatchLlmResponse([
+      { index: 0, summary: '第一条旧摘要', detailTags: ['旧标签'] },
+      { index: 1, summary: '第二条摘要', detailTags: ['第二条'] },
+    ]))
+
+    await waitForCondition(async () => {
+      const secondBlock = await context.getBlock(second.id)
+      return secondBlock.summary === '第二条摘要' && chatCallCount >= 2
+    })
+
+    const firstAfterFirstBatch = await context.getBlock(first.id)
+    expect(firstAfterFirstBatch.content).toBe('第一条新内容：应该跳过旧批次结果。')
+    expect(firstAfterFirstBatch.summary).toBeNull()
+    expect(firstAfterFirstBatch.status).toBe('pending')
+    expect(firstAfterFirstBatch.tags.map((tag) => tag.name)).not.toContain('旧标签')
+
+    secondBatchLlm.resolve(makeLlmResponse('第一条新摘要', ['技术'], ['新标签']))
+
+    await context.whenIdle()
+
+    const refreshedFirst = await context.getBlock(first.id)
+    const refreshedSecond = await context.getBlock(second.id)
+
+    expect(refreshedFirst.summary).toBe('第一条新摘要')
+    expect(refreshedFirst.tags.map((tag) => tag.name)).toContain('新标签')
+    expect(refreshedFirst.tags.map((tag) => tag.name)).not.toContain('旧标签')
+    expect(refreshedSecond.summary).toBe('第二条摘要')
+    expect(chatCallCount).toBe(2)
+
+    global.fetch = originalFetch
+  })
+
   it('does not retry non-transient live enrich errors', async () => {
     const originalFetch = global.fetch
     const context = makeContext()
@@ -1627,6 +1766,19 @@ describe('app context', () => {
 
     expect(snapshot.blockIds).toEqual([])
     expect((await context.getSnapshot(snapshot.id)).blockIds).toEqual([])
+  })
+
+  it('searches snapshots by topic and content', async () => {
+    const context = makeContext()
+
+    const topicMatch = await context.saveSnapshot('发布策略', '# 发布策略\n\n这是主题命中的快照。', [])
+    await new Promise((resolve) => setTimeout(resolve, 5))
+    const contentMatch = await context.saveSnapshot('周报整理', '# 周报整理\n\n正文里补充了发布策略的执行细节。', [])
+
+    const results = await context.listSnapshots('发布策略')
+
+    expect(results.map((snapshot) => snapshot.id)).toEqual([contentMatch.id, topicMatch.id])
+    expect(results.map((snapshot) => snapshot.topic)).toEqual(['周报整理', '发布策略'])
   })
 
   it('updates snapshot topic and content without changing the creation timestamp', async () => {

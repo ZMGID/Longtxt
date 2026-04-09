@@ -1,7 +1,7 @@
 import { Jieba } from '@node-rs/jieba'
 import { dict } from '@node-rs/jieba/dict'
 
-import type { LLMProvider, TagSuggestionBatchOptions } from './ai'
+import type { LLMProvider, TagSuggestionBatchOptions, TagSuggestionImageInput } from './ai'
 import { DEFAULT_TAG_DEFINITIONS, STRONG_TAG_HINTS, TAG_STOPWORDS, TECH_SIGNAL_PATTERNS } from './defaultTags'
 
 const LOW_CONFIDENCE_THRESHOLD = 1.25
@@ -12,6 +12,8 @@ export interface TaggerAssignOptions {
   corpusContents: string[]
   liveLlmProvider?: LLMProvider | null
   batchOptions?: TagSuggestionBatchOptions
+  imageInputs?: TagSuggestionImageInput[]
+  skippedImageCount?: number
   tagMemory?: {
     categories: string[]
     details: string[]
@@ -23,6 +25,7 @@ export interface TagAssignmentResult {
   categories: string[]
   detailTags: string[]
   summary: string | null
+  imageAnnotations: Array<{ index: number; annotation: string }>
   confidence: number
   usedFallback: boolean
 }
@@ -136,6 +139,7 @@ function pickRuleTags(scoredTags: Array<{ name: string; score: number }>): TagAs
     categories,
     detailTags,
     summary: null,
+    imageAnnotations: [],
     confidence,
     usedFallback: false,
   }
@@ -170,6 +174,8 @@ interface PreparedTagAssignment {
     categoryCandidates: string[]
     detailCandidates: string[]
     userTags: string[]
+    images: TagSuggestionImageInput[]
+    skippedImages: number
   }
   liveLlmProvider: LLMProvider | null
   batchOptions?: TagSuggestionBatchOptions
@@ -189,6 +195,8 @@ function prepareTagAssignment(content: string, options: TaggerAssignOptions): Pr
       categoryCandidates: options.tagMemory?.categories ?? ruleCandidates.categories,
       detailCandidates: Array.from(new Set([...(options.tagMemory?.details ?? []), ...ruleCandidates.details])),
       userTags: options.tagMemory?.users ?? [],
+      images: options.imageInputs ?? [],
+      skippedImages: options.skippedImageCount ?? 0,
     },
     liveLlmProvider: options.liveLlmProvider ?? null,
     batchOptions: options.batchOptions,
@@ -209,13 +217,15 @@ function resolveTagAssignment(
     categories: string[]
     detailTags: string[]
     summary: string | null
+    imageAnnotations: Array<{ index: number; annotation: string }>
   } | null,
 ): TagAssignmentResult {
-  if (llmTags && (llmTags.categories.length > 0 || llmTags.detailTags.length > 0)) {
+  if (llmTags && (llmTags.categories.length > 0 || llmTags.detailTags.length > 0 || llmTags.imageAnnotations.length > 0 || llmTags.summary)) {
     return {
       categories: llmTags.categories.slice(0, 3),
       detailTags: llmTags.detailTags.slice(0, 5),
       summary: llmTags.summary ?? buildFallbackSummary(prepared.content),
+      imageAnnotations: llmTags.imageAnnotations,
       confidence: prepared.ruleResult.confidence,
       usedFallback: false,
     }
@@ -237,6 +247,7 @@ function resolveTagAssignment(
       categories: ['创意'],
       detailTags: ['想法', '临时'],
       summary: buildFallbackSummary(prepared.content),
+      imageAnnotations: [],
       confidence: 0,
       usedFallback: true,
     }
@@ -254,6 +265,7 @@ function resolveTagAssignment(
       categories: prepared.ruleResult.categories,
       detailTags: prepared.ruleResult.detailTags,
       summary: buildFallbackSummary(prepared.content),
+      imageAnnotations: [],
       confidence: prepared.ruleResult.confidence,
       usedFallback: true,
     }
@@ -263,6 +275,7 @@ function resolveTagAssignment(
     categories: ['创意'],
     detailTags: ['想法', '临时'],
     summary: buildFallbackSummary(prepared.content),
+    imageAnnotations: [],
     confidence: 0,
     usedFallback: true,
   }
@@ -278,6 +291,19 @@ export function createTaggerEngine(): TaggerEngine {
       && prepared.every((item) => item.liveLlmProvider === sharedLiveProvider && isSameBatchOptions(item.batchOptions, sharedBatchOptions))
 
     if (canBatchWithLiveProvider && sharedLiveProvider) {
+      if (prepared.some((item) => item.llmInput.images.length > 0)) {
+        const results: TagAssignmentResult[] = []
+
+        for (const item of prepared) {
+          const llmTags = item.liveLlmProvider
+            ? await item.liveLlmProvider.suggestTags(item.llmInput)
+            : null
+          results.push(resolveTagAssignment(item, llmTags))
+        }
+
+        return results
+      }
+
       const llmResults = await sharedLiveProvider.suggestTagsBatch(
         prepared.map((item) => item.llmInput),
         sharedBatchOptions,

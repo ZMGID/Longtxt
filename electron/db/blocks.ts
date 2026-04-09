@@ -1,11 +1,21 @@
 import Database from 'better-sqlite3'
 
-import type { AIExecutionMode, Block, BlockListInput, BlockListPage, BlockStatus, TagKind, TagSuggestion } from '../../shared/types'
+import type {
+  AIExecutionMode,
+  Block,
+  BlockImageAnnotation,
+  BlockListInput,
+  BlockListPage,
+  BlockStatus,
+  TagKind,
+  TagSuggestion,
+} from '../../shared/types'
 
 interface BlockRow {
   id: string
   content: string
   summary: string | null
+  image_annotations: string | null
   status: BlockStatus
   ai_mode: AIExecutionMode
   error_message: string | null
@@ -33,13 +43,81 @@ interface BlockStateUpdate {
   status: BlockStatus
   aiMode: AIExecutionMode
   updatedAt: string
-  summary?: string | null
   errorMessage?: string | null
+}
+
+interface BlockEnrichmentUpdate {
+  id: string
+  status: BlockStatus
+  aiMode: AIExecutionMode
+  updatedAt: string
+  summary?: string | null
+  imageAnnotations?: BlockImageAnnotation[] | null
+  searchText: string
 }
 
 export interface RecentBlockContentRow {
   blockId: string
   content: string
+}
+
+const IMAGE_ANNOTATIONS_HEADING = '[Image annotations]'
+
+export function normalizeBlockImageAnnotations(value: unknown): BlockImageAnnotation[] {
+  if (!Array.isArray(value)) {
+    return []
+  }
+
+  return value
+    .map((item) => {
+      const annotation = typeof item?.annotation === 'string' ? item.annotation.trim().replace(/\s+/g, ' ') : ''
+      const rawIndex = typeof item?.index === 'number' ? Math.trunc(item.index) : Number.NaN
+
+      if (!annotation || !Number.isInteger(rawIndex) || rawIndex < 0) {
+        return null
+      }
+
+      return {
+        index: rawIndex,
+        annotation: annotation.slice(0, 240),
+      }
+    })
+    .filter((item): item is BlockImageAnnotation => Boolean(item))
+    .sort((left, right) => left.index - right.index)
+}
+
+export function parseBlockImageAnnotations(raw: string | null): BlockImageAnnotation[] {
+  if (!raw) {
+    return []
+  }
+
+  try {
+    return normalizeBlockImageAnnotations(JSON.parse(raw) as unknown)
+  } catch {
+    return []
+  }
+}
+
+function serializeBlockImageAnnotations(value: BlockImageAnnotation[] | null | undefined): string | null {
+  const normalized = normalizeBlockImageAnnotations(value)
+  return normalized.length > 0 ? JSON.stringify(normalized) : null
+}
+
+export function buildBlockSearchText(content: string, imageAnnotations?: BlockImageAnnotation[] | null): string {
+  const normalizedContent = content.trim()
+  const normalizedAnnotations = normalizeBlockImageAnnotations(imageAnnotations)
+
+  if (normalizedAnnotations.length === 0) {
+    return normalizedContent
+  }
+
+  const annotationSection = normalizedAnnotations
+    .map((item) => `Image ${item.index + 1}: ${item.annotation}`)
+    .join('\n')
+
+  return [normalizedContent, IMAGE_ANNOTATIONS_HEADING, annotationSection]
+    .filter(Boolean)
+    .join('\n\n')
 }
 
 function rowsToBlocks(rows: BlockRow[]): Block[] {
@@ -52,6 +130,7 @@ function rowsToBlocks(rows: BlockRow[]): Block[] {
         id: row.id,
         content: row.content,
         summary: row.summary,
+        imageAnnotations: parseBlockImageAnnotations(row.image_annotations),
         tags: [],
         createdAt: row.created_at,
         updatedAt: row.updated_at,
@@ -91,6 +170,7 @@ function hydrateBlocks(db: Database.Database, ids: string[]): Block[] {
           b.id,
           b.content,
           b.summary,
+          b.image_annotations,
           b.status,
           b.ai_mode,
           b.error_message,
@@ -120,10 +200,13 @@ function hydrateBlocks(db: Database.Database, ids: string[]): Block[] {
 export function createBlockRecord(db: Database.Database, input: UpsertBlockInput): Block {
   db.prepare(
     `
-      INSERT INTO blocks (id, content, status, ai_mode, created_at, updated_at)
-      VALUES (@id, @content, @status, @aiMode, @createdAt, @updatedAt)
+      INSERT INTO blocks (id, content, summary, image_annotations, search_text, status, ai_mode, created_at, updated_at)
+      VALUES (@id, @content, NULL, NULL, @searchText, @status, @aiMode, @createdAt, @updatedAt)
     `,
-  ).run(input)
+  ).run({
+    ...input,
+    searchText: buildBlockSearchText(input.content),
+  })
 
   return getBlockById(db, input.id)
 }
@@ -259,6 +342,8 @@ export function updateBlockContent(
       SET
         content = @content,
         summary = NULL,
+        image_annotations = NULL,
+        search_text = @content,
         status = @status,
         ai_mode = @aiMode,
         error_message = NULL,
@@ -278,17 +363,57 @@ export function updateBlockState(db: Database.Database, input: BlockStateUpdate)
         status = @status,
         ai_mode = @aiMode,
         error_message = @errorMessage,
+        updated_at = @updatedAt
+      WHERE id = @id
+    `,
+  ).run({
+    ...input,
+    errorMessage: input.errorMessage ?? null,
+  })
+
+  return getBlockById(db, input.id)
+}
+
+export function updateBlockEnrichmentResult(db: Database.Database, input: BlockEnrichmentUpdate): Block {
+  db.prepare(
+    `
+      UPDATE blocks
+      SET
+        status = @status,
+        ai_mode = @aiMode,
+        error_message = NULL,
         summary = @summary,
+        image_annotations = @imageAnnotations,
+        search_text = @searchText,
         updated_at = @updatedAt
       WHERE id = @id
     `,
   ).run({
     ...input,
     summary: input.summary ?? null,
-    errorMessage: input.errorMessage ?? null,
+    imageAnnotations: serializeBlockImageAnnotations(input.imageAnnotations),
   })
 
   return getBlockById(db, input.id)
+}
+
+export function replaceBlockImageDerivedData(
+  db: Database.Database,
+  blockId: string,
+  imageAnnotations: BlockImageAnnotation[] | null,
+  searchText: string,
+): Block {
+  db.prepare(
+    `
+      UPDATE blocks
+      SET
+        image_annotations = ?,
+        search_text = ?
+      WHERE id = ?
+    `,
+  ).run(serializeBlockImageAnnotations(imageAnnotations), searchText, blockId)
+
+  return getBlockById(db, blockId)
 }
 
 export function syncAutoBlockTags(db: Database.Database, blockId: string, tags: TagSuggestion[]): void {
@@ -345,6 +470,24 @@ export function countBlocks(db: Database.Database): number {
 
 export function getBlocksByIds(db: Database.Database, ids: string[]): Block[] {
   return hydrateBlocks(db, ids)
+}
+
+export function getBlockSearchTextsByIds(db: Database.Database, ids: string[]): Map<string, string> {
+  if (ids.length === 0) {
+    return new Map()
+  }
+
+  const rows = db
+    .prepare(
+      `
+        SELECT id, search_text
+        FROM blocks
+        WHERE id IN (${ids.map(() => '?').join(', ')})
+      `,
+    )
+    .all(...ids) as Array<{ id: string; search_text: string | null }>
+
+  return new Map(rows.map((row) => [row.id, row.search_text ?? '']))
 }
 
 function formatLocalDate(value: string): string {
@@ -407,4 +550,19 @@ export function listRecentBlockContentRows(db: Database.Database, limit: number)
   }
 
   return db.prepare(`SELECT id AS blockId, content FROM blocks ORDER BY updated_at DESC LIMIT ?`).all(limit) as RecentBlockContentRow[]
+}
+
+export function listBlockIdsWithMarkdownImages(db: Database.Database): string[] {
+  const rows = db
+    .prepare(
+      `
+        SELECT id
+        FROM blocks
+        WHERE content LIKE '%![%'
+        ORDER BY updated_at DESC
+      `,
+    )
+    .all() as Array<{ id: string }>
+
+  return rows.map((row) => row.id)
 }

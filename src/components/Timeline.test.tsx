@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { VirtuosoHandle } from 'react-virtuoso'
 
 import type { Block } from '../../shared/types'
+import { I18nContext, type I18nContextValue } from '../i18n/context'
 import { Timeline } from './Timeline'
 
 const scrollToIndexMock = vi.fn()
@@ -67,22 +68,39 @@ const sampleBlocks: Block[] = [
   },
 ]
 
-function renderTimeline(showMiniTimeline: boolean) {
+function createI18nValue(language: 'zh' | 'en'): I18nContextValue {
+  return {
+    language,
+    uiSettings: {
+      showMiniTimeline: true,
+      language,
+    },
+    t: (key) => String(key),
+    compareText: (left, right) => left.localeCompare(right),
+    formatNumber: (value) => String(value),
+    formatDate: (value, options) => new Intl.DateTimeFormat(language === 'en' ? 'en-US' : 'zh-CN', options).format(new Date(value)),
+    formatRelativeTime: () => '',
+  }
+}
+
+function renderTimeline(showMiniTimeline: boolean, language: 'zh' | 'en' = 'zh') {
   render(
-    <Timeline
-      blocks={sampleBlocks}
-      loading={false}
-      loadingMore={false}
-      hasMore={false}
-      showMiniTimeline={showMiniTimeline}
-      tagSuggestions={[]}
-      onSave={vi.fn()}
-      onDelete={vi.fn()}
-      onAddTag={vi.fn()}
-      onRemoveTag={vi.fn()}
-      onTagClick={vi.fn()}
-      onLoadMore={vi.fn()}
-    />,
+    <I18nContext.Provider value={createI18nValue(language)}>
+      <Timeline
+        blocks={sampleBlocks}
+        loading={false}
+        loadingMore={false}
+        hasMore={false}
+        showMiniTimeline={showMiniTimeline}
+        tagSuggestions={[]}
+        onSave={vi.fn()}
+        onDelete={vi.fn()}
+        onAddTag={vi.fn()}
+        onRemoveTag={vi.fn()}
+        onTagClick={vi.fn()}
+        onLoadMore={vi.fn()}
+      />
+    </I18nContext.Provider>,
   )
 }
 
@@ -170,5 +188,49 @@ describe('Timeline', () => {
     await waitFor(() => {
       expect(onActiveDateKeyChange).toHaveBeenCalledWith('2026-03-31')
     })
+  })
+
+  it('refreshes mini timeline titles when language changes without waiting for block data to change', async () => {
+    const renderResult = render(
+      <I18nContext.Provider value={createI18nValue('zh')}>
+        <Timeline
+          blocks={sampleBlocks}
+          loading={false}
+          loadingMore={false}
+          hasMore={false}
+          showMiniTimeline
+          tagSuggestions={[]}
+          onSave={vi.fn()}
+          onDelete={vi.fn()}
+          onAddTag={vi.fn()}
+          onRemoveTag={vi.fn()}
+          onTagClick={vi.fn()}
+          onLoadMore={vi.fn()}
+        />
+      </I18nContext.Provider>,
+    )
+
+    expect(screen.getAllByTitle(/个块$/).length).toBeGreaterThan(0)
+
+    renderResult.rerender(
+      <I18nContext.Provider value={createI18nValue('en')}>
+        <Timeline
+          blocks={sampleBlocks}
+          loading={false}
+          loadingMore={false}
+          hasMore={false}
+          showMiniTimeline
+          tagSuggestions={[]}
+          onSave={vi.fn()}
+          onDelete={vi.fn()}
+          onAddTag={vi.fn()}
+          onRemoveTag={vi.fn()}
+          onTagClick={vi.fn()}
+          onLoadMore={vi.fn()}
+        />
+      </I18nContext.Provider>,
+    )
+
+    expect(screen.getAllByTitle(/blocks$/).length).toBeGreaterThan(0)
   })
 })

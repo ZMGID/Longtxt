@@ -2,6 +2,9 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import ForceGraph2D, { type ForceGraphMethods } from 'react-force-graph-2d'
 
 import type { Block, GraphEdge, GraphNode, TagSuggestion } from '../../shared/types'
+import { compareText } from '../i18n/locale'
+import type { MessageKey } from '../i18n/messages'
+import { useI18n } from '../i18n/useI18n'
 import { formatTimeLabel } from '../lib/format'
 import { MarkdownContent } from './MarkdownContent'
 import { StatusPill } from './StatusPill'
@@ -26,7 +29,7 @@ interface GraphViewProps {
 
 const SUPPRESSED_FILTER_TAGS = new Set(['TODO', '重要', '临时', '归档'])
 
-function getBlockTitle(block: Block): string {
+function getBlockTitle(block: Block, untitledLabel: string): string {
   const summary = block.summary?.trim()
 
   if (summary) {
@@ -38,7 +41,7 @@ function getBlockTitle(block: Block): string {
     .map((line) => line.trim())
     .find(Boolean)
 
-  return firstLine ?? '未命名块'
+  return firstLine ?? untitledLabel
 }
 
 interface GraphSelectionDetailProps {
@@ -47,20 +50,21 @@ interface GraphSelectionDetailProps {
   activeTagFilters: string[]
   onToggleTagFilter: (tagName: string) => void
   onJumpToBlock: (blockId: string) => void
+  t: (key: MessageKey, params?: Record<string, string | number>) => string
 }
 
-function GraphSelectionDetail({ block, loading, activeTagFilters, onToggleTagFilter, onJumpToBlock }: GraphSelectionDetailProps) {
+function GraphSelectionDetail({ block, loading, activeTagFilters, onToggleTagFilter, onJumpToBlock, t }: GraphSelectionDetailProps) {
   const activeTagSet = useMemo(() => new Set(activeTagFilters), [activeTagFilters])
 
   if (loading) {
-    return <div className="flex h-full items-center justify-center text-sm text-stone-400">正在加载块详情…</div>
+    return <div className="flex h-full items-center justify-center text-sm text-stone-400">{t('graph.loadingDetail')}</div>
   }
 
   if (!block) {
     return (
       <div className="flex h-full items-center justify-center text-center text-sm leading-7 text-stone-400">
-        点击左侧节点查看块详情。<br />
-        双击节点会直接跳回时间轴。
+        {t('graph.selectNodeHint')}<br />
+        {t('graph.doubleClickHint')}
       </div>
     )
   }
@@ -70,8 +74,8 @@ function GraphSelectionDetail({ block, loading, activeTagFilters, onToggleTagFil
       <div className="border-b border-black/[0.06] pb-4">
         <div className="flex items-start justify-between gap-3">
           <div className="min-w-0 flex-1">
-            <p className="text-[11px] font-medium uppercase tracking-[0.22em] text-stone-400">当前块</p>
-            <h3 className="mt-1 text-base font-semibold leading-7 text-stone-900">{getBlockTitle(block)}</h3>
+            <p className="text-[11px] font-medium uppercase tracking-[0.22em] text-stone-400">{t('graph.currentBlock')}</p>
+            <h3 className="mt-1 text-base font-semibold leading-7 text-stone-900">{getBlockTitle(block, t('graph.untitledBlock'))}</h3>
           </div>
           <button
             type="button"
@@ -80,14 +84,14 @@ function GraphSelectionDetail({ block, loading, activeTagFilters, onToggleTagFil
             }}
             className="shrink-0 rounded-full bg-stone-900 px-3 py-1.5 text-xs font-medium text-white transition hover:bg-stone-800"
           >
-            回到时间轴
+            {t('graph.backToTimeline')}
           </button>
         </div>
 
         <div className="mt-3 flex flex-wrap items-center gap-2 text-xs text-stone-500">
           <StatusPill status={block.status} />
           <span>{formatTimeLabel(block.updatedAt)}</span>
-          <span className="rounded-full bg-stone-100 px-2.5 py-1 font-medium text-stone-600">{block.aiMode === 'live' ? 'live AI' : 'mock AI'}</span>
+          <span className="rounded-full bg-stone-100 px-2.5 py-1 font-medium text-stone-600">{block.aiMode === 'live' ? t('graph.modeLive') : t('graph.modeMock')}</span>
         </div>
 
         {block.tags.length > 0 ? (
@@ -99,7 +103,7 @@ function GraphSelectionDetail({ block, loading, activeTagFilters, onToggleTagFil
                   key={tag.id}
                   type="button"
                   onClick={() => onToggleTagFilter(tag.name)}
-                  title={active ? '点击取消这个标签筛选' : '点击按这个标签筛选连接图'}
+                  title={active ? t('graph.tagFilterRemove') : t('graph.tagFilterAdd')}
                   className={`rounded-full px-3 py-1.5 text-xs font-medium transition ${
                     active ? 'bg-stone-900 text-white' : 'bg-stone-100 text-stone-700 hover:bg-stone-200 hover:text-stone-900'
                   }`}
@@ -141,6 +145,7 @@ export function GraphView({
   onSelectNode,
   onJumpToBlock,
 }: GraphViewProps) {
+  const { language, t } = useI18n()
   const containerRef = useRef<HTMLDivElement>(null)
   const graphRef = useRef<ForceGraphMethods | undefined>(undefined)
   const [size, setSize] = useState({ width: 960, height: 620 })
@@ -219,7 +224,7 @@ export function GraphView({
           return right.count - left.count
         }
 
-        return left.name.localeCompare(right.name, 'zh-Hans-CN')
+        return compareText(left.name, right.name)
       })
       .slice(0, 24)
   }, [activeTagFilters, activeTagSet, tagCounts, tagLookup])
@@ -305,13 +310,13 @@ export function GraphView({
           <div className="border-b border-black/[0.06] px-4 py-3.5 sm:px-5">
             <div className="flex flex-wrap items-start justify-between gap-3">
               <div className="min-w-0">
-                <p className="text-[11px] font-medium uppercase tracking-[0.22em] text-stone-400">关系网络</p>
-                <p className="mt-1 text-sm text-stone-600">单击查看详情，双击跳回时间轴</p>
+                <p className="text-[11px] font-medium uppercase tracking-[0.22em] text-stone-400">{t('graph.networkTitle')}</p>
+                <p className="mt-1 text-sm text-stone-600">{t('graph.networkHint')}</p>
               </div>
               <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-stone-500">
-                <span>{nodes.length} 个节点</span>
-                <span>{edges.length} 条边</span>
-                {activeTagFilters.length > 0 ? <span>{activeTagFilters.length} 个筛选</span> : null}
+                <span>{t('graph.nodeCount', { count: nodes.length })}</span>
+                <span>{t('graph.edgeCount', { count: edges.length })}</span>
+                {activeTagFilters.length > 0 ? <span>{t('graph.filterCount', { count: activeTagFilters.length })}</span> : null}
               </div>
             </div>
           </div>
@@ -319,10 +324,10 @@ export function GraphView({
           <div className="min-h-0 min-w-0 flex-1 bg-stone-50/70">
             <div ref={containerRef} className="h-[22rem] min-h-[22rem] min-w-0 sm:h-[26rem] lg:h-full lg:min-h-0">
               {loading ? (
-                <div className="flex h-full items-center justify-center text-sm text-stone-500">正在构建连接图…</div>
+                <div className="flex h-full items-center justify-center text-sm text-stone-500">{t('graph.loading')}</div>
               ) : nodes.length === 0 ? (
                 <div className="flex h-full items-center justify-center px-8 text-center text-sm leading-7 text-stone-500">
-                  当前筛选下没有可显示的块关联。试试清空标签筛选，或先积累更多带标签的块。
+                  {t('graph.empty')}
                 </div>
               ) : (
                 <ForceGraph2D
@@ -338,12 +343,14 @@ export function GraphView({
                   nodeLabel={(node) => {
                     const graphNode = node as GraphNode
                     const detail = graphNode.summary?.trim() || graphNode.label
-                    const tags = graphNode.tags.slice(0, 4).join('、')
-                    return tags ? `${detail}\n标签：${tags}` : detail
+                    const tags = graphNode.tags.slice(0, 4).join(language === 'en' ? ', ' : '、')
+                    return tags ? `${detail}\n${t('graph.nodeLabelTags', { tags })}` : detail
                   }}
                   linkLabel={(link) => {
                     const edge = link as GraphEdge
-                    return edge.sharedTags.length > 0 ? `共享标签：${edge.sharedTags.join('、')}` : ''
+                    return edge.sharedTags.length > 0
+                      ? t('graph.sharedTags', { tags: edge.sharedTags.join(language === 'en' ? ', ' : '、') })
+                      : ''
                   }}
                   linkColor={(link) => ((link as GraphEdge).weight > 1 ? 'rgba(110,88,56,0.34)' : 'rgba(110,88,56,0.14)')}
                   linkWidth={(link) => Math.min(3.2, 0.8 + ((link as GraphEdge).weight ?? 1) * 0.42)}
@@ -422,8 +429,8 @@ export function GraphView({
           <div className="border-b border-black/[0.06] px-4 py-4 sm:px-5">
             <div className="flex items-start justify-between gap-3">
               <div>
-                <p className="text-[11px] font-medium uppercase tracking-[0.22em] text-stone-400">侧边栏</p>
-                <h3 className="mt-1 text-base font-semibold text-stone-900">筛选与块详情</h3>
+                <p className="text-[11px] font-medium uppercase tracking-[0.22em] text-stone-400">{t('graph.sidebar')}</p>
+                <h3 className="mt-1 text-base font-semibold text-stone-900">{t('graph.sidebarTitle')}</h3>
               </div>
               {activeTagFilters.length > 0 ? (
                 <button
@@ -431,20 +438,20 @@ export function GraphView({
                   onClick={onClearFilters}
                   className="rounded-full bg-stone-100 px-3 py-1.5 text-xs font-medium text-stone-700 transition hover:bg-stone-200 hover:text-stone-900"
                 >
-                  清空筛选
+                  {t('graph.clearFilters')}
                 </button>
               ) : null}
             </div>
             <div className="mt-3 flex flex-wrap gap-x-4 gap-y-1 text-xs text-stone-500">
-              <span>当前图里有 {nodes.length} 个块</span>
-              <span>{activeTagFilters.length > 0 ? `已锁定 ${activeTagFilters.length} 个标签` : '未启用标签筛选'}</span>
+              <span>{t('graph.currentBlocks', { count: nodes.length })}</span>
+              <span>{activeTagFilters.length > 0 ? t('graph.filterLocked', { count: activeTagFilters.length }) : t('graph.filterDisabled')}</span>
             </div>
           </div>
 
           <div className="border-b border-black/[0.06] px-4 py-4 sm:px-5">
             <div className="mb-3 flex items-center justify-between gap-3">
-              <h4 className="text-xs font-medium uppercase tracking-[0.22em] text-stone-400">标签筛选</h4>
-              <span className="text-xs text-stone-400">{filterTags.length > 0 ? `${filterTags.length} 个可用标签` : '暂无可用标签'}</span>
+              <h4 className="text-xs font-medium uppercase tracking-[0.22em] text-stone-400">{t('graph.filterTitle')}</h4>
+              <span className="text-xs text-stone-400">{filterTags.length > 0 ? t('graph.availableTags', { count: filterTags.length }) : t('graph.noAvailableTags')}</span>
             </div>
 
             {filterTags.length > 0 ? (
@@ -456,7 +463,7 @@ export function GraphView({
                       key={tag.id}
                       type="button"
                       onClick={() => onToggleTagFilter(tag.name)}
-                      title={tag.count > 0 ? `${tag.name} · ${tag.count} 个节点` : tag.name}
+                      title={tag.count > 0 ? t('graph.tagNodeCountTitle', { name: tag.name, count: tag.count }) : tag.name}
                       className={`rounded-full px-3 py-1.5 text-xs font-medium transition ${
                         active ? 'bg-stone-900 text-white' : 'bg-stone-100/80 text-stone-700 hover:bg-stone-200 hover:text-stone-900'
                       }`}
@@ -468,14 +475,14 @@ export function GraphView({
                 })}
               </div>
             ) : (
-              <p className="text-sm leading-6 text-stone-400">当前图中还没有足够稳定的共享标签可用于筛选。</p>
+              <p className="text-sm leading-6 text-stone-400">{t('graph.filterEmpty')}</p>
             )}
           </div>
 
           <div className="flex min-h-0 flex-1 flex-col px-4 py-4 sm:px-5">
             <div className="mb-3 flex items-center justify-between gap-3">
-              <h4 className="text-xs font-medium uppercase tracking-[0.22em] text-stone-400">块详情</h4>
-              {selectedBlock ? <span className="text-xs text-stone-400">已选中 1 个节点</span> : null}
+              <h4 className="text-xs font-medium uppercase tracking-[0.22em] text-stone-400">{t('graph.blockDetail')}</h4>
+              {selectedBlock ? <span className="text-xs text-stone-400">{t('graph.selectedOneNode')}</span> : null}
             </div>
 
             <div className="min-h-0 flex-1 overflow-hidden">
@@ -485,6 +492,7 @@ export function GraphView({
                 activeTagFilters={activeTagFilters}
                 onToggleTagFilter={onToggleTagFilter}
                 onJumpToBlock={onJumpToBlock}
+                t={t}
               />
             </div>
           </div>

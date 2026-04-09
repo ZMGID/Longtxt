@@ -1,6 +1,7 @@
-import type { ReactNode } from 'react'
+import { useMemo, type ReactNode } from 'react'
 
 import type { AppMeta } from '../../shared/types'
+import { useI18n } from '../i18n/useI18n'
 
 export type AppView = 'timeline' | 'calendar' | 'search' | 'notebooks' | 'graph' | 'snapshots' | 'data-management'
 type SidebarItemId = AppView | 'settings'
@@ -21,18 +22,19 @@ interface SidebarItem {
   icon: (props: { active: boolean }) => ReactNode
 }
 
-const items: SidebarItem[] = [
-  { id: 'timeline', label: '时间轴', icon: ({ active }) => <TimelineIcon active={active} /> },
-  { id: 'calendar', label: '日历', icon: ({ active }) => <CalendarIcon active={active} /> },
-  { id: 'search', label: '搜索生成', icon: ({ active }) => <SearchIcon active={active} /> },
-  { id: 'notebooks', label: '笔记本', icon: ({ active }) => <NotebookIcon active={active} /> },
-  { id: 'graph', label: '连接图', icon: ({ active }) => <GraphIcon active={active} /> },
-  { id: 'snapshots', label: '文档快照', icon: ({ active }) => <SnapshotIcon active={active} /> },
-  { id: 'data-management', label: '数据管理', icon: ({ active }) => <DataManagementIcon active={active} /> },
-  { id: 'settings', label: '设置', icon: ({ active }) => <SettingsIcon active={active} /> },
-]
-
 export function AppSidebar({ activeView, blockCount, aiStatusLabel, meta, onSelectView, onOpenSettings, onPrefetchView }: AppSidebarProps) {
+  const { t } = useI18n()
+  const items: SidebarItem[] = useMemo(() => ([
+    { id: 'timeline', label: t('app.sidebar.timeline'), icon: ({ active }) => <TimelineIcon active={active} /> },
+    { id: 'calendar', label: t('app.sidebar.calendar'), icon: ({ active }) => <CalendarIcon active={active} /> },
+    { id: 'search', label: t('app.sidebar.search'), icon: ({ active }) => <SearchIcon active={active} /> },
+    { id: 'notebooks', label: t('app.sidebar.notebooks'), icon: ({ active }) => <NotebookIcon active={active} /> },
+    { id: 'graph', label: t('app.sidebar.graph'), icon: ({ active }) => <GraphIcon active={active} /> },
+    { id: 'snapshots', label: t('app.sidebar.snapshots'), icon: ({ active }) => <SnapshotIcon active={active} /> },
+    { id: 'data-management', label: t('app.sidebar.dataManagement'), icon: ({ active }) => <DataManagementIcon active={active} /> },
+    { id: 'settings', label: t('app.sidebar.settings'), icon: ({ active }) => <SettingsIcon active={active} /> },
+  ]), [t])
+
   return (
     <aside
       data-testid="app-sidebar"
@@ -87,13 +89,16 @@ export function AppSidebar({ activeView, blockCount, aiStatusLabel, meta, onSele
               topValue={formatCompactNumber(meta?.modelCallCounts.llm ?? 0)}
               topLabel="LLM"
               bottomValue={formatCompactNumber(meta?.modelCallCounts.embedding ?? 0)}
-              bottomLabel="向量"
-              title={`模型调用 · LLM ${meta?.modelCallCounts.llm ?? 0} 次 / 向量 ${meta?.modelCallCounts.embedding ?? 0} 次`}
+              bottomLabel={t('app.sidebar.vector')}
+              title={t('app.sidebar.modelCallsTitle', {
+                llm: meta?.modelCallCounts.llm ?? 0,
+                embedding: meta?.modelCallCounts.embedding ?? 0,
+              })}
             />
             <SidebarStat
               value={formatCompactNumber(blockCount)}
-              label="块"
-              title={`${blockCount} 个块`}
+              label={t('app.sidebar.blocks')}
+              title={t('app.sidebar.blockCountTitle', { count: blockCount })}
             />
             <SidebarStat
               value={getCompactAiStatus(meta)}
@@ -103,8 +108,8 @@ export function AppSidebar({ activeView, blockCount, aiStatusLabel, meta, onSele
             {meta?.vectorReady ? (
               <SidebarStat
                 value={formatCompactNumber(meta.vectorDimension)}
-                label="维"
-                title={`向量 · ${meta.vectorDimension ?? '?'} 维`}
+                label={t('app.sidebar.dimension')}
+                title={t('app.sidebar.vectorDimensionTitle', { dimension: meta.vectorDimension ?? '?' })}
               />
             ) : null}
           </div>

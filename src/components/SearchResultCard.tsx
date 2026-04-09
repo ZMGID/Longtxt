@@ -2,16 +2,11 @@ import type { ReactNode } from 'react'
 
 import type { MatchSource, SearchResult, TagSuggestion } from '../../shared/types'
 import { buildSearchPreview } from '../../shared/searchPreview'
-import { BlockCard } from './BlockCard'
+import { useI18n } from '../i18n/useI18n'
 import { formatTimeLabel } from '../lib/format'
 import { highlightText } from '../lib/highlight'
+import { BlockCard } from './BlockCard'
 import { StatusPill } from './StatusPill'
-
-const MATCH_SOURCE_LABELS: Record<MatchSource, string> = {
-  tag: '标签命中',
-  fts: '全文命中',
-  vector: '向量命中',
-}
 
 interface SearchResultCardProps {
   result: SearchResult
@@ -46,7 +41,13 @@ export function SearchResultCard({
   headerActions = null,
   footer = null,
 }: SearchResultCardProps) {
+  const { t } = useI18n()
   const { block } = result
+  const matchSourceLabels: Record<MatchSource, string> = {
+    tag: t('searchResult.match.tag'),
+    fts: t('searchResult.match.fts'),
+    vector: t('searchResult.match.vector'),
+  }
   const previewText = result.preview ?? buildSearchPreview(block.content, query)
   const previewContent = (
     <div className="whitespace-pre-wrap break-words">
@@ -57,7 +58,7 @@ export function SearchResultCard({
     <>
       {showScore ? (
         <span className="rounded border border-stone-200 bg-stone-50 px-2 py-0.5 text-[11px] font-medium text-stone-500">
-          得分 {result.score}
+          {t('searchResult.score', { score: result.score })}
         </span>
       ) : metaLabel ? (
         <span className="rounded border border-stone-200 bg-stone-50 px-2 py-0.5 text-[11px] font-medium text-stone-500">
@@ -66,7 +67,7 @@ export function SearchResultCard({
       ) : null}
       {result.matchSource.map((source) => (
         <span key={source} className="rounded border border-sky-200 bg-sky-50 px-2 py-0.5 text-[11px] font-medium text-sky-700">
-          {MATCH_SOURCE_LABELS[source]}
+          {matchSourceLabels[source]}
         </span>
       ))}
     </>

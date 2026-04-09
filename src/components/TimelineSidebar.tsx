@@ -4,11 +4,16 @@ import { useQueryClient } from '@tanstack/react-query'
 
 import type { CalendarEntry } from '../../shared/types'
 import { useUpcomingCalendarEntries } from '../hooks/useCalendar'
+import { useI18n } from '../i18n/useI18n'
 import { formatDateKeyLabel } from '../lib/format'
 import { changbu } from '../lib/changbu'
 import { formatCalendarTimeLabel } from '../lib/calendar'
 import { queryKeys } from '../lib/queryKeys'
-import { REVIEW_MODES, type TimelineReviewMode } from '../lib/timelineReview'
+import {
+  REVIEW_MODES,
+  getTimelineReviewModeLabel,
+  type TimelineReviewMode,
+} from '../lib/timelineReview'
 import {
   buildTimelineMonthGrid,
   formatTimelineMonthTitle,
@@ -26,7 +31,6 @@ interface TimelineSidebarProps {
 
 type TimelineSidebarMode = 'scheduled-todo' | 'review'
 
-const WEEKDAY_LABELS = ['周一', '周二', '周三', '周四', '周五', '周六', '周日']
 const MONTH_INTENSITY_COLORS = [
   'transparent',
   '#f2f8f5',
@@ -34,10 +38,7 @@ const MONTH_INTENSITY_COLORS = [
   '#dcece2',
   '#cfe4d8',
 ] as const
-const SIDEBAR_MODES: Array<{ id: TimelineSidebarMode; label: string }> = [
-  { id: 'scheduled-todo', label: 'TODO' },
-  { id: 'review', label: '回顾' },
-]
+const SIDEBAR_MODES: TimelineSidebarMode[] = ['scheduled-todo', 'review']
 
 function todayDateKey(): string {
   const today = new Date()
@@ -62,8 +63,8 @@ function compareScheduledEntries(left: CalendarEntry, right: CalendarEntry): num
   return (left.startTime ?? '').localeCompare(right.startTime ?? '')
 }
 
-function formatTodoMeta(entry: CalendarEntry): string {
-  return `${entry.date.slice(5).replace('-', '/')} · ${entry.allDay ? '全天' : formatCalendarTimeLabel(entry.startTime)}`
+function formatTodoMeta(entry: CalendarEntry, language: 'zh' | 'en'): string {
+  return `${entry.date.slice(5).replace('-', '/')} · ${entry.allDay ? (language === 'en' ? 'All day' : '全天') : formatCalendarTimeLabel(entry.startTime)}`
 }
 
 export function TimelineSidebar({
@@ -74,6 +75,11 @@ export function TimelineSidebar({
   onOpenCalendarDate,
   onOpenReview,
 }: TimelineSidebarProps) {
+  const { language, t } = useI18n()
+  const weekdayLabels = useMemo(
+    () => (language === 'en' ? ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'] : ['周一', '周二', '周三', '周四', '周五', '周六', '周日']),
+    [language],
+  )
   const queryClient = useQueryClient()
   const today = todayDateKey()
   const initialMonthDateKey = activeDateKey ?? today
@@ -166,13 +172,13 @@ export function TimelineSidebar({
         <section className="border-b border-stone-200 pb-3">
           <div className="flex items-center justify-between gap-3">
             <div>
-              <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-stone-400">本月日历</div>
+              <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-stone-400">{t('timelineSidebar.monthCalendar')}</div>
               <h3 className="mt-1.5 text-[22px] font-semibold tracking-[-0.03em] text-stone-900">{formatTimelineMonthTitle(visibleMonthDateKey)}</h3>
             </div>
             <div className="flex items-center gap-1.5 text-sm">
               <button
                 type="button"
-                aria-label="上个月"
+                aria-label={t('timelineSidebar.prevMonth')}
                 onClick={() => setVisibleMonthDateKey((current) => shiftTimelineMonth(current, -1))}
                 className="rounded-full px-1.5 py-0.5 text-stone-500 transition hover:bg-stone-100 hover:text-stone-900"
               >
@@ -186,11 +192,11 @@ export function TimelineSidebar({
                 }}
                 className="rounded-full px-2 py-0.5 text-xs font-medium text-stone-500 transition hover:bg-stone-100 hover:text-stone-900"
               >
-                今天
+                {t('timelineSidebar.today')}
               </button>
               <button
                 type="button"
-                aria-label="下个月"
+                aria-label={t('timelineSidebar.nextMonth')}
                 onClick={() => setVisibleMonthDateKey((current) => shiftTimelineMonth(current, 1))}
                 className="rounded-full px-1.5 py-0.5 text-stone-500 transition hover:bg-stone-100 hover:text-stone-900"
               >
@@ -200,7 +206,7 @@ export function TimelineSidebar({
           </div>
 
           <div className="mt-3 grid grid-cols-7 gap-y-1 text-center text-[11px] font-medium text-stone-400">
-            {WEEKDAY_LABELS.map((label) => (
+            {weekdayLabels.map((label) => (
               <div key={label}>{label}</div>
             ))}
           </div>
@@ -214,7 +220,7 @@ export function TimelineSidebar({
               <button
                 key={cell.dateKey}
                 type="button"
-                aria-label={`${formatDateKeyLabel(cell.dateKey)} · ${cell.count} 个块`}
+                aria-label={`${formatDateKeyLabel(cell.dateKey)} · ${language === 'en' ? `${cell.count} blocks` : `${cell.count} 个块`}`}
                 onClick={() => onSelectDate(cell.dateKey)}
                 className="group relative flex min-w-0 items-center justify-center text-center"
                 style={{ height: `${calendarCellHeight}px` }}
@@ -258,16 +264,18 @@ export function TimelineSidebar({
           <div className="flex border-y border-stone-200">
             {SIDEBAR_MODES.map((mode) => (
               <button
-                key={mode.id}
+                key={mode}
                 type="button"
-                onClick={() => setActiveMode(mode.id)}
+                onClick={() => setActiveMode(mode)}
                 className={`min-w-[88px] border-r border-stone-200 px-3 py-2 text-sm font-medium transition ${
-                  activeMode === mode.id
+                  activeMode === mode
                     ? 'bg-stone-900 text-white'
                     : 'bg-transparent text-stone-600 hover:bg-stone-50 hover:text-stone-900'
                 }`}
               >
-                {mode.label}
+                {mode === 'scheduled-todo'
+                  ? t('timelineSidebar.mode.todo')
+                  : t('timelineSidebar.mode.review')}
               </button>
             ))}
             <div className="flex-1 bg-transparent" />
@@ -279,7 +287,7 @@ export function TimelineSidebar({
             <div className="flex h-full min-h-0 flex-col overflow-hidden">
               <div className="min-h-0 flex-1 overflow-hidden">
                 {upcomingQuery.isPending ? (
-                  <div className="py-3 text-sm text-stone-400">正在加载未来安排…</div>
+                  <div className="py-3 text-sm text-stone-400">{t('timelineSidebar.todo.loading')}</div>
                 ) : visibleEntries.length > 0 ? (
                   <div className="divide-y divide-stone-200">
                     {visibleEntries.map((entry) => {
@@ -296,7 +304,7 @@ export function TimelineSidebar({
                             className="min-w-0 flex-1 text-left"
                           >
                             <div className="truncate text-sm font-medium text-stone-900">{entry.title}</div>
-                            <div className="mt-1 text-xs text-stone-500">{formatTodoMeta(entry)}</div>
+                            <div className="mt-1 text-xs text-stone-500">{formatTodoMeta(entry, language)}</div>
                             {entry.notes ? <div className="mt-1 line-clamp-1 text-xs text-stone-400">{entry.notes}</div> : null}
                           </button>
 
@@ -314,7 +322,7 @@ export function TimelineSidebar({
                               }}
                               className="px-1 py-1 text-[11px] font-medium text-stone-600 transition hover:text-stone-900 disabled:opacity-50"
                             >
-                              完成
+                              {t('timelineSidebar.todo.done')}
                             </button>
                             <button
                               type="button"
@@ -324,7 +332,7 @@ export function TimelineSidebar({
                               }}
                               className="px-1 py-1 text-[11px] font-medium text-stone-500 transition hover:text-stone-800 disabled:opacity-50"
                             >
-                              取消
+                              {t('timelineSidebar.todo.cancel')}
                             </button>
                           </div>
                         </div>
@@ -332,28 +340,30 @@ export function TimelineSidebar({
                     })}
 
                     {hiddenEntryCount > 0 ? (
-                      <div className="pt-3 text-xs text-stone-400">还有 {hiddenEntryCount} 项安排，请前往日历查看。</div>
+                      <div className="pt-3 text-xs text-stone-400">{t('timelineSidebar.todo.hiddenCount', { count: hiddenEntryCount })}</div>
                     ) : null}
                   </div>
                 ) : (
-                  <div className="py-3 text-sm leading-6 text-stone-500">还没有未来安排。先在日历里创建安排，之后这里会按时间顺序整理成 TODO。</div>
+                  <div className="py-3 text-sm leading-6 text-stone-500">{t('timelineSidebar.todo.empty')}</div>
                 )}
               </div>
             </div>
           ) : activeMode === 'review' ? (
             <div className="flex h-full min-h-0 flex-col overflow-hidden">
               <div className="border-b border-stone-200 pb-2">
-                <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-stone-400">回顾工具</div>
+                <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-stone-400">
+                  {t('timelineSidebar.reviewTools')}
+                </div>
               </div>
               <div className="divide-y divide-stone-200 pt-1">
                 {REVIEW_MODES.map((mode) => (
                   <button
-                    key={mode.id}
+                    key={mode}
                     type="button"
-                    onClick={() => onOpenReview(mode.id, activeDateKey ?? today)}
+                    onClick={() => onOpenReview(mode, activeDateKey ?? today)}
                     className="w-full py-3 text-left text-sm text-stone-600 transition hover:text-stone-900"
                   >
-                    {mode.label}
+                    {getTimelineReviewModeLabel(mode, language)}
                   </button>
                 ))}
               </div>

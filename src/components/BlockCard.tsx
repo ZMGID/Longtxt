@@ -2,6 +2,7 @@ import type { ReactNode } from 'react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 
 import type { Block, TagSuggestion } from '../../shared/types'
+import { useI18n } from '../i18n/useI18n'
 import { formatTimeLabel } from '../lib/format'
 import { MarkdownContent } from './MarkdownContent'
 import { MarkdownLivePreview } from './MarkdownLivePreview'
@@ -28,20 +29,20 @@ interface BlockCardProps {
 const COLLAPSIBLE_CONTENT_LENGTH = 420
 const COLLAPSED_CONTENT_CLASS = 'max-h-[280px] overflow-hidden'
 
-function sourceLabel(source: Block['tags'][number]['source']): string {
-  return source === 'manual' ? '手动' : '自动'
+function sourceLabel(source: Block['tags'][number]['source'], t: ReturnType<typeof useI18n>['t']): string {
+  return source === 'manual' ? t('blockCard.tagSource.manual') : t('blockCard.tagSource.auto')
 }
 
-function kindLabel(kind: Block['tags'][number]['kind']): string {
+function kindLabel(kind: Block['tags'][number]['kind'], t: ReturnType<typeof useI18n>['t']): string {
   switch (kind) {
     case 'category':
-      return '分类'
+      return t('blockCard.tagKind.category')
     case 'detail':
-      return '内容'
+      return t('blockCard.tagKind.detail')
     case 'user':
-      return '用户'
+      return t('blockCard.tagKind.user')
     default:
-      return '标签'
+      return t('blockCard.tagKind.default')
   }
 }
 
@@ -62,6 +63,7 @@ export function BlockCard({
   onTagClick,
   onFindRelated,
 }: BlockCardProps) {
+  const { t } = useI18n()
   const [isEditing, setIsEditing] = useState(false)
   const [draft, setDraft] = useState(block.content)
   const [isExpanded, setIsExpanded] = useState(false)
@@ -181,7 +183,7 @@ export function BlockCard({
               onClick={() => setIsExpanded((current) => !current)}
               className="rounded border border-stone-200 bg-stone-50 px-3 py-1.5 text-xs font-medium text-stone-600 transition duration-150 hover:bg-white active:scale-[0.97]"
             >
-              {isExpanded ? '收起' : '显示全文'}
+              {isExpanded ? t('blockCard.collapse') : t('blockCard.expand')}
             </button>
           ) : null}
           {canToggleRenderedContent ? (
@@ -190,7 +192,7 @@ export function BlockCard({
               onClick={() => setShowRenderedContent(true)}
               className="rounded border border-stone-200 bg-white px-3 py-1.5 text-xs font-medium text-stone-500 transition duration-150 hover:border-stone-300 hover:text-stone-700 active:scale-[0.97]"
             >
-              渲染 Markdown
+              {t('blockCard.renderMarkdown')}
             </button>
           ) : null}
         </div>
@@ -209,7 +211,7 @@ export function BlockCard({
                   type="button"
                   onClick={() => onTagClick?.(tag.name)}
                   className="transition hover:text-stone-900"
-                  title={`${kindLabel(tag.kind)} · ${sourceLabel(tag.source)}`}
+                  title={`${kindLabel(tag.kind, t)} · ${sourceLabel(tag.source, t)}`}
                 >
                   {tag.name}
                 </button>
@@ -218,7 +220,7 @@ export function BlockCard({
                     type="button"
                     onClick={() => onRemoveTag(block.id, tag.id)}
                     className="text-stone-400 transition hover:text-rose-600"
-                    aria-label="删除标签"
+                    aria-label={t('blockCard.removeTag')}
                   >
                     ×
                   </button>
@@ -238,7 +240,7 @@ export function BlockCard({
                       if (e.key === 'Enter') void handleAddTag(tagDraft)
                       if (e.key === 'Escape') { setIsAddingTag(false); setTagDraft('') }
                     }}
-                    placeholder="标签名"
+                    placeholder={t('blockCard.tagPlaceholder')}
                     autoFocus
                     disabled={tagSubmitting}
                     className="rounded border border-stone-300 bg-white/70 px-2 py-1 text-xs text-stone-900 outline-none transition focus:border-stone-500 focus:ring-1 focus:ring-stone-200"
@@ -265,7 +267,7 @@ export function BlockCard({
                   onClick={() => setIsAddingTag(true)}
                   className="rounded border border-dashed border-stone-300 px-2.5 py-1 text-xs text-stone-400 transition hover:border-stone-400 hover:text-stone-600"
                 >
-                  + 标签
+                  {t('blockCard.addTag')}
                 </button>
               )
             )}
@@ -281,7 +283,7 @@ export function BlockCard({
                     onClick={() => { setIsEditing(false); setDraft(block.content) }}
                     className="text-xs text-stone-500 transition hover:text-stone-700"
                   >
-                    取消
+                    {t('blockCard.cancel')}
                   </button>
                   <button
                     type="button"
@@ -289,7 +291,7 @@ export function BlockCard({
                     disabled={saving}
                     className="rounded bg-stone-900 px-3 py-1.5 text-xs font-medium text-white transition duration-150 hover:bg-stone-700 active:scale-[0.97] disabled:opacity-50"
                   >
-                    {saving ? <><span className="spinner" />保存中…</> : '保存'}
+                    {saving ? <><span className="spinner" />{t('blockCard.saving')}</> : t('blockCard.save')}
                   </button>
                 </>
               ) : (
@@ -299,7 +301,7 @@ export function BlockCard({
                     onClick={() => { setIsEditing(true); setDraft(block.content) }}
                     className="text-xs text-stone-500 transition hover:text-stone-700"
                   >
-                    编辑
+                    {t('blockCard.edit')}
                   </button>
                   {onFindRelated && block.status === 'ready' && (
                     <button
@@ -307,7 +309,7 @@ export function BlockCard({
                       onClick={() => onFindRelated(block.id)}
                       className="text-xs text-stone-500 transition hover:text-stone-700"
                     >
-                      相关块
+                      {t('blockCard.related')}
                     </button>
                   )}
                   {onDelete && (
@@ -325,7 +327,7 @@ export function BlockCard({
                       }}
                       className={`text-xs transition duration-150 active:scale-[0.97] ${deleteConfirm ? 'font-medium text-rose-600' : 'text-stone-400 hover:text-rose-600'}`}
                     >
-                      {deleteConfirm ? '确认删除?' : '删除'}
+                      {deleteConfirm ? t('blockCard.deleteConfirm') : t('blockCard.delete')}
                     </button>
                   )}
                 </>

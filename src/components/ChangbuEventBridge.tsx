@@ -3,7 +3,19 @@ import { useEffect } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 
 import { expandBlockChangedEvents } from '../../shared/eventBatch'
-import { applyBlockChangedEventsToCache, applyBlockChangedEventsToFlatBlockList, updateBlockListCache, updateFlatBlockListCache } from '../lib/blockListCache'
+import {
+  applyBlockChangedEventsToCache,
+  applyBlockChangedEventsToFlatBlockList,
+  coalesceBlockChangedEvents,
+  updateBlockListCache,
+  updateFlatBlockListCache,
+} from '../lib/blockListCache'
+import {
+  collectReviewQueryKeysToInvalidate,
+  getBlockEventInvalidationImpact,
+  updateBlocksByDateCaches,
+  updateCalendarDayCaches,
+} from '../lib/blockEventQueryRouting'
 import { queryKeys } from '../lib/queryKeys'
 import { changbu } from '../lib/changbu'
 
@@ -13,49 +25,97 @@ export function ChangbuEventBridge() {
   const queryClient = useQueryClient()
 
   useEffect(() => {
-    let tagGraphTimer: ReturnType<typeof setTimeout> | null = null
-    let timelineDerivedTimer: ReturnType<typeof setTimeout> | null = null
+    let blockInvalidationTimer: ReturnType<typeof setTimeout> | null = null
+    let pendingTagsInvalidation = false
+    let pendingGraphInvalidation = false
+    let pendingDataManagementInvalidation = false
+    let pendingBlockCleanupDaysInvalidation = false
+    let pendingCalendarYearsInvalidation = false
+    const pendingCalendarHeatmapYears = new Set<number>()
+    const pendingReviewDates = new Set<string>()
 
-    const scheduleTagGraphInvalidation = () => {
-      if (tagGraphTimer) {
-        clearTimeout(tagGraphTimer)
+    const flushBlockInvalidations = () => {
+      blockInvalidationTimer = null
+
+      const invalidateTasks: Array<Promise<unknown>> = []
+
+      if (pendingTagsInvalidation) {
+        invalidateTasks.push(queryClient.invalidateQueries({ queryKey: queryKeys.tags(), exact: true }))
       }
 
-      tagGraphTimer = setTimeout(() => {
-        tagGraphTimer = null
-        void Promise.all([
-          queryClient.invalidateQueries({ queryKey: queryKeys.tags(), exact: true }),
-          queryClient.invalidateQueries({ queryKey: queryKeys.graphRoot() }),
-          queryClient.invalidateQueries({ queryKey: queryKeys.dataManagement(), exact: true }),
-        ])
-      }, DEBOUNCE_INVALIDATION_MS)
+      if (pendingGraphInvalidation) {
+        invalidateTasks.push(queryClient.invalidateQueries({ queryKey: queryKeys.graphRoot() }))
+      }
+
+      if (pendingDataManagementInvalidation) {
+        invalidateTasks.push(queryClient.invalidateQueries({ queryKey: queryKeys.dataManagement(), exact: true }))
+      }
+
+      if (pendingBlockCleanupDaysInvalidation) {
+        invalidateTasks.push(queryClient.invalidateQueries({ queryKey: queryKeys.blockCleanupDays(), exact: true }))
+      }
+
+      if (pendingCalendarYearsInvalidation) {
+        invalidateTasks.push(queryClient.invalidateQueries({ queryKey: queryKeys.calendarYears(), exact: true }))
+      }
+
+      for (const year of pendingCalendarHeatmapYears) {
+        invalidateTasks.push(queryClient.invalidateQueries({ queryKey: queryKeys.calendarHeatmap(year), exact: true }))
+      }
+
+      const reviewQueryKeys = collectReviewQueryKeysToInvalidate(queryClient, Array.from(pendingReviewDates))
+
+      for (const queryKey of reviewQueryKeys) {
+        invalidateTasks.push(queryClient.invalidateQueries({ queryKey, exact: true }))
+      }
+
+      pendingTagsInvalidation = false
+      pendingGraphInvalidation = false
+      pendingDataManagementInvalidation = false
+      pendingBlockCleanupDaysInvalidation = false
+      pendingCalendarYearsInvalidation = false
+      pendingCalendarHeatmapYears.clear()
+      pendingReviewDates.clear()
+
+      if (invalidateTasks.length > 0) {
+        void Promise.all(invalidateTasks)
+      }
     }
 
-    const scheduleTimelineDerivedInvalidation = () => {
-      if (timelineDerivedTimer) {
-        clearTimeout(timelineDerivedTimer)
+    const scheduleBlockInvalidations = (impact: ReturnType<typeof getBlockEventInvalidationImpact>) => {
+      pendingTagsInvalidation = pendingTagsInvalidation || impact.invalidateTags
+      pendingGraphInvalidation = pendingGraphInvalidation || impact.invalidateGraph
+      pendingDataManagementInvalidation = pendingDataManagementInvalidation || impact.invalidateDataManagement
+      pendingBlockCleanupDaysInvalidation = pendingBlockCleanupDaysInvalidation || impact.invalidateBlockCleanupDays
+      pendingCalendarYearsInvalidation = pendingCalendarYearsInvalidation || impact.invalidateCalendarYears
+
+      for (const year of impact.heatmapYears) {
+        pendingCalendarHeatmapYears.add(year)
       }
 
-      timelineDerivedTimer = setTimeout(() => {
-        timelineDerivedTimer = null
-        void Promise.all([
-          queryClient.invalidateQueries({ queryKey: queryKeys.calendarRoot() }),
-          queryClient.invalidateQueries({ queryKey: queryKeys.reviewRoot() }),
-        ])
+      for (const dateKey of impact.reviewDates) {
+        pendingReviewDates.add(dateKey)
+      }
+
+      if (blockInvalidationTimer) {
+        clearTimeout(blockInvalidationTimer)
+      }
+
+      blockInvalidationTimer = setTimeout(() => {
+        flushBlockInvalidations()
       }, DEBOUNCE_INVALIDATION_MS)
     }
 
     const unsubscribeBatch = changbu.events.onBatch((batch) => {
-      const blockEvents = expandBlockChangedEvents(batch)
+      const expandedBlockEvents = expandBlockChangedEvents(batch)
+      const blockEvents = coalesceBlockChangedEvents(expandedBlockEvents)
 
       if (blockEvents.length > 0) {
         updateBlockListCache(queryClient, (current) => applyBlockChangedEventsToCache(current, blockEvents))
         updateFlatBlockListCache(queryClient, (current) => applyBlockChangedEventsToFlatBlockList(current, blockEvents))
-        scheduleTagGraphInvalidation()
-
-        if (blockEvents.some((event) => event.reason === 'created' || event.reason === 'updated' || event.reason === 'deleted')) {
-          scheduleTimelineDerivedInvalidation()
-        }
+        updateBlocksByDateCaches(queryClient, blockEvents)
+        updateCalendarDayCaches(queryClient, blockEvents)
+        scheduleBlockInvalidations(getBlockEventInvalidationImpact(blockEvents))
       }
 
       if (batch.notebookChanges.length > 0) {
@@ -90,13 +150,12 @@ export function ChangbuEventBridge() {
     })
 
     return () => {
-      if (tagGraphTimer) {
-        clearTimeout(tagGraphTimer)
+      if (blockInvalidationTimer) {
+        clearTimeout(blockInvalidationTimer)
       }
 
-      if (timelineDerivedTimer) {
-        clearTimeout(timelineDerivedTimer)
-      }
+      pendingCalendarHeatmapYears.clear()
+      pendingReviewDates.clear()
 
       unsubscribeBatch()
       unsubscribeQuitStateChanged()

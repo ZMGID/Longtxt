@@ -1,13 +1,34 @@
 import type { Block, CalendarEntry, ReviewMode } from '../../shared/types'
+import { resolveMessage, type MessageKey } from '../i18n/messages'
+import { compareText, getCurrentLanguage, type AppLanguage } from '../i18n/locale'
 import { formatLocalDateKey } from './format'
 
 export type TimelineReviewMode = ReviewMode
 
-export const REVIEW_MODES: Array<{ id: TimelineReviewMode; label: string }> = [
-  { id: 'daily-review', label: '每日回顾' },
-  { id: 'ai-insights', label: 'AI 洞察' },
-  { id: 'recent-shifts', label: '近期变化' },
+export const REVIEW_MODES: TimelineReviewMode[] = [
+  'daily-review',
+  'ai-insights',
+  'recent-shifts',
 ]
+
+export function getTimelineReviewModeMessageKey(mode: TimelineReviewMode): MessageKey {
+  if (mode === 'daily-review') {
+    return 'review.mode.daily'
+  }
+
+  if (mode === 'ai-insights') {
+    return 'review.mode.aiInsights'
+  }
+
+  return 'review.mode.recentShifts'
+}
+
+export function getTimelineReviewModeLabel(
+  mode: TimelineReviewMode,
+  language: AppLanguage = getCurrentLanguage(),
+): string {
+  return resolveMessage(getTimelineReviewModeMessageKey(mode), language)
+}
 
 export function shiftDateKey(dateKey: string, amount: number): string {
   const date = new Date(`${dateKey}T00:00:00`)
@@ -31,28 +52,34 @@ export function summarizeTagCounts(sourceBlocks: Block[]): Array<{ name: string;
 
   return Array.from(counts.entries())
     .map(([name, count]) => ({ name, count }))
-    .sort((left, right) => right.count - left.count || left.name.localeCompare(right.name))
+    .sort((left, right) => right.count - left.count || compareText(left.name, right.name))
 }
 
-export function extractBlockPreview(block: Block): string {
+export function extractBlockPreview(
+  block: Block,
+  language: AppLanguage = getCurrentLanguage(),
+): string {
   const firstLine = block.content
     .split('\n')
     .map((line) => line.trim())
     .find(Boolean)
 
-  return firstLine ?? '未命名块'
+  return firstLine ?? (language === 'en' ? 'Untitled block' : '未命名块')
 }
 
-export function formatDeltaLabel(value: number): string {
+export function formatDeltaLabel(
+  value: number,
+  language: AppLanguage = getCurrentLanguage(),
+): string {
   if (value > 0) {
-    return `较前 7 天 +${value}`
+    return language === 'en' ? `vs previous 7 days +${value}` : `较前 7 天 +${value}`
   }
 
   if (value < 0) {
-    return `较前 7 天 ${value}`
+    return language === 'en' ? `vs previous 7 days ${value}` : `较前 7 天 ${value}`
   }
 
-  return '较前 7 天持平'
+  return language === 'en' ? 'Flat vs previous 7 days' : '较前 7 天持平'
 }
 
 export function buildTimelineReviewDateRange(anchorDateKey: string): string[] {

@@ -28,4 +28,17 @@ describe('runChangbuCli', () => {
       },
     })
   })
+
+  it('localizes plain-text command errors for english mode', async () => {
+    const stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true)
+    const stdoutSpy = vi.spyOn(process.stdout, 'write').mockImplementation(() => true)
+
+    const exitCode = await runChangbuCli({} as AppContext, ['bad'], { language: 'en' })
+    const stderr = stderrSpy.mock.calls.map(([chunk]) => String(chunk)).join('')
+    const stdout = stdoutSpy.mock.calls.map(([chunk]) => String(chunk)).join('')
+
+    expect(exitCode).toBe(1)
+    expect(stdout).toContain('Changbu CLI')
+    expect(stderr).toContain('Unknown command: bad')
+  })
 })

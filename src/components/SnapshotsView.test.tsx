@@ -11,8 +11,21 @@ vi.mock('./MarkdownContent', () => ({
 
 const clipboardWriteText = vi.fn(async () => {})
 
-function renderSnapshots(overrides: Partial<ComponentProps<typeof SnapshotsView>> = {}) {
+function setViewportWidth(width: number) {
+  Object.defineProperty(window, 'innerWidth', {
+    configurable: true,
+    writable: true,
+    value: width,
+  })
+}
+
+function renderSnapshots(
+  overrides: Partial<ComponentProps<typeof SnapshotsView>> = {},
+  options: { width?: number } = {},
+) {
   const toast = vi.fn()
+
+  setViewportWidth(options.width ?? 1440)
 
   Object.defineProperty(window.navigator, 'clipboard', {
     configurable: true,
@@ -83,18 +96,28 @@ function renderSnapshots(overrides: Partial<ComponentProps<typeof SnapshotsView>
 
 beforeEach(() => {
   clipboardWriteText.mockClear()
+  setViewportWidth(1440)
 })
 
 describe('SnapshotsView', () => {
-  it('uses a flat two-pane layout and forwards search plus selection actions', () => {
+  it('renders the new search + reading layout and forwards search plus selection actions', () => {
     const { props } = renderSnapshots()
 
     expect(screen.getByTestId('snapshots-layout')).toBeInTheDocument()
-    expect(screen.getByText('浏览与切换')).toBeInTheDocument()
-    expect(screen.getByTestId('snapshot-row-snapshot-1')).toBeInTheDocument()
+    expect(screen.getByTestId('snapshots-browser-pane')).toBeInTheDocument()
+    expect(screen.getByTestId('snapshots-reading-pane')).toBeInTheDocument()
+    expect(screen.getByTestId('snapshots-search-bar')).toBeInTheDocument()
+    expect(screen.getByTestId('snapshots-reading-toolbar')).toBeInTheDocument()
     expect(screen.getByTestId('snapshot-markdown')).toHaveTextContent('这里是第一版文档内容。')
-    expect(screen.getByTestId('snapshots-tag-filter-section')).toBeInTheDocument()
-    expect(screen.getByText('标签')).toBeInTheDocument()
+    expect(screen.queryByRole('heading', { name: '项目回顾' })).not.toBeInTheDocument()
+    expect(screen.queryByText('阅读')).not.toBeInTheDocument()
+    expect(screen.queryByText('文档快照')).not.toBeInTheDocument()
+    expect(screen.queryByText('检索快照')).not.toBeInTheDocument()
+    expect(screen.queryByText('搜主题和正文，列表只保留定位信息，把空间留给正文阅读。')).not.toBeInTheDocument()
+
+    expect(screen.queryByTestId('snapshots-tag-filter-section')).not.toBeInTheDocument()
+    expect(screen.queryByLabelText('起始日期')).not.toBeInTheDocument()
+    expect(screen.queryByLabelText('结束日期')).not.toBeInTheDocument()
 
     fireEvent.change(screen.getByLabelText('搜索'), { target: { value: '路线图' } })
     expect(props.onSnapshotQueryChange).toHaveBeenCalledWith('路线图')
@@ -103,13 +126,12 @@ describe('SnapshotsView', () => {
     expect(props.onSelectSnapshot).toHaveBeenCalledWith('snapshot-2')
   })
 
-  it('passes current tag and date filters to export actions and triggers imports', () => {
+  it('keeps import/export in a secondary tool area and exports without tag/date filters', () => {
     const { props } = renderSnapshots()
-    const tagFilterSection = screen.getByTestId('snapshots-tag-filter-section')
 
-    fireEvent.click(within(tagFilterSection).getByRole('button', { name: /需求/ }))
-    fireEvent.change(screen.getByLabelText('起始日期'), { target: { value: '2026-04-01' } })
-    fireEvent.change(screen.getByLabelText('结束日期'), { target: { value: '2026-04-30' } })
+    expect(screen.queryByRole('button', { name: '导出 Markdown' })).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByTestId('snapshots-tools-toggle'))
 
     fireEvent.click(screen.getByRole('button', { name: '导出 Markdown' }))
     fireEvent.click(screen.getByRole('button', { name: '导出 JSON' }))
@@ -118,56 +140,20 @@ describe('SnapshotsView', () => {
 
     expect(props.onExportMarkdown).toHaveBeenCalledWith({
       includeAttachments: true,
-      tagFilter: ['需求'],
-      dateRange: {
-        start: '2026-04-01',
-        end: '2026-04-30',
-      },
     })
     expect(props.onExportJson).toHaveBeenCalledWith({
       includeAttachments: true,
-      tagFilter: ['需求'],
-      dateRange: {
-        start: '2026-04-01',
-        end: '2026-04-30',
-      },
     })
     expect(props.onPreviewMarkdownImport).toHaveBeenCalledTimes(1)
     expect(props.onPreviewJsonImport).toHaveBeenCalledTimes(1)
   })
 
-  it('uses snapshot-derived tags instead of unrelated default tag templates', () => {
-    renderSnapshots({
-      snapshots: [
-        {
-          id: 'snapshot-1',
-          topic: '项目回顾',
-          content: '内容',
-          blockIds: ['block-1'],
-          tags: [
-            { id: 'tag-user', name: '人工标签', isDefault: false, kind: 'user', source: 'manual' },
-            { id: 'tag-category', name: '工作', isDefault: true, kind: 'category', source: 'auto' },
-            { id: 'tag-meta', name: 'TODO', isDefault: true, kind: 'detail', source: 'auto' },
-          ],
-          createdAt: '2026-04-01T08:00:00.000Z',
-          updatedAt: '2026-04-01T08:00:00.000Z',
-        },
-      ],
-      selectedSnapshotId: 'snapshot-1',
-    })
-
-    const tagFilterSection = screen.getByTestId('snapshots-tag-filter-section')
-
-    expect(within(tagFilterSection).getByRole('button', { name: /人工标签/ })).toBeInTheDocument()
-    expect(within(tagFilterSection).getByRole('button', { name: /工作/ })).toBeInTheDocument()
-    expect(within(tagFilterSection).queryByRole('button', { name: /TODO/ })).not.toBeInTheDocument()
-  })
-
-  it('shows snapshot tags in the reading header', () => {
+  it('does not render snapshot tags in the list or reading header anymore', () => {
     renderSnapshots()
 
-    expect(screen.getAllByText('需求').length).toBeGreaterThan(0)
-    expect(screen.getAllByText('技术').length).toBeGreaterThan(0)
+    expect(screen.queryByText('需求')).not.toBeInTheDocument()
+    expect(screen.queryByText('技术')).not.toBeInTheDocument()
+    expect(screen.queryByText(/^标签$/)).not.toBeInTheDocument()
   })
 
   it('supports editing topic and content in place', async () => {
@@ -209,15 +195,20 @@ describe('SnapshotsView', () => {
     )
 
     expect(screen.queryByDisplayValue('另一个临时草稿')).not.toBeInTheDocument()
-    expect(screen.getByRole('heading', { name: '路线图整理' })).toBeInTheDocument()
+    expect(screen.getByTestId('snapshot-markdown')).toHaveTextContent('路线图整理')
   })
 
-  it('shows edited metadata when a snapshot has been updated', () => {
+  it('shows edited metadata plus reference info in the reading pane', () => {
     renderSnapshots({
       selectedSnapshotId: 'snapshot-2',
     })
 
-    expect(screen.getByText(/已编辑/)).toBeInTheDocument()
+    expect(screen.queryByText('正文优先展示；引用信息只保留必要上下文。')).not.toBeInTheDocument()
+
+    const referenceSection = screen.getByTestId('snapshots-reference-section')
+    expect(within(referenceSection).getByText('最近更新')).toBeInTheDocument()
+    expect(within(referenceSection).getByText('来源笔记本')).toBeInTheDocument()
+    expect(within(referenceSection).getByText('引用块')).toBeInTheDocument()
   })
 
   it('shows import preview actions and supports copy plus delete', async () => {
@@ -258,14 +249,22 @@ describe('SnapshotsView', () => {
     expect(props.onDismissImportPreview).toHaveBeenCalledTimes(1)
   })
 
-  it('renders an empty state when no snapshots are available', () => {
-    renderSnapshots({
-      snapshots: [],
-      selectedSnapshotId: null,
-      snapshotQuery: '',
-    })
+  it('switches between result list and reading pane in compact mode', () => {
+    renderSnapshots({}, { width: 900 })
 
-    expect(screen.getByText('还没有文档快照')).toBeInTheDocument()
-    expect(screen.getByText(/先在搜索生成页生成一篇文档/)).toBeInTheDocument()
+    expect(screen.getByTestId('snapshots-compact-switcher')).toBeInTheDocument()
+    expect(screen.queryByTestId('snapshots-browser-pane')).not.toBeInTheDocument()
+    expect(screen.getByTestId('snapshots-reading-pane')).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: '列表' }))
+    expect(screen.getByTestId('snapshots-browser-pane')).toBeInTheDocument()
+    expect(screen.queryByTestId('snapshots-reading-pane')).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByTestId('snapshot-row-snapshot-2'))
+    expect(screen.getByTestId('snapshots-reading-pane')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '返回结果' })).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: '返回结果' }))
+    expect(screen.getByTestId('snapshots-browser-pane')).toBeInTheDocument()
   })
 })

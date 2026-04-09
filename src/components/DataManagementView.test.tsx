@@ -207,6 +207,7 @@ describe('DataManagementView', () => {
     renderView()
 
     expect(screen.getByTestId('data-management-view')).toBeInTheDocument()
+    expect(screen.getByTestId('data-management-view').className).toContain('bg-white')
     expect(screen.queryByText('总览、备份与维护')).not.toBeInTheDocument()
     expect(screen.getByTestId('data-management-metrics')).toBeInTheDocument()
     expect(screen.getByText('128')).toBeInTheDocument()

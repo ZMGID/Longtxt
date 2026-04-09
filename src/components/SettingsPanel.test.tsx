@@ -27,6 +27,7 @@ function renderSettings(overrides: Partial<ComponentProps<typeof SettingsPanel>>
         apiKey: '',
         model: 'text-embedding-3-small',
       },
+      multimodalImageAnalysisEnabled: false,
     },
     docGenerationSettings: {
       maxReferenceBlocks: 10,
@@ -49,6 +50,7 @@ function renderSettings(overrides: Partial<ComponentProps<typeof SettingsPanel>>
     },
     uiSettings: {
       showMiniTimeline: true,
+      language: 'zh',
     },
     meta: {
       dataDirectory: '/tmp/changbu',
@@ -136,6 +138,8 @@ describe('SettingsPanel', () => {
   it('shows header actions only on configurable sections', () => {
     renderSettings()
 
+    expect(screen.getByTestId('settings-panel').className).toContain('bg-white')
+    expect(screen.getByTestId('settings-sidebar').className).toContain('bg-white')
     expect(screen.queryByRole('button', { name: '保存设置' })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: '测试连接' })).not.toBeInTheDocument()
 
@@ -295,7 +299,7 @@ describe('SettingsPanel', () => {
 
     fireEvent.click(screen.getByTestId('settings-nav-general'))
     fireEvent.click(screen.getByRole('checkbox', { name: /显示左侧时间线/ }))
-    expect(props.onUISettingsChange).toHaveBeenCalledWith({ showMiniTimeline: false })
+    expect(props.onUISettingsChange).toHaveBeenCalledWith({ showMiniTimeline: false, language: 'zh' })
   })
 
   it('shows external access controls and wires generation actions', async () => {
@@ -404,6 +408,57 @@ describe('SettingsPanel', () => {
 
     fireEvent.click(screen.getByTestId('settings-nav-general'))
     expect(screen.getByRole('checkbox', { name: /AI 建议自动加入日历/ })).toBeDisabled()
+  })
+
+  it('wires the multimodal image analysis switch and shows status from the latest api test result', () => {
+    const { props } = renderSettings({
+      config: {
+        llm: {
+          endpoint: 'https://api.example.com/v1',
+          apiKey: 'sk-live',
+          model: 'gpt-4.1-mini',
+        },
+        embedding: {
+          endpoint: 'https://api.example.com/v1',
+          apiKey: 'sk-embed',
+          model: 'text-embedding-3-small',
+        },
+        multimodalImageAnalysisEnabled: true,
+      },
+      testResult: {
+        success: true,
+        modelsOk: true,
+        embeddingOk: true,
+        llmOk: true,
+        llmStreamingOk: true,
+        llmMultimodalOk: true,
+        resolvedBaseUrl: 'https://api.example.com/v1',
+        embeddingModel: 'text-embedding-3-small',
+        embeddingDimension: 1536,
+        chatModel: 'gpt-4.1-mini',
+        checkedAt: '2026-04-09T08:00:00.000Z',
+        configFingerprint: 'fingerprint-1',
+      },
+    })
+
+    fireEvent.click(screen.getByText('模型与接口'))
+
+    expect(screen.getByText((content) => content.includes('多模态 OK'))).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('checkbox', { name: /启用多模态图片分析/ }))
+
+    expect(props.onChange).toHaveBeenCalledWith({
+      llm: {
+        endpoint: 'https://api.example.com/v1',
+        apiKey: 'sk-live',
+        model: 'gpt-4.1-mini',
+      },
+      embedding: {
+        endpoint: 'https://api.example.com/v1',
+        apiKey: 'sk-embed',
+        model: 'text-embedding-3-small',
+      },
+      multimodalImageAnalysisEnabled: false,
+    })
   })
 
   it('disables rebuild-all-vectors in advanced settings when ai is configured but not live', () => {

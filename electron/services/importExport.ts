@@ -4,7 +4,16 @@ import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:pat
 import Database from 'better-sqlite3'
 import { v4 as uuid } from 'uuid'
 
-import type { AIExecutionMode, BlockStatus, ExportOptions, ImportConflictStrategy, ImportPreview, TagKind } from '../../shared/types'
+import type {
+  AIExecutionMode,
+  BlockImageAnnotation,
+  BlockStatus,
+  ExportOptions,
+  ImportConflictStrategy,
+  ImportPreview,
+  TagKind,
+} from '../../shared/types'
+import { buildBlockSearchText, normalizeBlockImageAnnotations, parseBlockImageAnnotations } from '../db/blocks'
 import { getOrCreateTag } from '../db/tags'
 import {
   cleanupOrphanAttachments,
@@ -18,6 +27,7 @@ interface ExportBlockRow {
   id: string
   content: string
   summary: string | null
+  image_annotations: string | null
   created_at: string
   updated_at: string
   status: BlockStatus
@@ -31,6 +41,7 @@ interface PreparedImportBlock {
   sourcePath?: string
   content: string
   summary?: string | null
+  imageAnnotations?: BlockImageAnnotation[] | null
   createdAt?: string
   updatedAt?: string
   status?: BlockStatus
@@ -51,6 +62,7 @@ interface FinalizedImportBlock {
   id: string
   content: string
   summary: string | null
+  imageAnnotations: BlockImageAnnotation[]
   createdAt: string
   updatedAt: string
   status: BlockStatus
@@ -72,6 +84,7 @@ interface JsonExportBlock {
   id: string
   content: string
   summary: string | null
+  imageAnnotations?: BlockImageAnnotation[]
   createdAt: string
   updatedAt: string
   status: BlockStatus
@@ -82,7 +95,7 @@ interface JsonExportBlock {
 }
 
 interface JsonExportPayload {
-  version: 2 | 3
+  version: 2 | 3 | 4
   exportedAt: string
   settings?: Record<string, string>
   blocks: JsonExportBlock[]
@@ -192,6 +205,7 @@ function getBlockRows(db: Database.Database, ids: string[]): ExportBlockRow[] {
     .prepare(
       `
         SELECT id, content, summary, created_at, updated_at, status, ai_mode, error_message
+             , image_annotations
         FROM blocks
         WHERE id IN (${ids.map(() => '?').join(', ')})
         ORDER BY created_at ASC
@@ -278,7 +292,7 @@ export async function exportJsonBundle(
   const ids = getFilteredBlockIds(db, options)
   const blocks = getBlockRows(db, ids)
   const payload: JsonExportPayload = {
-    version: settingsSnapshot ? 3 : 2,
+    version: 4,
     exportedAt: new Date().toISOString(),
     settings: settingsSnapshot ?? undefined,
     blocks: [],
@@ -301,6 +315,7 @@ export async function exportJsonBundle(
       id: block.id,
       content: block.content,
       summary: block.summary,
+      imageAnnotations: parseBlockImageAnnotations(block.image_annotations),
       createdAt: block.created_at,
       updatedAt: block.updated_at,
       status: block.status,
@@ -430,6 +445,7 @@ export async function previewJsonImport(
     filename: basename(filePath),
     content: block.content,
     summary: block.summary ?? null,
+    imageAnnotations: normalizeBlockImageAnnotations(block.imageAnnotations),
     createdAt: block.createdAt,
     updatedAt: block.updatedAt,
     status: sanitizeImportedStatus(block.status),
@@ -509,6 +525,7 @@ export async function confirmImportJob(
         id,
         content,
         summary: block.summary ?? null,
+        imageAnnotations: normalizeBlockImageAnnotations(block.imageAnnotations),
         createdAt,
         updatedAt,
         status: job.format === 'json' ? sanitizeImportedStatus(block.status) : 'ready',
@@ -536,6 +553,8 @@ export async function confirmImportJob(
             SET
               content = ?,
               summary = ?,
+              image_annotations = ?,
+              search_text = ?,
               status = ?,
               ai_mode = ?,
               error_message = ?,
@@ -543,17 +562,39 @@ export async function confirmImportJob(
               updated_at = ?
             WHERE id = ?
           `,
-        ).run(block.content, block.summary, block.status, block.aiMode, block.errorMessage, block.createdAt, block.updatedAt, block.id)
+        ).run(
+          block.content,
+          block.summary,
+          JSON.stringify(block.imageAnnotations),
+          buildBlockSearchText(block.content, block.imageAnnotations),
+          block.status,
+          block.aiMode,
+          block.errorMessage,
+          block.createdAt,
+          block.updatedAt,
+          block.id,
+        )
 
         db.prepare(`DELETE FROM block_tags WHERE block_id = ?`).run(block.id)
         updatedIds.push(block.id)
       } else {
         db.prepare(
           `
-            INSERT INTO blocks (id, content, summary, status, ai_mode, error_message, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO blocks (id, content, summary, image_annotations, search_text, status, ai_mode, error_message, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
           `,
-        ).run(block.id, block.content, block.summary, block.status, block.aiMode, block.errorMessage, block.createdAt, block.updatedAt)
+        ).run(
+          block.id,
+          block.content,
+          block.summary,
+          JSON.stringify(block.imageAnnotations),
+          buildBlockSearchText(block.content, block.imageAnnotations),
+          block.status,
+          block.aiMode,
+          block.errorMessage,
+          block.createdAt,
+          block.updatedAt,
+        )
         createdIds.push(block.id)
       }
 

@@ -1,3 +1,4 @@
+import { getCurrentLanguage, type AppLanguage } from '../i18n/locale'
 import type { Block } from '../../shared/types'
 import type { BlockListChangeHint } from './blockListCache'
 import { formatLocalDateKey } from './format'
@@ -141,8 +142,11 @@ export function reconcileTimelineDateCountState(
   }
 }
 
-export function buildMiniTimelineDerivedState(blocks: Block[]): MiniTimelineDerivedState {
-  const groups = buildMiniTimelineGroups(blocks)
+export function buildMiniTimelineDerivedState(
+  blocks: Block[],
+  language: AppLanguage = getCurrentLanguage(),
+): MiniTimelineDerivedState {
+  const groups = buildMiniTimelineGroups(blocks, language)
 
   return {
     totalBlocks: blocks.length,
@@ -154,13 +158,14 @@ export function buildMiniTimelineDerivedState(blocks: Block[]): MiniTimelineDeri
 function appendMiniTimelineState(
   previousState: MiniTimelineDerivedState,
   appendedBlocks: Block[],
+  language: AppLanguage,
 ): MiniTimelineDerivedState {
   if (appendedBlocks.length === 0) {
     return previousState
   }
 
   const currentSeeds = previousState.groups.map(toSeed)
-  const appendedSeeds = buildMiniTimelineGroups(appendedBlocks).map(toSeed)
+  const appendedSeeds = buildMiniTimelineGroups(appendedBlocks, language).map(toSeed)
   const nextSeeds = currentSeeds.slice()
   let appendedIndex = 0
 
@@ -197,12 +202,13 @@ function appendMiniTimelineState(
 function prependMiniTimelineState(
   previousState: MiniTimelineDerivedState,
   prependedBlocks: Block[],
+  language: AppLanguage,
 ): MiniTimelineDerivedState {
   if (prependedBlocks.length === 0) {
     return previousState
   }
 
-  const prependedSeeds = buildMiniTimelineGroups(prependedBlocks).map(toSeed)
+  const prependedSeeds = buildMiniTimelineGroups(prependedBlocks, language).map(toSeed)
   const shiftedCurrentSeeds = previousState.groups.map((group) => ({
     ...toSeed(group),
     startIndex: group.startIndex + prependedBlocks.length,
@@ -232,23 +238,24 @@ export function reconcileMiniTimelineDerivedState(
   previousState: MiniTimelineDerivedState | null,
   blocks: Block[],
   changeHint: BlockListChangeHint,
+  language: AppLanguage = getCurrentLanguage(),
 ): MiniTimelineDerivedState {
   if (!previousState || changeHint.type === 'reset' || changeHint.type === 'noop') {
-    return buildMiniTimelineDerivedState(blocks)
+    return buildMiniTimelineDerivedState(blocks, language)
   }
 
   switch (changeHint.type) {
     case 'append':
-      return appendMiniTimelineState(previousState, changeHint.blocks)
+      return appendMiniTimelineState(previousState, changeHint.blocks, language)
     case 'prepend':
-      return prependMiniTimelineState(previousState, changeHint.blocks)
+      return prependMiniTimelineState(previousState, changeHint.blocks, language)
     case 'replace': {
       const previousDateKey = changeHint.previousBlock ? formatLocalDateKey(changeHint.previousBlock.createdAt) : null
       const nextDateKey = formatLocalDateKey(changeHint.block.createdAt)
-      return previousDateKey === nextDateKey ? previousState : buildMiniTimelineDerivedState(blocks)
+      return previousDateKey === nextDateKey ? previousState : buildMiniTimelineDerivedState(blocks, language)
     }
     case 'remove':
     case 'remove-many':
-      return buildMiniTimelineDerivedState(blocks)
+      return buildMiniTimelineDerivedState(blocks, language)
   }
 }

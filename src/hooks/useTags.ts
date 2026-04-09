@@ -1,5 +1,6 @@
 import { useQuery } from '@tanstack/react-query'
 
+import { getCurrentLanguage } from '../i18n/locale'
 import { queryKeys } from '../lib/queryKeys'
 import { changbu } from '../lib/changbu'
 
@@ -12,7 +13,7 @@ export function useTags() {
   return {
     tags: query.data ?? [],
     loading: query.isPending,
-    error: query.error instanceof Error ? query.error.message : query.error ? '加载标签失败。' : null,
+    error: query.error instanceof Error ? query.error.message : query.error ? (getCurrentLanguage() === 'en' ? 'Failed to load tags.' : '加载标签失败。') : null,
     refresh: query.refetch,
   }
 }

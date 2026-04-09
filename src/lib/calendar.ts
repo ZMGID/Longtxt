@@ -1,4 +1,5 @@
 import type { CalendarDaySummary, CalendarEntry } from '../../shared/types'
+import { compareIsoDateOrTime, formatDateByLanguage, getCurrentLanguage, type AppLanguage } from '../i18n/locale'
 
 export interface CalendarHeatmapColumn {
   key: string
@@ -27,7 +28,10 @@ function getWeekdayIndex(date: Date): number {
   return (date.getDay() + 6) % 7
 }
 
-export function buildCalendarHeatmapColumns(days: CalendarDaySummary[]): CalendarHeatmapColumn[] {
+export function buildCalendarHeatmapColumns(
+  days: CalendarDaySummary[],
+  language: AppLanguage = getCurrentLanguage(),
+): CalendarHeatmapColumn[] {
   if (days.length === 0) {
     return []
   }
@@ -53,7 +57,7 @@ export function buildCalendarHeatmapColumns(days: CalendarDaySummary[]): Calenda
       const day = dayMap.get(key) ?? null
 
       if (!monthLabel && day && cursor.getMonth() !== lastLabeledMonth && cursor.getDate() <= 7) {
-        monthLabel = new Intl.DateTimeFormat('en-US', { month: 'short' }).format(cursor)
+        monthLabel = formatDateByLanguage(cursor, { month: 'short' }, language)
         lastLabeledMonth = cursor.getMonth()
       }
 
@@ -72,16 +76,20 @@ export function buildCalendarHeatmapColumns(days: CalendarDaySummary[]): Calenda
 }
 
 export function formatCalendarDateLabel(value: string): string {
-  return new Intl.DateTimeFormat('zh-CN', {
+  return formatDateByLanguage(parseDate(value), {
     year: 'numeric',
     month: 'long',
     day: 'numeric',
     weekday: 'long',
-  }).format(parseDate(value))
+  })
 }
 
 export function formatCalendarTimeLabel(value: string | null): string {
-  return value ?? '全天'
+  if (value) {
+    return value
+  }
+
+  return getCurrentLanguage() === 'en' ? 'All day' : '全天'
 }
 
 export function groupUpcomingEntries(entries: CalendarEntry[]): GroupedCalendarEntries[] {
@@ -94,7 +102,7 @@ export function groupUpcomingEntries(entries: CalendarEntry[]): GroupedCalendarE
   }
 
   return Array.from(groups.entries())
-    .sort((left, right) => left[0].localeCompare(right[0]))
+    .sort((left, right) => compareIsoDateOrTime(left[0], right[0]))
     .map(([date, items]) => ({
       date,
       items,

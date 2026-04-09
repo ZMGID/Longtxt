@@ -230,6 +230,7 @@ export function parseApiTestResult(raw: string | null): ApiTestResult | null {
       embeddingOk: Boolean(parsed.embeddingOk),
       llmOk: Boolean(parsed.llmOk),
       llmStreamingOk: Boolean(parsed.llmStreamingOk),
+      llmMultimodalOk: Boolean(parsed.llmMultimodalOk),
       resolvedBaseUrl: parsed.resolvedBaseUrl ?? '',
       embeddingModel: parsed.embeddingModel ?? '',
       embeddingDimension: typeof parsed.embeddingDimension === 'number' ? parsed.embeddingDimension : null,

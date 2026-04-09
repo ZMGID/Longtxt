@@ -6,6 +6,9 @@ import { queryKeys } from '../lib/queryKeys'
 
 export type DataManagementOverviewResult = DataManagementOverview & {
   compatibilityMode?: 'missing-handler'
+  databasePathPending?: true
+  settingsDirectoryPending?: true
+  settingsFilePathPending?: true
 }
 
 function isMissingOverviewHandlerError(error: unknown): boolean {
@@ -28,9 +31,12 @@ export function useDataManagementOverview() {
         return {
           compatibilityMode: 'missing-handler',
           dataDirectory: meta.dataDirectory,
-          databasePath: '需要重启应用后读取',
-          settingsDirectory: '需要重启应用后读取',
-          settingsFilePath: '需要重启应用后读取',
+          databasePath: '',
+          settingsDirectory: '',
+          settingsFilePath: '',
+          databasePathPending: true,
+          settingsDirectoryPending: true,
+          settingsFilePathPending: true,
           totalBlockCount: meta.totalBlockCount,
           totalNotebookCount: -1,
           totalSnapshotCount: -1,

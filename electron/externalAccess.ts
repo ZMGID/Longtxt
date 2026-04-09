@@ -2,8 +2,8 @@ import { constants } from 'node:fs'
 import { access, chmod, mkdir, readFile, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 
-import { APP_NAME } from '../shared/config'
-import type { ExternalAccessSettings, ExternalAccessStatus } from '../shared/types'
+import { getAppDisplayName } from '../shared/config'
+import type { AppLanguage, ExternalAccessSettings, ExternalAccessStatus } from '../shared/types'
 
 export interface ExternalAccessCliLaunchSpec {
   executablePath: string
@@ -37,6 +37,10 @@ interface ExternalAccessPaths {
 
 const COMMAND_NAME = 'changbu-notes'
 const SKILL_DIRECTORY_NAME = 'changbu-notes'
+
+function getExternalAccessSearchKeyword(language: AppLanguage): string {
+  return language === 'en' ? 'server info' : '服务器信息'
+}
 
 function quotePosixArg(value: string): string {
   return `'${value.replace(/'/g, `'\"'\"'`)}'`
@@ -173,17 +177,57 @@ function areExecutablePathsEquivalent(left: string | null, right: string | null)
   return normalizeForCompare(left) === normalizeForCompare(right)
 }
 
-function buildSkillMarkdown(cliPath: string): string {
+function buildSkillMarkdown(cliPath: string, language: AppLanguage): string {
   const quotedCliPath = formatExternalAccessDisplayExecutable(cliPath)
+  const appName = getAppDisplayName(language)
+  const searchKeyword = getExternalAccessSearchKeyword(language)
 
-  return `---
+  if (language === 'en') {
+    return `---
 name: ${SKILL_DIRECTORY_NAME}
-description: Search, read, create, update, and delete notes in ${APP_NAME} by calling the local ${COMMAND_NAME} CLI. Use this when the user asks about personal notes, server info, project context, saved facts, or anything stored in ${APP_NAME}.
+description: Search, read, create, update, and delete notes in ${appName} via the local ${COMMAND_NAME} CLI. Use this when users ask about personal notes, project context, saved facts, or anything stored in ${appName}.
 ---
 
 # ${SKILL_DIRECTORY_NAME}
 
-Use ${APP_NAME} as the source of truth for personal notes. Prefer querying ${APP_NAME} first instead of guessing from memory.
+Use ${appName} as the source of truth for personal notes. Query ${appName} first instead of guessing from memory.
+
+## Strategy
+
+1. For broad questions, run \`${quotedCliPath} search "<query>" --limit 5 --json\`.
+2. If multiple candidates appear, inspect top block ids with \`${quotedCliPath} get <block-id> --json\`.
+3. When users need a new note, run \`${quotedCliPath} create "<content>" --json\`.
+4. For updates or deletes, run \`${quotedCliPath} update <block-id> "<content>" --json\` or \`${quotedCliPath} remove <block-id> --json\`.
+5. Always mention block id after create, update, or delete.
+
+## Commands
+
+- Search notes: \`${quotedCliPath} search "${searchKeyword}" --limit 5 --json\`
+- Search by tag: \`${quotedCliPath} tag "project" --limit 10 --json\`
+- Inspect one block: \`${quotedCliPath} get <block-id> --json\`
+- List recent blocks: \`${quotedCliPath} list --limit 10 --json\`
+- Create a block: \`${quotedCliPath} create "record content" --json\`
+- Update a block: \`${quotedCliPath} update <block-id> "new content" --json\`
+- Delete a block: \`${quotedCliPath} remove <block-id> --json\`
+- Check access status: \`${quotedCliPath} doctor --json\`
+
+## Rules
+
+- Search before answering stored-knowledge questions.
+- Use \`get\` for final confirmation when precision matters.
+- Never delete or overwrite notes unless users clearly ask.
+- If ${COMMAND_NAME} reports external access is disabled, tell users to re-enable it in ${appName} settings.
+`
+  }
+
+  return `---
+name: ${SKILL_DIRECTORY_NAME}
+description: Search, read, create, update, and delete notes in ${appName} by calling the local ${COMMAND_NAME} CLI. Use this when the user asks about personal notes, server info, project context, saved facts, or anything stored in ${appName}.
+---
+
+# ${SKILL_DIRECTORY_NAME}
+
+Use ${appName} as the source of truth for personal notes. Prefer querying ${appName} first instead of guessing from memory.
 
 ## Strategy
 
@@ -195,7 +239,7 @@ Use ${APP_NAME} as the source of truth for personal notes. Prefer querying ${APP
 
 ## Commands
 
-- Search notes: \`${quotedCliPath} search "服务器信息" --limit 5 --json\`
+- Search notes: \`${quotedCliPath} search "${searchKeyword}" --limit 5 --json\`
 - Search by tag: \`${quotedCliPath} tag "项目" --limit 10 --json\`
 - Inspect one block: \`${quotedCliPath} get <block-id> --json\`
 - List recent blocks: \`${quotedCliPath} list --limit 10 --json\`
@@ -209,14 +253,41 @@ Use ${APP_NAME} as the source of truth for personal notes. Prefer querying ${APP
 - Search before answering questions about stored knowledge.
 - Use \`get\` for final confirmation when accuracy matters.
 - Do not delete or overwrite notes unless the user clearly asks.
-- If ${COMMAND_NAME} reports that external access is disabled, tell the user to re-enable it in ${APP_NAME} settings.
+- If ${COMMAND_NAME} reports that external access is disabled, tell the user to re-enable it in ${appName} settings.
 `
 }
 
-function buildIntegrationReadme(cliPath: string, skillDirectory: string): string {
+function buildIntegrationReadme(cliPath: string, skillDirectory: string, language: AppLanguage): string {
   const quotedCliPath = formatExternalAccessDisplayExecutable(cliPath)
+  const appName = getAppDisplayName(language)
+  const searchKeyword = getExternalAccessSearchKeyword(language)
 
-  return `# 长布外部接入
+  if (language === 'en') {
+    return `# ${appName} External Access
+
+This directory is a **complete generic local integration bundle**. It does not depend on a specific AI tool.
+
+Core idea:
+
+- Any AI tool that supports **shell / terminal** can directly call \`${quotedCliPath}\`
+
+## Bundle Structure
+
+- CLI wrapper script: \`${cliPath}\`
+- Overview: \`README.md\`
+- Generic guides: \`guides/\`
+- Examples: \`examples/\`
+- Adapter templates: \`adapters/\`
+
+## Recommended Workflow
+
+1. Search first: \`${quotedCliPath} search "${searchKeyword}" --limit 5 --json\`
+2. Confirm next: \`${quotedCliPath} get <block-id> --json\`
+3. Then decide whether to create / update / remove
+`
+  }
+
+  return `# ${appName}外部接入
 
 这个目录提供的是**完整的通用本地接入包**，不依赖某一个 AI 工具。
 
@@ -255,11 +326,11 @@ function buildIntegrationReadme(cliPath: string, skillDirectory: string): string
 1. 让工具具备 shell 执行能力
 2. 优先使用 \`guides/AGENTS.md\` 作为通用规则
 3. 再按工具选择 \`adapters/\` 里的对应模板
-4. 让工具通过 CLI 来访问长布，而不是直接读数据库
+4. 让工具通过 CLI 来访问${appName}，而不是直接读数据库
 
 ## 推荐工作流
 
-1. 先搜：\`${quotedCliPath} search "服务器信息" --limit 5 --json\`
+1. 先搜：\`${quotedCliPath} search "${searchKeyword}" --limit 5 --json\`
 2. 再确认：\`${quotedCliPath} get <block-id> --json\`
 3. 再决定是否创建 / 更新 / 删除
 
@@ -288,10 +359,37 @@ function buildIntegrationReadme(cliPath: string, skillDirectory: string): string
 `
 }
 
-function buildAgentGuide(cliPath: string): string {
+function buildAgentGuide(cliPath: string, language: AppLanguage): string {
   const quotedCliPath = formatExternalAccessDisplayExecutable(cliPath)
+  const appName = getAppDisplayName(language)
 
-  return `# 长布笔记接入说明
+  if (language === 'en') {
+    return `# ${appName} Notes Integration
+
+Treat ${appName} as the user's personal knowledge base, and query through local CLI first.
+
+## Tool Boundary
+
+- Access ${appName} only via \`${quotedCliPath}\`
+- Do not read the database directly or guess note contents
+
+## Query Rules
+
+1. Before answering note-related questions, run \`${quotedCliPath} search "<query>" --limit 5 --json\`
+2. If multiple candidates appear, run \`${quotedCliPath} get <block-id> --json\` to verify
+3. For high-accuracy answers, always verify with \`get\` first
+
+## Write Rules
+
+- Create: \`${quotedCliPath} create "<content>" --json\`
+- Update: \`${quotedCliPath} update <block-id> "<content>" --json\`
+- Remove: \`${quotedCliPath} remove <block-id> --json\`
+- Always return block id after create/update/remove
+- Never delete or overwrite content without explicit user request
+`
+  }
+
+  return `# ${appName}笔记接入说明
 
 把长布当作用户个人知识库，所有查询都优先通过本地 CLI 完成。
 
@@ -318,14 +416,38 @@ function buildAgentGuide(cliPath: string): string {
 
 - 用户按标签找内容时，用 \`${quotedCliPath} tag "<tagName>" --limit 10 --json\`
 - 用户想看最近内容时，用 \`${quotedCliPath} list --limit 10 --json\`
-- 如果 CLI 提示外部接入未启用，告知用户去长布设置里重新启用
+- 如果 CLI 提示外部接入未启用，告知用户去${appName}设置里重新启用
 `
 }
 
-function buildCommandsGuide(cliPath: string): string {
+function buildCommandsGuide(cliPath: string, language: AppLanguage): string {
   const quotedCliPath = formatExternalAccessDisplayExecutable(cliPath)
+  const appName = getAppDisplayName(language)
 
-  return `# 长布 CLI 命令说明
+  if (language === 'en') {
+    return `# ${appName} CLI Command Guide
+
+## Principles
+
+- All commands support \`--json\`
+- Query before reading; read before answering
+- Confirm user intent before real writes
+
+## Commands
+
+- Doctor: \`${quotedCliPath} doctor --json\`
+- Search: \`${quotedCliPath} search "keyword" --limit 5 --json\`
+- Search by tag: \`${quotedCliPath} tag "tag-name" --limit 10 --json\`
+- Read one block: \`${quotedCliPath} get <block-id> --json\`
+- List recent: \`${quotedCliPath} list --limit 10 --json\`
+- Create: \`${quotedCliPath} create "content" --json\`
+- Update: \`${quotedCliPath} update <block-id> "new content" --json\`
+- Remove: \`${quotedCliPath} remove <block-id> --json\`
+- List tags: \`${quotedCliPath} tags --json\`
+`
+  }
+
+  return `# ${appName} CLI 命令说明
 
 ## 基本原则
 
@@ -353,10 +475,33 @@ function buildCommandsGuide(cliPath: string): string {
 `
 }
 
-function buildWorkflowsGuide(cliPath: string): string {
+function buildWorkflowsGuide(cliPath: string, language: AppLanguage): string {
   const quotedCliPath = formatExternalAccessDisplayExecutable(cliPath)
+  const appName = getAppDisplayName(language)
 
-  return `# 长布接入工作流
+  if (language === 'en') {
+    return `# ${appName} Integration Workflows
+
+## 1. Query Existing Knowledge
+
+1. Search first: \`${quotedCliPath} search "<query>" --limit 5 --json\`
+2. If multiple results, verify with \`${quotedCliPath} get <block-id> --json\`
+3. Answer based on retrieved content only
+
+## 2. Browse by Tag
+
+1. Run \`${quotedCliPath} tag "<tagName>" --limit 10 --json\`
+2. Use \`get\` to inspect details when needed
+
+## 3. Create / Update / Remove
+
+1. Confirm target and intent
+2. Execute create/update/remove
+3. Always return block id
+`
+  }
+
+  return `# ${appName}接入工作流
 
 ## 1. 查询已有知识
 
@@ -390,8 +535,23 @@ function buildWorkflowsGuide(cliPath: string): string {
 `
 }
 
-function buildSearchExample(cliPath: string): string {
+function buildSearchExample(cliPath: string, language: AppLanguage): string {
   const quotedCliPath = formatExternalAccessDisplayExecutable(cliPath)
+  const searchKeyword = getExternalAccessSearchKeyword(language)
+
+  if (language === 'en') {
+    return `# Example: Search and Verify
+
+User: Check my server info in Changbu.
+
+Recommended steps:
+
+1. Run \`${quotedCliPath} search "${searchKeyword}" --limit 5 --json\`
+2. Pick the most relevant block id
+3. Run \`${quotedCliPath} get <block-id> --json\`
+4. Answer from verified content
+`
+  }
 
   return `# 示例：搜索并确认
 
@@ -399,15 +559,34 @@ function buildSearchExample(cliPath: string): string {
 
 建议步骤：
 
-1. 运行 \`${quotedCliPath} search "服务器信息" --limit 5 --json\`
+1. 运行 \`${quotedCliPath} search "${searchKeyword}" --limit 5 --json\`
 2. 从结果里选最相关的 block id
 3. 再运行 \`${quotedCliPath} get <block-id> --json\`
 4. 根据真实内容回答
 `
 }
 
-function buildCrudExample(cliPath: string): string {
+function buildCrudExample(cliPath: string, language: AppLanguage): string {
   const quotedCliPath = formatExternalAccessDisplayExecutable(cliPath)
+
+  if (language === 'en') {
+    return `# Example: Create, Update, Remove
+
+## Create
+
+\`${quotedCliPath} create "add a new server note" --json\`
+
+## Update
+
+\`${quotedCliPath} update <block-id> "updated server note" --json\`
+
+## Remove
+
+\`${quotedCliPath} remove <block-id> --json\`
+
+Always report block id after write operations.
+`
+  }
 
   return `# 示例：新增、更新、删除
 
@@ -427,12 +606,27 @@ function buildCrudExample(cliPath: string): string {
 `
 }
 
-function buildGenericShellAdapter(cliPath: string): string {
-  return buildAgentGuide(cliPath)
+function buildGenericShellAdapter(cliPath: string, language: AppLanguage): string {
+  return buildAgentGuide(cliPath, language)
 }
 
-function buildCodexAdapter(cliPath: string): string {
+function buildCodexAdapter(cliPath: string, language: AppLanguage): string {
   const quotedCliPath = formatExternalAccessDisplayExecutable(cliPath)
+  const appName = getAppDisplayName(language)
+
+  if (language === 'en') {
+    return `# Codex / Codex CLI Adapter Template
+
+Treat ${appName} as an external knowledge base. Use local CLI first instead of direct database access.
+
+## Rules
+
+- Search first: \`${quotedCliPath} search "<query>" --limit 5 --json\`
+- Verify next: \`${quotedCliPath} get <block-id> --json\`
+- Return block id after writes
+- Do not remove content without explicit user request
+`
+  }
 
   return `# Codex / Codex CLI 接入模板
 
@@ -447,8 +641,21 @@ function buildCodexAdapter(cliPath: string): string {
 `
 }
 
-function buildCursorAdapter(cliPath: string): string {
+function buildCursorAdapter(cliPath: string, language: AppLanguage): string {
   const quotedCliPath = formatExternalAccessDisplayExecutable(cliPath)
+
+  if (language === 'en') {
+    return `# Cursor Agent Adapter Template
+
+When tasks involve user notes, saved facts, or project context in Changbu, use local CLI first.
+
+## Recommended Flow
+
+1. \`${quotedCliPath} search "<query>" --limit 5 --json\`
+2. If needed, \`${quotedCliPath} get <block-id> --json\`
+3. For writes, run create / update / remove
+`
+  }
 
   return `# Cursor Agent 接入模板
 
@@ -465,6 +672,7 @@ function buildCursorAdapter(cliPath: string): string {
 export async function getExternalAccessStatus(
   settings: ExternalAccessSettings,
   options: ExternalAccessOptions,
+  language: AppLanguage = 'zh',
 ): Promise<ExternalAccessStatus> {
   const paths = resolveExternalAccessPaths(options)
   const executablePath = options.cliLaunchSpec.executablePath
@@ -511,65 +719,76 @@ export async function getExternalAccessStatus(
   ])
 
   const issues: string[] = []
+  const isEnglish = language === 'en'
 
   if (!settings.enabled) {
-    issues.push('外部接入未启用。')
+    issues.push(isEnglish ? 'External access is not enabled.' : '外部接入未启用。')
   }
 
   if (settings.enabled && !executableExists) {
-    issues.push('当前长布可执行文件不存在，CLI 无法启动。')
+    issues.push(isEnglish
+      ? 'The current Changbu executable does not exist, so CLI cannot start.'
+      : '当前长布可执行文件不存在，CLI 无法启动。')
   }
 
   if (settings.enabled && !cliExists) {
-    issues.push('本地 CLI 包装脚本还没有生成。')
+    issues.push(isEnglish ? 'Local CLI wrapper has not been generated yet.' : '本地 CLI 包装脚本还没有生成。')
   }
 
   if (settings.enabled && cliExists && !wrapperExecutablePath) {
-    issues.push('CLI 包装脚本缺少有效的启动路径，请重新生成。')
+    issues.push(isEnglish
+      ? 'CLI wrapper is missing a valid executable path. Regenerate it.'
+      : 'CLI 包装脚本缺少有效的启动路径，请重新生成。')
   }
 
   if (settings.enabled && wrapperExecutablePath && !wrapperExecutableExists) {
-    issues.push('CLI 包装脚本仍指向旧的长布可执行文件，请重新生成。')
+    issues.push(isEnglish
+      ? 'CLI wrapper still points to an old Changbu executable. Regenerate it.'
+      : 'CLI 包装脚本仍指向旧的长布可执行文件，请重新生成。')
   }
 
   if (settings.enabled && wrapperExecutablePath && !areExecutablePathsEquivalent(wrapperExecutablePath, executablePath)) {
-    issues.push('CLI 包装脚本与当前长布可执行文件路径不一致，请重新生成。')
+    issues.push(isEnglish
+      ? 'CLI wrapper executable path does not match current Changbu executable. Regenerate it.'
+      : 'CLI 包装脚本与当前长布可执行文件路径不一致，请重新生成。')
   }
 
   if (settings.enabled && !integrationReadmeExists) {
-    issues.push('通用接入说明 README 还没有生成。')
+    issues.push(isEnglish ? 'Integration README has not been generated yet.' : '通用接入说明 README 还没有生成。')
   }
 
   if (settings.enabled && !agentGuideExists) {
-    issues.push('通用 AGENTS 提示文件还没有生成。')
+    issues.push(isEnglish ? 'Generic AGENTS guide has not been generated yet.' : '通用 AGENTS 提示文件还没有生成。')
   }
 
   if (settings.enabled && !commandsGuideExists) {
-    issues.push('命令说明还没有生成。')
+    issues.push(isEnglish ? 'Commands guide has not been generated yet.' : '命令说明还没有生成。')
   }
 
   if (settings.enabled && !workflowsGuideExists) {
-    issues.push('工作流说明还没有生成。')
+    issues.push(isEnglish ? 'Workflow guide has not been generated yet.' : '工作流说明还没有生成。')
   }
 
   if (settings.enabled && (!searchExampleExists || !crudExampleExists)) {
-    issues.push('示例文件还没有生成完整。')
+    issues.push(isEnglish ? 'Example files are incomplete.' : '示例文件还没有生成完整。')
   }
 
   if (settings.enabled && !genericShellGuideExists) {
-    issues.push('generic-shell 适配模板还没有生成。')
+    issues.push(isEnglish ? 'generic-shell adapter template has not been generated yet.' : 'generic-shell 适配模板还没有生成。')
   }
 
   if (settings.enabled && !codexGuideExists) {
-    issues.push('Codex 适配模板还没有生成。')
+    issues.push(isEnglish ? 'Codex adapter template has not been generated yet.' : 'Codex 适配模板还没有生成。')
   }
 
   if (settings.enabled && !cursorGuideExists) {
-    issues.push('Cursor 适配模板还没有生成。')
+    issues.push(isEnglish ? 'Cursor adapter template has not been generated yet.' : 'Cursor 适配模板还没有生成。')
   }
 
   if (settings.enabled && !skillExists) {
-    issues.push('Claude Skill 模板还没有生成，但不影响通用 CLI 使用。')
+    issues.push(isEnglish
+      ? 'Claude Skill template has not been generated yet, but generic CLI usage is still available.'
+      : 'Claude Skill 模板还没有生成，但不影响通用 CLI 使用。')
   }
 
   return {
@@ -608,12 +827,15 @@ export async function getExternalAccessStatus(
     cliExists,
     skillExists,
     doctorCommand: `${formatExternalAccessDisplayExecutable(paths.cliPath)} doctor --json`,
-    searchCommandExample: `${formatExternalAccessDisplayExecutable(paths.cliPath)} search "服务器信息" --limit 5 --json`,
+    searchCommandExample: `${formatExternalAccessDisplayExecutable(paths.cliPath)} search "${getExternalAccessSearchKeyword(language)}" --limit 5 --json`,
     issues,
   }
 }
 
-export async function setupExternalAccessFiles(options: ExternalAccessOptions): Promise<void> {
+export async function setupExternalAccessFiles(
+  options: ExternalAccessOptions,
+  language: AppLanguage = 'zh',
+): Promise<void> {
   const paths = resolveExternalAccessPaths(options)
 
   await mkdir(paths.cliDirectory, { recursive: true })
@@ -625,19 +847,19 @@ export async function setupExternalAccessFiles(options: ExternalAccessOptions): 
   await mkdir(paths.skillDirectory, { recursive: true })
 
   await writeFile(paths.cliPath, buildCliWrapper(options), 'utf8')
-  await writeFile(paths.integrationReadmePath, buildIntegrationReadme(paths.cliPath, paths.skillDirectory), 'utf8')
-  await writeFile(paths.agentGuidePath, buildAgentGuide(paths.cliPath), 'utf8')
-  await writeFile(paths.commandsGuidePath, buildCommandsGuide(paths.cliPath), 'utf8')
-  await writeFile(paths.workflowsGuidePath, buildWorkflowsGuide(paths.cliPath), 'utf8')
-  await writeFile(paths.searchExamplePath, buildSearchExample(paths.cliPath), 'utf8')
-  await writeFile(paths.crudExamplePath, buildCrudExample(paths.cliPath), 'utf8')
-  await writeFile(paths.genericShellGuidePath, buildGenericShellAdapter(paths.cliPath), 'utf8')
-  await writeFile(paths.codexGuidePath, buildCodexAdapter(paths.cliPath), 'utf8')
-  await writeFile(paths.cursorGuidePath, buildCursorAdapter(paths.cliPath), 'utf8')
+  await writeFile(paths.integrationReadmePath, buildIntegrationReadme(paths.cliPath, paths.skillDirectory, language), 'utf8')
+  await writeFile(paths.agentGuidePath, buildAgentGuide(paths.cliPath, language), 'utf8')
+  await writeFile(paths.commandsGuidePath, buildCommandsGuide(paths.cliPath, language), 'utf8')
+  await writeFile(paths.workflowsGuidePath, buildWorkflowsGuide(paths.cliPath, language), 'utf8')
+  await writeFile(paths.searchExamplePath, buildSearchExample(paths.cliPath, language), 'utf8')
+  await writeFile(paths.crudExamplePath, buildCrudExample(paths.cliPath, language), 'utf8')
+  await writeFile(paths.genericShellGuidePath, buildGenericShellAdapter(paths.cliPath, language), 'utf8')
+  await writeFile(paths.codexGuidePath, buildCodexAdapter(paths.cliPath, language), 'utf8')
+  await writeFile(paths.cursorGuidePath, buildCursorAdapter(paths.cliPath, language), 'utf8')
 
   if (process.platform !== 'win32') {
     await chmod(paths.cliPath, 0o755)
   }
 
-  await writeFile(paths.skillFilePath, buildSkillMarkdown(paths.cliPath), 'utf8')
+  await writeFile(paths.skillFilePath, buildSkillMarkdown(paths.cliPath, language), 'utf8')
 }

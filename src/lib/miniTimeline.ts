@@ -1,4 +1,5 @@
 import type { Block } from '../../shared/types'
+import { formatDateByLanguage, getCurrentLanguage, type AppLanguage } from '../i18n/locale'
 
 export interface MiniTimelineGroup {
   key: string
@@ -9,7 +10,7 @@ export interface MiniTimelineGroup {
   positionRatio: number
 }
 
-export function buildMiniTimelineGroups(blocks: Block[]): MiniTimelineGroup[] {
+export function buildMiniTimelineGroups(blocks: Block[], language: AppLanguage = getCurrentLanguage()): MiniTimelineGroup[] {
   if (blocks.length === 0) {
     return []
   }
@@ -22,14 +23,14 @@ export function buildMiniTimelineGroups(blocks: Block[]): MiniTimelineGroup[] {
 
     if (previousGroup?.key === key) {
       previousGroup.count += 1
-      previousGroup.title = formatMiniTimelineTitle(block.createdAt, previousGroup.count)
+      previousGroup.title = formatMiniTimelineTitle(block.createdAt, previousGroup.count, language)
       return
     }
 
     groups.push({
       key,
       label: formatMiniTimelineLabel(block.createdAt),
-      title: formatMiniTimelineTitle(block.createdAt, 1),
+      title: formatMiniTimelineTitle(block.createdAt, 1, language),
       startIndex: index,
       count: 1,
     })
@@ -82,12 +83,14 @@ function formatMiniTimelineLabel(value: string): string {
   return `${String(date.getMonth() + 1).padStart(2, '0')}.${String(date.getDate()).padStart(2, '0')}`
 }
 
-function formatMiniTimelineTitle(value: string, count: number): string {
-  const dateLabel = new Intl.DateTimeFormat('zh-CN', {
+function formatMiniTimelineTitle(value: string, count: number, language: AppLanguage): string {
+  const dateLabel = formatDateByLanguage(new Date(value), {
     year: 'numeric',
     month: '2-digit',
     day: '2-digit',
-  }).format(new Date(value))
+  }, language)
 
-  return `${dateLabel} · ${count} 个块`
+  return language === 'en'
+    ? `${dateLabel} · ${count} blocks`
+    : `${dateLabel} · ${count} 个块`
 }

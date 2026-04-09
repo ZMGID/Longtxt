@@ -4,6 +4,8 @@ import { useQueryClient } from '@tanstack/react-query'
 
 import type { ImportConflictStrategy, ImportPreview } from '../../shared/types'
 import { useBlockCleanupDays } from '../hooks/useBlockCleanupDays'
+import { formatNumberByLanguage, getCurrentLanguage } from '../i18n/locale'
+import { useI18n } from '../i18n/useI18n'
 import { removeBlocksCompat } from '../lib/blockCleanupCompat'
 import { formatDateKeyLabel } from '../lib/format'
 import { useDataManagementOverview, type DataManagementOverviewResult } from '../hooks/useDataManagementOverview'
@@ -67,7 +69,7 @@ function MetricCell({
   hint: string
 }) {
   return (
-    <div className="bg-[#faf8f4] px-3 py-2.5 sm:px-4">
+    <div className="bg-white px-3 py-2.5 sm:px-4">
       <div className="text-[11px] font-medium uppercase tracking-[0.18em] text-stone-400">{label}</div>
       <div className="mt-1 text-[18px] font-semibold tracking-[-0.02em] text-stone-900 sm:text-[20px]">{value}</div>
       <div className="mt-0.5 text-[10px] leading-4 text-stone-500">{hint}</div>
@@ -103,6 +105,7 @@ function CleanupDateRow({
   active: boolean
   onSelect: () => void
 }) {
+  const language = getCurrentLanguage()
   return (
     <button
       type="button"
@@ -115,7 +118,7 @@ function CleanupDateRow({
         <div className="text-sm font-medium text-current">{formatDateKeyLabel(date, { weekday: true })}</div>
         <div className="mt-1 text-[11px] uppercase tracking-[0.12em] text-stone-400">{date}</div>
       </div>
-      <div className="shrink-0 text-sm font-semibold text-stone-500">{blockCount} 条</div>
+      <div className="shrink-0 text-sm font-semibold text-stone-500">{language === 'en' ? `${formatCount(blockCount)} blocks` : `${formatCount(blockCount)} 条`}</div>
     </button>
   )
 }
@@ -131,16 +134,41 @@ function ImportPreviewPanel({
   onConfirm: (strategy: ImportConflictStrategy) => void
   onDismiss: () => void
 }) {
+  const { language } = useI18n()
+  const copy = language === 'en'
+    ? {
+        title: 'Import preview',
+        files: 'files',
+        blocks: 'blocks',
+        conflicts: 'conflicts',
+        noConflicts: 'no conflicts',
+        settings: 'This backup also contains a settings snapshot and will restore {{count}} settings items during import.',
+        skipAll: 'Skip all conflicts',
+        overwriteAll: 'Overwrite all conflicts',
+        cancel: 'Cancel',
+      }
+    : {
+        title: '导入预览',
+        files: '个文件',
+        blocks: '个块',
+        conflicts: '个冲突',
+        noConflicts: '无冲突',
+        settings: '这个备份还包含设置快照，导入时会额外恢复 {{count}} 项设置。',
+        skipAll: '全部跳过冲突',
+        overwriteAll: '全部覆盖冲突',
+        cancel: '取消',
+      }
+
   return (
     <div className="border-t border-amber-200 pt-4" data-testid="data-management-import-preview">
-      <div className="text-sm font-semibold text-stone-900">导入预览</div>
+      <div className="text-sm font-semibold text-stone-900">{copy.title}</div>
       <p className="mt-1 text-sm leading-6 text-stone-500">
-        {importPreview.format.toUpperCase()} · {importPreview.totalFiles} 个文件 · {importPreview.totalBlocks} 个块
-        {importPreview.conflicts > 0 ? ` · ${importPreview.conflicts} 个冲突` : ' · 无冲突'}
+        {importPreview.format.toUpperCase()} · {formatCount(importPreview.totalFiles)} {copy.files} · {formatCount(importPreview.totalBlocks)} {copy.blocks}
+        {importPreview.conflicts > 0 ? ` · ${formatCount(importPreview.conflicts)} ${copy.conflicts}` : ` · ${copy.noConflicts}`}
       </p>
       {importPreview.includesSettings ? (
         <p className="mt-1 text-xs leading-5 text-stone-500">
-          这个备份还包含设置快照，导入时会额外恢复 {importPreview.settingsEntryCount ?? 0} 项设置。
+          {copy.settings.replace('{{count}}', `${formatCount(importPreview.settingsEntryCount ?? 0)}`)}
         </p>
       ) : null}
       {importPreview.samples.length > 0 ? (
@@ -152,13 +180,13 @@ function ImportPreviewPanel({
       ) : null}
       <div className="mt-4 flex flex-wrap gap-2">
         <FlatButton disabled={busy} onClick={() => onConfirm('skip_all')}>
-          全部跳过冲突
+          {copy.skipAll}
         </FlatButton>
         <FlatButton disabled={busy} onClick={() => onConfirm('overwrite_all')}>
-          全部覆盖冲突
+          {copy.overwriteAll}
         </FlatButton>
         <FlatButton quiet disabled={busy} onClick={onDismiss}>
-          取消
+          {copy.cancel}
         </FlatButton>
       </div>
     </div>
@@ -170,22 +198,25 @@ function formatCount(value: number | null | undefined): string {
     return '—'
   }
 
-  return new Intl.NumberFormat('zh-CN').format(value)
+  return formatNumberByLanguage(value, getCurrentLanguage())
 }
 
 function getErrorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : '操作失败，请稍后再试。'
+  return error instanceof Error ? error.message : (getCurrentLanguage() === 'en' ? 'Operation failed. Please try again later.' : '操作失败，请稍后再试。')
 }
 
 function getCompatibilityMessage(overview: DataManagementOverviewResult | null): string | null {
   if (overview?.compatibilityMode === 'missing-handler') {
-    return '当前窗口里的主进程还没有注册数据管理 IPC。通常是应用未完整重启：请关闭应用并重新打开，完整概览会出现。'
+    return getCurrentLanguage() === 'en'
+      ? 'Data management IPC is not registered in the current main process. Usually the app has not been fully restarted yet. Close and reopen the app to see the full overview.'
+      : '当前窗口里的主进程还没有注册数据管理 IPC。通常是应用未完整重启：请关闭应用并重新打开，完整概览会出现。'
   }
 
   return null
 }
 
 export function DataManagementView() {
+  const { language } = useI18n()
   const { toast } = useToast()
   const queryClient = useQueryClient()
   const overviewQuery = useDataManagementOverview()
@@ -197,6 +228,115 @@ export function DataManagementView() {
   const compatibilityMessage = getCompatibilityMessage(overview)
   const cleanupDays = cleanupDaysQuery.data ?? []
   const cleanupDayCount = cleanupDaysQuery.isPending && cleanupDays.length === 0 ? null : cleanupDays.length
+  const copy = language === 'en'
+    ? {
+        loadingOverview: 'Loading data overview…',
+        title: 'Data management',
+        subtitle: 'Only keep metrics, cleanup, and backup entry points here. Runtime state now lives in Settings.',
+        openDataDir: 'Open data directory',
+        openSettingsDir: 'Open settings directory',
+        refresh: 'Refresh',
+        openedDataDir: 'Opened data directory.',
+        openedSettingsDir: 'Opened settings directory.',
+        overviewEyebrow: 'Overview',
+        overviewTitle: 'Current volume',
+        metricBlocks: 'Blocks',
+        metricBlocksHint: 'Primary content blocks',
+        metricNotebooks: 'Notebooks',
+        metricNotebooksHint: 'Notebooks and structure containers',
+        metricSnapshots: 'Snapshots',
+        metricSnapshotsHint: 'Total document snapshots',
+        metricAttachments: 'Attachments',
+        metricAttachmentsHint: 'Registered attachment records',
+        metricVectors: 'Vectors',
+        metricVectorsHint: 'Indexed vectors written',
+        metricDates: 'Dates',
+        metricDatesHint: 'Dates that still have content',
+        cleanupEyebrow: 'Cleanup',
+        cleanupTitle: 'Browse by day and batch delete',
+        cleanupHint: 'This now lives in Data instead of Timeline. Pick a date on the left and clean up that day on the right.',
+        cleanupDatesTitle: 'Dates with content',
+        cleanupDatesHint: 'Only dates that still have blocks are listed here. Select one to multi-select and delete on the right.',
+        cleanupDatesLoading: 'Preparing cleanup dates…',
+        cleanupDatesEmpty: 'No block content is available for cleanup right now.',
+        cleanupSelectHint: 'After choosing a day on the left, all blocks for that day appear here with multi-select delete support.',
+        backupEyebrow: 'Backup & paths',
+        backupTitle: 'Export, import, and local locations',
+        backupHint: 'Backup operations stay here. Maintenance tools moved to Advanced settings.',
+        backupPanelTitle: 'Backup & restore',
+        backupPanelHint: 'Markdown is good for manual reading. JSON is better for full migration and restore, including settings snapshots.',
+        exportMarkdown: 'Export Markdown',
+        exportJson: 'Export JSON',
+        loadMarkdown: 'Load Markdown',
+        loadJson: 'Load JSON',
+        markdownCanceled: 'Markdown export canceled.',
+        markdownDone: 'Markdown exported to {{path}}, {{count}} blocks.',
+        jsonCanceled: 'JSON backup canceled.',
+        jsonDone: 'Full JSON backup exported to {{path}}, {{count}} blocks with settings snapshot.',
+        markdownImportCanceled: 'Markdown import canceled.',
+        jsonImportCanceled: 'JSON import canceled.',
+        importDone: 'Import completed: {{count}} blocks.',
+        pathsTitle: 'Directories & paths',
+        pathsHint: 'Open directories directly, or inspect current database and settings file locations.',
+        dataDir: 'Data directory',
+        dbFile: 'Database file',
+        settingsDir: 'Settings directory',
+        settingsFile: 'Settings file',
+      }
+    : {
+        loadingOverview: '正在加载数据概览…',
+        title: '数据管理',
+        subtitle: '这里只保留数据量、内容清理和备份入口；运行状态统一放到设置页面里。',
+        openDataDir: '打开数据目录',
+        openSettingsDir: '打开设置目录',
+        refresh: '刷新',
+        openedDataDir: '已打开数据目录。',
+        openedSettingsDir: '已打开设置目录。',
+        overviewEyebrow: '总览',
+        overviewTitle: '当前数据量',
+        metricBlocks: '块',
+        metricBlocksHint: '主内容块数量',
+        metricNotebooks: '笔记本',
+        metricNotebooksHint: '笔记本与结构容器',
+        metricSnapshots: '快照',
+        metricSnapshotsHint: '文档快照总数',
+        metricAttachments: '附件',
+        metricAttachmentsHint: '已登记附件记录',
+        metricVectors: '向量',
+        metricVectorsHint: '已写入向量索引',
+        metricDates: '日期',
+        metricDatesHint: '当前仍有内容的日期',
+        cleanupEyebrow: '内容清理',
+        cleanupTitle: '按天浏览并批量删除',
+        cleanupHint: '这个功能放在数据管理里，不再放到时间轴。左侧选日期，右侧直接清理当天块内容，适合集中删除没用的话。',
+        cleanupDatesTitle: '最近有内容的日期',
+        cleanupDatesHint: '这里只列出当前仍有块的日期。选中后可在右侧多选并删除。',
+        cleanupDatesLoading: '正在整理可清理的日期…',
+        cleanupDatesEmpty: '当前没有可清理的块内容。',
+        cleanupSelectHint: '选择左侧某一天后，这里会显示当天全部块，支持多选和批量删除。',
+        backupEyebrow: '备份与目录',
+        backupTitle: '导出、导入与本地位置',
+        backupHint: '备份相关操作保留在这里；维护工具已移到设置里的高级设置。',
+        backupPanelTitle: '备份与恢复',
+        backupPanelHint: 'Markdown 适合人工查看，JSON 适合完整迁移与恢复；这里导出的 JSON 会连同设置快照一起保存。导入前会先给你预览，不直接落盘。',
+        exportMarkdown: '导出 Markdown',
+        exportJson: '导出 JSON',
+        loadMarkdown: '加载 Markdown',
+        loadJson: '加载 JSON',
+        markdownCanceled: '已取消 Markdown 导出。',
+        markdownDone: 'Markdown 已导出到 {{path}}，共 {{count}} 个块。',
+        jsonCanceled: '已取消 JSON 备份。',
+        jsonDone: '完整 JSON 备份已导出到 {{path}}，共 {{count}} 个块，并包含设置快照。',
+        markdownImportCanceled: '已取消 Markdown 导入。',
+        jsonImportCanceled: '已取消 JSON 导入。',
+        importDone: '导入完成，共导入 {{count}} 个块。',
+        pathsTitle: '目录与路径',
+        pathsHint: '直接打开目录，或快速确认当前数据库与设置文件位置。',
+        dataDir: '数据目录',
+        dbFile: '数据库文件',
+        settingsDir: '设置目录',
+        settingsFile: '设置文件',
+      }
 
   useEffect(() => {
     if (cleanupDays.length === 0) {
@@ -256,12 +396,12 @@ export function DataManagementView() {
 
   return (
     <section
-      className="flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden border-t border-stone-200 bg-[#f7f5f2] text-stone-900"
+      className="flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden border-t border-stone-200 bg-white text-stone-900"
       data-testid="data-management-view"
     >
       <div className="min-h-0 flex-1 overflow-y-auto">
         {overviewQuery.isPending && !overview ? (
-          <div className="border-t border-stone-200 px-5 py-8 text-sm text-stone-500 sm:px-6">正在加载数据概览…</div>
+          <div className="border-t border-stone-200 px-5 py-8 text-sm text-stone-500 sm:px-6">{copy.loadingOverview}</div>
         ) : null}
 
         {overviewQuery.isError ? (
@@ -281,8 +421,8 @@ export function DataManagementView() {
             <div className="px-4 py-4 sm:px-5">
               <div className="flex flex-wrap items-center justify-between gap-3 border-b border-stone-200 pb-3">
                 <div>
-                  <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-stone-400">数据管理</div>
-                  <p className="mt-1 text-[13px] leading-5 text-stone-500">这里只保留数据量、内容清理和备份入口；运行状态统一放到设置页面里。</p>
+                  <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-stone-400">{copy.title}</div>
+                  <p className="mt-1 text-[13px] leading-5 text-stone-500">{copy.subtitle}</p>
                 </div>
                 <div className="flex flex-wrap gap-2">
                   <FlatButton
@@ -290,22 +430,22 @@ export function DataManagementView() {
                     onClick={() => {
                       void runAction('open-data-directory', async () => {
                         await changbu.settings.openDataDirectory()
-                        toast('success', '已打开数据目录。')
+                        toast('success', copy.openedDataDir)
                       })
                     }}
                   >
-                    打开数据目录
+                    {copy.openDataDir}
                   </FlatButton>
                   <FlatButton
                     disabled={busyAction !== null}
                     onClick={() => {
                       void runAction('open-settings-directory', async () => {
                         await changbu.settings.openSettingsDirectory()
-                        toast('success', '已打开设置目录。')
+                        toast('success', copy.openedSettingsDir)
                       })
                     }}
                   >
-                    打开设置目录
+                    {copy.openSettingsDir}
                   </FlatButton>
                   <FlatButton
                     quiet
@@ -314,43 +454,43 @@ export function DataManagementView() {
                       void handleManualRefresh()
                     }}
                   >
-                    刷新
+                    {copy.refresh}
                   </FlatButton>
                 </div>
               </div>
 
               <div className="mt-3 overflow-hidden border border-stone-200">
                 <div className="border-b border-stone-200 px-3 py-2.5 sm:px-4">
-                  <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-stone-400">总览</div>
-                  <div className="mt-0.5 text-[13px] font-semibold text-stone-900">当前数据量</div>
+                  <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-stone-400">{copy.overviewEyebrow}</div>
+                  <div className="mt-0.5 text-[13px] font-semibold text-stone-900">{copy.overviewTitle}</div>
                 </div>
                 <div className="grid grid-cols-2 gap-px bg-stone-200 md:grid-cols-3 xl:grid-cols-6" data-testid="data-management-metrics">
-                  <MetricCell label="块" value={formatCount(overview.totalBlockCount)} hint="主内容块数量" />
-                  <MetricCell label="笔记本" value={formatCount(overview.totalNotebookCount)} hint="笔记本与结构容器" />
-                  <MetricCell label="快照" value={formatCount(overview.totalSnapshotCount)} hint="文档快照总数" />
-                  <MetricCell label="附件" value={formatCount(overview.totalAttachmentCount)} hint="已登记附件记录" />
-                  <MetricCell label="向量" value={formatCount(overview.totalVectorCount)} hint="已写入向量索引" />
-                  <MetricCell label="日期" value={formatCount(cleanupDayCount)} hint="当前仍有内容的日期" />
+                  <MetricCell label={copy.metricBlocks} value={formatCount(overview.totalBlockCount)} hint={copy.metricBlocksHint} />
+                  <MetricCell label={copy.metricNotebooks} value={formatCount(overview.totalNotebookCount)} hint={copy.metricNotebooksHint} />
+                  <MetricCell label={copy.metricSnapshots} value={formatCount(overview.totalSnapshotCount)} hint={copy.metricSnapshotsHint} />
+                  <MetricCell label={copy.metricAttachments} value={formatCount(overview.totalAttachmentCount)} hint={copy.metricAttachmentsHint} />
+                  <MetricCell label={copy.metricVectors} value={formatCount(overview.totalVectorCount)} hint={copy.metricVectorsHint} />
+                  <MetricCell label={copy.metricDates} value={formatCount(cleanupDayCount)} hint={copy.metricDatesHint} />
                 </div>
               </div>
             </div>
 
             <div className="border-t border-stone-200 px-5 py-5 sm:px-6">
               <SectionHeader
-                eyebrow="内容清理"
-                title="按天浏览并批量删除"
-                description="这个功能放在数据管理里，不再放到时间轴。左侧选日期，右侧直接清理当天块内容，适合集中删除没用的话。"
+                eyebrow={copy.cleanupEyebrow}
+                title={copy.cleanupTitle}
+                description={copy.cleanupHint}
               />
 
               <div className="mt-4 grid h-[min(62vh,680px)] min-h-[460px] border-y border-stone-200 xl:grid-cols-[280px_minmax(0,1fr)] xl:divide-x xl:divide-stone-200">
                 <div className="flex min-h-0 min-w-0 flex-col overflow-hidden">
                   <div className="border-b border-stone-200 px-4 py-4 sm:px-5">
-                    <div className="text-sm font-semibold text-stone-900">最近有内容的日期</div>
-                    <p className="mt-1 text-sm leading-6 text-stone-500">这里只列出当前仍有块的日期。选中后可在右侧多选并删除。</p>
+                    <div className="text-sm font-semibold text-stone-900">{copy.cleanupDatesTitle}</div>
+                    <p className="mt-1 text-sm leading-6 text-stone-500">{copy.cleanupDatesHint}</p>
                   </div>
 
                   {cleanupDaysQuery.isPending && cleanupDays.length === 0 ? (
-                    <div className="px-4 py-6 text-sm text-stone-500 sm:px-5">正在整理可清理的日期…</div>
+                    <div className="px-4 py-6 text-sm text-stone-500 sm:px-5">{copy.cleanupDatesLoading}</div>
                   ) : null}
 
                   {cleanupDaysQuery.isError ? (
@@ -360,7 +500,7 @@ export function DataManagementView() {
                   ) : null}
 
                   {!cleanupDaysQuery.isPending && !cleanupDaysQuery.isError && cleanupDays.length === 0 ? (
-                    <div className="px-4 py-6 text-sm leading-6 text-stone-500 sm:px-5">当前没有可清理的块内容。</div>
+                    <div className="px-4 py-6 text-sm leading-6 text-stone-500 sm:px-5">{copy.cleanupDatesEmpty}</div>
                   ) : null}
 
                   {!cleanupDaysQuery.isPending && !cleanupDaysQuery.isError && cleanupDays.length > 0 ? (
@@ -396,7 +536,7 @@ export function DataManagementView() {
                     />
                   ) : (
                     <div className="px-5 py-8 text-sm leading-6 text-stone-500 sm:px-6">
-                      选择左侧某一天后，这里会显示当天全部块，支持多选和批量删除。
+                      {copy.cleanupSelectHint}
                     </div>
                   )}
                 </div>
@@ -405,15 +545,15 @@ export function DataManagementView() {
 
             <div className="border-t border-stone-200 px-5 py-5 sm:px-6">
               <SectionHeader
-                eyebrow="备份与目录"
-                title="导出、导入与本地位置"
-                description="备份相关操作保留在这里；维护工具已移到设置里的高级设置。"
+                eyebrow={copy.backupEyebrow}
+                title={copy.backupTitle}
+                description={copy.backupHint}
               />
 
               <div className="mt-4 grid gap-6 xl:grid-cols-[minmax(0,1fr)_360px] xl:gap-8">
                 <div className="min-w-0">
-                  <div className="text-sm font-semibold text-stone-900">备份与恢复</div>
-                  <p className="mt-1 text-sm leading-6 text-stone-500">Markdown 适合人工查看，JSON 适合完整迁移与恢复；这里导出的 JSON 会连同设置快照一起保存。导入前会先给你预览，不直接落盘。</p>
+                  <div className="text-sm font-semibold text-stone-900">{copy.backupPanelTitle}</div>
+                  <p className="mt-1 text-sm leading-6 text-stone-500">{copy.backupPanelHint}</p>
                   <div className="mt-3 flex flex-wrap gap-2">
                     <FlatButton
                       disabled={busyAction !== null}
@@ -422,15 +562,15 @@ export function DataManagementView() {
                           const result = await changbu.exports.markdown({ includeAttachments: true })
 
                           if (!result) {
-                            toast('info', '已取消 Markdown 导出。')
+                            toast('info', copy.markdownCanceled)
                             return
                           }
 
-                          toast('success', `Markdown 已导出到 ${result.path}，共 ${formatCount(result.count)} 个块。`)
+                          toast('success', copy.markdownDone.replace('{{path}}', result.path).replace('{{count}}', formatCount(result.count)))
                         })
                       }}
                     >
-                      导出 Markdown
+                      {copy.exportMarkdown}
                     </FlatButton>
                     <FlatButton
                       disabled={busyAction !== null}
@@ -439,15 +579,15 @@ export function DataManagementView() {
                           const result = await changbu.exports.json({ includeAttachments: true, includeSettings: true })
 
                           if (!result) {
-                            toast('info', '已取消 JSON 备份。')
+                            toast('info', copy.jsonCanceled)
                             return
                           }
 
-                          toast('success', `完整 JSON 备份已导出到 ${result.path}，共 ${formatCount(result.count)} 个块，并包含设置快照。`)
+                          toast('success', copy.jsonDone.replace('{{path}}', result.path).replace('{{count}}', formatCount(result.count)))
                         })
                       }}
                     >
-                      导出 JSON
+                      {copy.exportJson}
                     </FlatButton>
                     <FlatButton
                       disabled={busyAction !== null}
@@ -457,7 +597,7 @@ export function DataManagementView() {
 
                           if (!preview) {
                             setImportPreview(null)
-                            toast('info', '已取消 Markdown 导入。')
+                            toast('info', copy.markdownImportCanceled)
                             return
                           }
 
@@ -465,7 +605,7 @@ export function DataManagementView() {
                         })
                       }}
                     >
-                      加载 Markdown
+                      {copy.loadMarkdown}
                     </FlatButton>
                     <FlatButton
                       disabled={busyAction !== null}
@@ -475,7 +615,7 @@ export function DataManagementView() {
 
                           if (!preview) {
                             setImportPreview(null)
-                            toast('info', '已取消 JSON 导入。')
+                            toast('info', copy.jsonImportCanceled)
                             return
                           }
 
@@ -483,7 +623,7 @@ export function DataManagementView() {
                         })
                       }}
                     >
-                      加载 JSON
+                      {copy.loadJson}
                     </FlatButton>
                   </div>
 
@@ -496,7 +636,7 @@ export function DataManagementView() {
                           void runAction('confirm-import', async () => {
                             const result = await changbu.imports.confirm(importPreview.importId, strategy)
                             setImportPreview(null)
-                            toast('success', `导入完成，共导入 ${formatCount(result.imported)} 个块。`)
+                            toast('success', copy.importDone.replace('{{count}}', formatCount(result.imported)))
                           })
                         }}
                         onDismiss={() => {
@@ -508,37 +648,37 @@ export function DataManagementView() {
                 </div>
 
                 <div className="min-w-0 border-t border-stone-200 pt-5 xl:border-l xl:border-stone-200 xl:pl-8 xl:pt-0">
-                  <div className="text-sm font-semibold text-stone-900">目录与路径</div>
-                  <p className="mt-1 text-sm leading-6 text-stone-500">直接打开目录，或快速确认当前数据库与设置文件位置。</p>
+                  <div className="text-sm font-semibold text-stone-900">{copy.pathsTitle}</div>
+                  <p className="mt-1 text-sm leading-6 text-stone-500">{copy.pathsHint}</p>
                   <div className="mt-3 flex flex-wrap gap-2">
                     <FlatButton
                       disabled={busyAction !== null}
                       onClick={() => {
                         void runAction('open-data-directory', async () => {
                           await changbu.settings.openDataDirectory()
-                          toast('success', '已打开数据目录。')
+                          toast('success', copy.openedDataDir)
                         })
                       }}
                     >
-                      打开数据目录
+                      {copy.openDataDir}
                     </FlatButton>
                     <FlatButton
                       disabled={busyAction !== null}
                       onClick={() => {
                         void runAction('open-settings-directory', async () => {
                           await changbu.settings.openSettingsDirectory()
-                          toast('success', '已打开设置目录。')
+                          toast('success', copy.openedSettingsDir)
                         })
                       }}
                     >
-                      打开设置目录
+                      {copy.openSettingsDir}
                     </FlatButton>
                   </div>
                   <div className="mt-4 border-t border-stone-200 pt-2">
-                    <InfoRow label="数据目录" value={overview.dataDirectory} monospace />
-                    <InfoRow label="数据库文件" value={overview.databasePath} monospace />
-                    <InfoRow label="设置目录" value={overview.settingsDirectory} monospace />
-                    <InfoRow label="设置文件" value={overview.settingsFilePath} monospace />
+                    <InfoRow label={copy.dataDir} value={overview.dataDirectory} monospace />
+                    <InfoRow label={copy.dbFile} value={overview.databasePathPending ? (language === 'en' ? 'Available after app restart' : '需要重启应用后读取') : overview.databasePath} monospace />
+                    <InfoRow label={copy.settingsDir} value={overview.settingsDirectoryPending ? (language === 'en' ? 'Available after app restart' : '需要重启应用后读取') : overview.settingsDirectory} monospace />
+                    <InfoRow label={copy.settingsFile} value={overview.settingsFilePathPending ? (language === 'en' ? 'Available after app restart' : '需要重启应用后读取') : overview.settingsFilePath} monospace />
                   </div>
                 </div>
               </div>

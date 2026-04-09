@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 
-import type { ExportOptions, ImportConflictStrategy, ImportPreview, Snapshot, SnapshotUpdateInput, Tag } from '../../shared/types'
-import { compareText, formatDateByLanguage } from '../i18n/locale'
+import type { ExportOptions, ImportConflictStrategy, ImportPreview, Snapshot, SnapshotUpdateInput } from '../../shared/types'
+import { formatDateByLanguage } from '../i18n/locale'
 import { useI18n } from '../i18n/useI18n'
 import { MarkdownContent } from './MarkdownContent'
 import { MarkdownTextarea } from './MarkdownTextarea'
@@ -24,6 +24,16 @@ interface SnapshotsViewProps {
   onDismissImportPreview: () => void
 }
 
+const COMPACT_LAYOUT_MAX_WIDTH = 1080
+
+function getIsCompactLayout(): boolean {
+  if (typeof window === 'undefined') {
+    return false
+  }
+
+  return window.innerWidth < COMPACT_LAYOUT_MAX_WIDTH
+}
+
 function formatSnapshotTime(value: string): string {
   return formatDateByLanguage(new Date(value), {
     year: 'numeric',
@@ -36,20 +46,42 @@ function formatSnapshotTime(value: string): string {
   })
 }
 
-function getSnapshotPreview(content: string): string {
+function getPlainSnapshotText(content: string): string {
   return content
-    .replace(/[#>*`_[\]-]/g, ' ')
+    .replace(/!\[[^\]]*]\([^)]+\)/g, ' ')
+    .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')
+    .replace(/[#>*`~_[\]-]/g, ' ')
     .replace(/\s+/g, ' ')
     .trim()
-    .slice(0, 120)
+}
+
+function getSnapshotPreview(content: string, query: string): string {
+  const plain = getPlainSnapshotText(content)
+
+  if (!plain) {
+    return ''
+  }
+
+  const normalizedQuery = query.trim().toLocaleLowerCase()
+  if (!normalizedQuery) {
+    return plain.slice(0, 140)
+  }
+
+  const normalizedContent = plain.toLocaleLowerCase()
+  const matchIndex = normalizedContent.indexOf(normalizedQuery)
+  if (matchIndex === -1) {
+    return plain.slice(0, 140)
+  }
+
+  const previewStart = Math.max(0, matchIndex - 44)
+  const previewEnd = Math.min(plain.length, matchIndex + normalizedQuery.length + 72)
+
+  return `${previewStart > 0 ? '…' : ''}${plain.slice(previewStart, previewEnd)}${previewEnd < plain.length ? '…' : ''}`
 }
 
 function isSnapshotEdited(snapshot: Snapshot): boolean {
   return snapshot.updatedAt !== snapshot.createdAt
 }
-
-const SUPPRESSED_FILTER_TAGS = new Set(['TODO', '重要', '临时', '归档'])
-const SNAPSHOT_TAG_PREVIEW_LIMIT = 3
 
 function ToolButton({
   children,
@@ -78,21 +110,18 @@ function ToolButton({
   )
 }
 
-function InlineTag({
-  name,
-  accent = false,
+function MetaItem({
+  label,
+  value,
 }: {
-  name: string
-  accent?: boolean
+  label: string
+  value: string
 }) {
   return (
-    <span
-      className={`inline-flex items-center rounded-full border px-2.5 py-1 text-[11px] font-medium ${
-        accent ? 'border-violet-200 bg-violet-50 text-violet-700' : 'border-stone-200 bg-stone-50 text-stone-600'
-      }`}
-    >
-      {name}
-    </span>
+    <div>
+      <dt className="text-[11px] font-semibold uppercase tracking-[0.14em] text-stone-400">{label}</dt>
+      <dd className="mt-1 text-sm leading-6 text-stone-700">{value}</dd>
+    </div>
   )
 }
 
@@ -114,13 +143,15 @@ export function SnapshotsView({
 }: SnapshotsViewProps) {
   const { language, t } = useI18n()
   const { toast } = useToast()
-  const [selectedTags, setSelectedTags] = useState<string[]>([])
-  const [dateRange, setDateRange] = useState<{ start: string; end: string }>({ start: '', end: '' })
+  const [isCompactLayout, setIsCompactLayout] = useState(getIsCompactLayout)
+  const [compactPane, setCompactPane] = useState<'list' | 'detail'>(() => (getIsCompactLayout() ? 'detail' : 'list'))
+  const [toolsExpanded, setToolsExpanded] = useState(Boolean(importPreview))
   const [isEditing, setIsEditing] = useState(false)
   const [topicDraft, setTopicDraft] = useState('')
   const [contentDraft, setContentDraft] = useState('')
   const [isSavingEdit, setIsSavingEdit] = useState(false)
   const previousSelectedSnapshotIdRef = useRef<string | null>(null)
+  const previousCompactSnapshotIdRef = useRef<string | null>(null)
 
   const selectedSnapshot = useMemo(
     () => snapshots.find((snapshot) => snapshot.id === selectedSnapshotId) ?? snapshots[0] ?? null,
@@ -129,6 +160,23 @@ export function SnapshotsView({
   const selectedSnapshotKey = selectedSnapshot?.id ?? null
   const selectedSnapshotTopic = selectedSnapshot?.topic ?? ''
   const selectedSnapshotContent = selectedSnapshot?.content ?? ''
+
+  useEffect(() => {
+    const handleResize = () => {
+      setIsCompactLayout(getIsCompactLayout())
+    }
+
+    window.addEventListener('resize', handleResize)
+    return () => window.removeEventListener('resize', handleResize)
+  }, [])
+
+  useEffect(() => {
+    if (!importPreview) {
+      return
+    }
+
+    setToolsExpanded(true)
+  }, [importPreview])
 
   useEffect(() => {
     if (previousSelectedSnapshotIdRef.current === selectedSnapshotKey) {
@@ -158,70 +206,24 @@ export function SnapshotsView({
     setContentDraft(selectedSnapshotContent)
   }, [isEditing, selectedSnapshotContent, selectedSnapshotKey, selectedSnapshotTopic])
 
-  const exportOptions: ExportOptions = {
-    includeAttachments: true,
-    tagFilter: selectedTags,
-    dateRange: {
-      start: dateRange.start || undefined,
-      end: dateRange.end || undefined,
-    },
-  }
-
-  const hasFilters = selectedTags.length > 0 || Boolean(dateRange.start) || Boolean(dateRange.end)
-
-  const snapshotFilterTags = useMemo(() => {
-    const activeTagSet = new Set(selectedTags)
-    const merged = new Map<string, Tag & { count: number }>()
-
-    for (const snapshot of snapshots) {
-      for (const tag of snapshot.tags ?? []) {
-        const current = merged.get(tag.name)
-        merged.set(tag.name, {
-          ...tag,
-          count: (current?.count ?? 0) + 1,
-        })
-      }
+  useEffect(() => {
+    if (!isCompactLayout) {
+      return
     }
 
-    for (const tagName of selectedTags) {
-      if (!merged.has(tagName)) {
-        merged.set(tagName, {
-          id: `snapshot-tag-${tagName}`,
-          name: tagName,
-          isDefault: false,
-          kind: 'detail',
-          source: 'manual',
-          count: 0,
-        })
-      }
+    if (!selectedSnapshotKey) {
+      setCompactPane('list')
+      previousCompactSnapshotIdRef.current = null
+      return
     }
 
-    const kindRank = { user: 0, detail: 1, category: 2 }
+    if (previousCompactSnapshotIdRef.current === selectedSnapshotKey) {
+      return
+    }
 
-    return Array.from(merged.values())
-      .filter((tag) => activeTagSet.has(tag.name) || !SUPPRESSED_FILTER_TAGS.has(tag.name))
-      .sort((left, right) => {
-        const activeDelta = Number(activeTagSet.has(right.name)) - Number(activeTagSet.has(left.name))
-        if (activeDelta !== 0) {
-          return activeDelta
-        }
-
-        if (left.isDefault !== right.isDefault) {
-          return Number(left.isDefault) - Number(right.isDefault)
-        }
-
-        if (kindRank[left.kind] !== kindRank[right.kind]) {
-          return kindRank[left.kind] - kindRank[right.kind]
-        }
-
-        if (right.count !== left.count) {
-          return right.count - left.count
-        }
-
-        return compareText(left.name, right.name)
-      })
-      .slice(0, 24)
-  }, [selectedTags, snapshots])
+    previousCompactSnapshotIdRef.current = selectedSnapshotKey
+    setCompactPane('detail')
+  }, [isCompactLayout, selectedSnapshotKey])
 
   async function handleCopySelectedSnapshot() {
     if (!selectedSnapshot) {
@@ -276,331 +278,342 @@ export function SnapshotsView({
     }
   }
 
-  function toggleTag(tagName: string) {
-    setSelectedTags((current) =>
-      current.includes(tagName) ? current.filter((name) => name !== tagName) : [...current, tagName],
-    )
+  function handleSelectSnapshot(snapshotId: string) {
+    onSelectSnapshot(snapshotId)
+
+    if (isCompactLayout) {
+      setCompactPane('detail')
+    }
+  }
+
+  const exportOptions: ExportOptions = {
+    includeAttachments: true,
   }
 
   const saveDisabled = !topicDraft.trim() || !contentDraft.trim() || isSavingEdit
+  const showListPane = !isCompactLayout || compactPane === 'list'
+  const showDetailPane = !isCompactLayout || compactPane === 'detail'
+  const compactToolsLabel = compactPane !== 'list'
+    ? t('snapshots.toolsTab')
+    : toolsExpanded
+      ? t('snapshots.hideTools')
+      : t('snapshots.toolsTab')
 
   return (
     <section
-      className="flex h-full min-h-0 min-w-0 flex-1 self-stretch flex-col overflow-hidden border-t border-stone-200 bg-[#f7f5f2] text-stone-900 md:flex-row"
+      className="flex h-full min-h-0 min-w-0 flex-1 self-stretch flex-col overflow-hidden border-t border-stone-200 bg-white text-stone-900"
       data-testid="snapshots-layout"
     >
-      <aside className="flex min-h-0 w-full shrink-0 flex-col border-b border-stone-200 bg-[#f6f4f1] md:h-full md:w-[340px] md:border-b-0 md:border-r">
-        <div className="px-4 pb-4 pt-5 sm:px-5">
-          <div className="text-xs font-semibold uppercase tracking-[0.18em] text-stone-400">{t('snapshots.title')}</div>
-          <h2 className="mt-3 text-[24px] font-semibold text-stone-900">{t('snapshots.browseTitle')}</h2>
-          <p className="mt-2 text-sm leading-6 text-stone-500">{t('snapshots.browseHint')}</p>
-
-          <div className="mt-4">
-            <label className="block text-xs font-medium text-stone-500" htmlFor="snapshot-query">
-              {t('snapshots.search')}
-            </label>
-            <input
-              id="snapshot-query"
-              value={snapshotQuery}
-              onChange={(event) => onSnapshotQueryChange(event.target.value)}
-              placeholder={t('snapshots.searchPlaceholder')}
-              className="mt-2 w-full rounded-md border border-stone-200 bg-white px-3 py-2.5 text-sm text-stone-900 outline-none transition focus:border-violet-400"
-            />
-          </div>
-
-          <div className="mt-3 text-xs text-stone-500">
-            {selectedTags.length > 0
-              ? t('snapshots.countWithTags', { count: snapshots.length, tagCount: selectedTags.length })
-              : t('snapshots.count', { count: snapshots.length })}
-          </div>
-        </div>
-
-        <div className="min-h-0 flex-1 overflow-y-auto" data-testid="snapshots-list">
-          {snapshots.length > 0 ? (
-            snapshots.map((snapshot) => {
-              const active = snapshot.id === selectedSnapshot?.id
-              const preview = getSnapshotPreview(snapshot.content)
-
-              return (
-                <button
-                  key={snapshot.id}
-                  type="button"
-                  onClick={() => onSelectSnapshot(snapshot.id)}
-                  data-testid={`snapshot-row-${snapshot.id}`}
-                  className={`group relative w-full border-t border-stone-200 px-5 py-4 text-left transition first:border-t-0 ${
-                    active ? 'bg-white' : 'hover:bg-white/70'
-                  }`}
-                >
-                  <span className={`absolute left-0 top-0 h-full w-[2px] ${active ? 'bg-violet-500' : 'bg-transparent'}`} />
-                  <div className="min-w-0">
-                    <div className="flex items-start justify-between gap-3">
-                      <p className={`min-w-0 truncate text-sm font-semibold ${active ? 'text-stone-900' : 'text-stone-700'}`}>
-                        {snapshot.topic}
-                      </p>
-                      <span className="shrink-0 text-[11px] text-stone-400">{t('snapshots.blockCount', { count: snapshot.blockIds.length })}</span>
-                    </div>
-                    {preview ? <p className="mt-1 line-clamp-2 text-xs leading-5 text-stone-500">{preview}</p> : null}
-                    <p className="mt-2 text-[11px] leading-5 text-stone-400">
-                      {formatSnapshotTime(snapshot.createdAt)}
-                      {snapshot.notebookTitle ? ` · ${snapshot.notebookTitle}` : ''}
-                    </p>
-                    {snapshot.tags && snapshot.tags.length > 0 ? (
-                      <div className="mt-2 flex flex-wrap gap-1.5">
-                        {snapshot.tags.slice(0, SNAPSHOT_TAG_PREVIEW_LIMIT).map((tag) => (
-                          <InlineTag key={`${snapshot.id}-${tag.id}`} name={tag.name} accent={active} />
-                        ))}
-                        {snapshot.tags.length > SNAPSHOT_TAG_PREVIEW_LIMIT ? (
-                          <span className="inline-flex items-center text-[11px] text-stone-400">
-                            +{snapshot.tags.length - SNAPSHOT_TAG_PREVIEW_LIMIT}
-                          </span>
-                        ) : null}
-                      </div>
-                    ) : null}
-                  </div>
-                </button>
-              )
-            })
-          ) : (
-            <div className="px-5 py-8 text-sm leading-6 text-stone-500">
-              {snapshotQuery
-                ? t('snapshots.emptyByQuery', { query: snapshotQuery })
-                : t('snapshots.emptyNoData')}
-            </div>
-          )}
-        </div>
-
-        <div className="border-t border-stone-200 px-4 py-4 sm:px-5" data-testid="snapshots-tools">
-          <div className="flex items-start justify-between gap-4">
-            <div>
-              <div className="text-xs font-semibold uppercase tracking-[0.18em] text-stone-400">{t('snapshots.exportBackup')}</div>
-              <div className="mt-2 text-sm font-semibold text-stone-900">{t('snapshots.filterImportExportTitle')}</div>
-              <p className="mt-1 text-xs leading-5 text-stone-500">{t('snapshots.filterImportExportHint')}</p>
-            </div>
-            {hasFilters ? (
+      {isCompactLayout ? (
+        <div className="border-b border-stone-200 bg-white px-3 py-2 sm:px-4" data-testid="snapshots-compact-switcher">
+          <div className="flex items-center gap-2">
+            <div className="inline-flex items-center rounded-full border border-stone-200 bg-white p-0.5 shadow-[0_1px_2px_rgba(28,25,23,0.05)]">
               <button
                 type="button"
-                onClick={() => {
-                  setSelectedTags([])
-                  setDateRange({ start: '', end: '' })
-                }}
-                className="shrink-0 text-xs font-medium text-stone-500 transition hover:text-stone-900"
+                onClick={() => setCompactPane('list')}
+                className={`rounded-full px-2.5 py-1 text-[12px] font-medium leading-5 transition ${
+                  compactPane === 'list' ? 'bg-stone-900 text-white' : 'text-stone-600 hover:bg-stone-100'
+                }`}
               >
-                {t('snapshots.clearFilters')}
+                {t('snapshots.resultsTab')}
               </button>
-            ) : null}
+              <button
+                type="button"
+                onClick={() => setCompactPane('detail')}
+                disabled={!selectedSnapshot}
+                className={`rounded-full px-2.5 py-1 text-[12px] font-medium leading-5 transition ${
+                  compactPane === 'detail'
+                    ? 'bg-stone-900 text-white'
+                    : 'text-stone-600 hover:bg-stone-100 disabled:text-stone-300'
+                }`}
+              >
+                {t('snapshots.readingTab')}
+              </button>
+            </div>
+            <button
+              type="button"
+              onClick={() => {
+                setCompactPane('list')
+                setToolsExpanded((current) => (compactPane === 'list' ? !current : true))
+              }}
+              className={`ml-auto rounded-full px-2.5 py-1 text-[12px] font-medium leading-5 transition ${
+                compactPane === 'list' && toolsExpanded
+                  ? 'bg-white text-stone-700 shadow-[0_1px_2px_rgba(28,25,23,0.05)]'
+                  : 'text-stone-500 hover:bg-white hover:text-stone-900'
+              }`}
+            >
+              {compactToolsLabel}
+            </button>
           </div>
+        </div>
+      ) : null}
 
-          <div className="mt-4 border-t border-stone-200 pt-4" data-testid="snapshots-tag-filter-section">
-            <div className="text-xs font-medium text-stone-500">{t('snapshots.tagFilter')}</div>
-            <p className="mt-1 text-xs leading-5 text-stone-500">{t('snapshots.tagFilterHint')}</p>
-            {snapshotFilterTags.length > 0 ? (
-              <div className="mt-2 flex flex-wrap gap-2">
-                {snapshotFilterTags.map((tag) => {
-                  const active = selectedTags.includes(tag.name)
+      <div className={`min-h-0 flex-1 ${isCompactLayout ? 'flex flex-col' : 'grid grid-cols-[minmax(320px,380px)_minmax(0,1fr)]'}`}>
+        {showListPane ? (
+          <aside
+            className={`flex min-h-0 flex-col bg-white ${isCompactLayout ? 'border-b border-stone-200' : 'border-r border-stone-200'}`}
+            data-testid="snapshots-browser-pane"
+          >
+            <div className="border-b border-stone-200 px-4 py-3 sm:px-6" data-testid="snapshots-search-bar">
+              <input
+                id="snapshot-query"
+                aria-label={t('snapshots.search')}
+                value={snapshotQuery}
+                onChange={(event) => onSnapshotQueryChange(event.target.value)}
+                placeholder={t('snapshots.searchPlaceholder')}
+                className="w-full rounded-lg border border-stone-200 bg-white px-3 py-2.5 text-sm text-stone-900 outline-none transition focus:border-violet-400"
+              />
+
+              <div className="mt-2 flex flex-wrap items-center justify-between gap-2 text-xs text-stone-500">
+                <span>{t('snapshots.count', { count: snapshots.length })}</span>
+                <span>{t('snapshots.searchScopeHint')}</span>
+              </div>
+            </div>
+
+            <div className="min-h-0 flex-1 overflow-y-auto" data-testid="snapshots-list">
+              {snapshots.length > 0 ? (
+                snapshots.map((snapshot) => {
+                  const active = snapshot.id === selectedSnapshot?.id
+                  const preview = getSnapshotPreview(snapshot.content, snapshotQuery)
 
                   return (
                     <button
-                      key={tag.id}
+                      key={snapshot.id}
                       type="button"
-                      onClick={() => toggleTag(tag.name)}
-                      className={`rounded-md border px-2.5 py-1.5 text-xs font-medium transition ${
-                        active
-                          ? 'border-violet-500 bg-violet-50 text-violet-700'
-                          : 'border-stone-200 bg-white text-stone-600 hover:bg-stone-50'
+                      onClick={() => handleSelectSnapshot(snapshot.id)}
+                      data-testid={`snapshot-row-${snapshot.id}`}
+                      className={`group relative w-full border-b border-stone-200 px-5 py-4 text-left transition ${
+                        active ? 'bg-white' : 'hover:bg-white/70'
                       }`}
                     >
-                      {tag.name}
-                      {tag.count > 0 ? <span className="ml-1 opacity-60">{tag.count}</span> : null}
+                      <span className={`absolute left-0 top-0 h-full w-[2px] ${active ? 'bg-violet-500' : 'bg-transparent'}`} />
+                      <div className="min-w-0">
+                        <p className={`min-w-0 truncate text-[15px] font-semibold ${active ? 'text-stone-900' : 'text-stone-700'}`}>
+                          {snapshot.topic}
+                        </p>
+                        {preview ? (
+                          <p className="mt-2 line-clamp-3 text-[13px] leading-6 text-stone-500">
+                            {preview}
+                          </p>
+                        ) : null}
+                        <div className="mt-3 flex flex-wrap gap-x-3 gap-y-1 text-[11px] leading-5 text-stone-400">
+                          {snapshot.notebookTitle ? <span>{snapshot.notebookTitle}</span> : null}
+                          <span>{t('snapshots.blockCount', { count: snapshot.blockIds.length })}</span>
+                          <span>{formatSnapshotTime(isSnapshotEdited(snapshot) ? snapshot.updatedAt : snapshot.createdAt)}</span>
+                        </div>
+                      </div>
                     </button>
                   )
-                })}
-              </div>
-            ) : (
-              <div className="mt-2 text-xs leading-5 text-stone-500">
-                {snapshots.length > 0 ? t('snapshots.tagFilterEmpty') : t('snapshots.tagFilterNoTags')}
-              </div>
-            )}
-          </div>
-
-          <div className="mt-4 border-t border-stone-200 pt-4">
-            <div className="text-xs font-medium text-stone-500">{t('snapshots.importExport')}</div>
-            <div className="mt-3 flex flex-wrap gap-2">
-              <ToolButton primary onClick={() => { void onExportMarkdown(exportOptions) }}>
-                {t('snapshots.exportMarkdown')}
-              </ToolButton>
-              <ToolButton onClick={() => { void onExportJson(exportOptions) }}>{t('snapshots.exportJson')}</ToolButton>
-              <ToolButton onClick={() => { void onPreviewMarkdownImport() }}>{t('snapshots.importMarkdown')}</ToolButton>
-              <ToolButton onClick={() => { void onPreviewJsonImport() }}>{t('snapshots.importJson')}</ToolButton>
-            </div>
-          </div>
-
-          <div className="mt-4 grid gap-3 sm:grid-cols-2">
-            <label className="block">
-              <span className="text-xs font-medium text-stone-500">{t('snapshots.startDate')}</span>
-              <input
-                aria-label={t('snapshots.startDate')}
-                type="date"
-                value={dateRange.start}
-                onChange={(event) => setDateRange((current) => ({ ...current, start: event.target.value }))}
-                className="mt-2 w-full rounded-md border border-stone-200 bg-white px-3 py-2.5 text-sm text-stone-900 outline-none transition focus:border-violet-400"
-              />
-            </label>
-            <label className="block">
-              <span className="text-xs font-medium text-stone-500">{t('snapshots.endDate')}</span>
-              <input
-                aria-label={t('snapshots.endDate')}
-                type="date"
-                value={dateRange.end}
-                onChange={(event) => setDateRange((current) => ({ ...current, end: event.target.value }))}
-                className="mt-2 w-full rounded-md border border-stone-200 bg-white px-3 py-2.5 text-sm text-stone-900 outline-none transition focus:border-violet-400"
-              />
-            </label>
-          </div>
-
-          {importPreview ? (
-            <div className="mt-4 border-t border-amber-200 pt-4" data-testid="snapshots-import-preview">
-              <div className="text-sm font-semibold text-amber-900">{t('snapshots.importPreview')}</div>
-              <div className="mt-1 text-xs leading-5 text-amber-800">
-                {t('snapshots.importPreviewSummary', {
-                  format: importPreview.format.toUpperCase(),
-                  files: importPreview.totalFiles,
-                  blocks: importPreview.totalBlocks,
-                  conflicts: importPreview.conflicts,
-                })}
-              </div>
-              {importPreview.includesSettings ? (
-                <div className="mt-1 text-xs leading-5 text-amber-800">
-                  {t('snapshots.importPreviewSettings', { count: importPreview.settingsEntryCount ?? 0 })}
+                })
+              ) : (
+                <div className="px-5 py-8 text-sm leading-6 text-stone-500">
+                  {snapshotQuery
+                    ? t('snapshots.emptyByQuery', { query: snapshotQuery })
+                    : t('snapshots.emptyNoData')}
                 </div>
-              ) : null}
-              <div className="mt-3 space-y-1 text-xs leading-5 text-amber-800">
-                {importPreview.samples.map((sample) => (
-                  <p key={`${sample.filename}-${sample.preview}`}>{sample.filename}{language === 'en' ? ': ' : '：'}{sample.preview}</p>
-                ))}
-              </div>
-              <div className="mt-4 flex flex-wrap gap-2">
-                {importPreview.conflicts > 0 ? (
-                  <>
-                    <ToolButton onClick={() => { void onConfirmImport('skip_all') }}>{t('snapshots.skipConflicts')}</ToolButton>
-                    <ToolButton primary onClick={() => { void onConfirmImport('overwrite_all') }}>
-                      {t('snapshots.overwriteConflicts')}
-                    </ToolButton>
-                  </>
-                ) : (
-                  <ToolButton primary onClick={() => { void onConfirmImport('overwrite_all') }}>{t('snapshots.confirmImport')}</ToolButton>
-                )}
-                <ToolButton onClick={onDismissImportPreview}>{t('snapshots.cancel')}</ToolButton>
-              </div>
+              )}
             </div>
-          ) : null}
-        </div>
-      </aside>
 
-      <section className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-white">
-        {selectedSnapshot ? (
-          <>
-            <header className="border-b border-stone-200 px-6 py-5 sm:px-8">
-              <div className="flex flex-wrap items-start justify-between gap-4">
-                <div className="min-w-0 flex-1">
-                  <div className="text-xs font-semibold uppercase tracking-[0.18em] text-stone-400">{t('snapshots.reading')}</div>
-                  {isEditing ? (
-                    <label className="mt-3 block">
-                      <span className="text-xs font-medium text-stone-500">{t('snapshots.editTopic')}</span>
-                      <input
-                        value={topicDraft}
-                        onChange={(event) => setTopicDraft(event.target.value)}
-                        onKeyDown={(event) => {
-                          if (event.key === 'Escape') {
-                            handleCancelEdit()
-                          }
-                        }}
-                        placeholder={t('snapshots.editTopicPlaceholder')}
-                        className="mt-2 w-full rounded-lg border border-stone-200 bg-stone-50 px-3 py-2.5 text-[28px] font-semibold leading-tight text-stone-900 outline-none transition focus:border-violet-400 focus:bg-white sm:text-[32px]"
-                      />
-                    </label>
-                  ) : (
-                    <h3 className="mt-3 text-[28px] font-semibold leading-tight text-stone-900 sm:text-[32px]">
-                      {selectedSnapshot.topic}
-                    </h3>
-                  )}
-                  <div className="mt-3 flex flex-wrap gap-x-4 gap-y-1 text-sm leading-6 text-stone-500">
-                    <span>{formatSnapshotTime(selectedSnapshot.createdAt)}</span>
-                    {isSnapshotEdited(selectedSnapshot) ? <span>{t('snapshots.editedAt', { time: formatSnapshotTime(selectedSnapshot.updatedAt) })}</span> : null}
-                    <span>{t('snapshots.references', { count: selectedSnapshot.blockIds.length })}</span>
-                    {selectedSnapshot.notebookTitle ? <span>{t('snapshots.fromNotebook', { title: selectedSnapshot.notebookTitle })}</span> : null}
+            <div className="border-t border-stone-200 px-4 py-4 sm:px-6" data-testid="snapshots-tools">
+              <button
+                type="button"
+                onClick={() => setToolsExpanded((current) => !current)}
+                className="w-full text-left"
+                aria-expanded={toolsExpanded}
+                data-testid="snapshots-tools-toggle"
+              >
+                <div className="flex items-start justify-between gap-4">
+                  <div>
+                    <div className="text-xs font-semibold uppercase tracking-[0.18em] text-stone-400">{t('snapshots.exportBackup')}</div>
+                    <div className="mt-2 text-sm font-semibold text-stone-900">{t('snapshots.toolsTitle')}</div>
+                    <p className="mt-1 text-xs leading-5 text-stone-500">{t('snapshots.toolsHint')}</p>
                   </div>
-                  <div className="mt-4 border-t border-stone-200 pt-4">
-                    <div className="text-xs font-medium text-stone-500">{t('snapshots.tags')}</div>
-                    {selectedSnapshot.tags && selectedSnapshot.tags.length > 0 ? (
-                      <div className="mt-2 flex flex-wrap gap-2">
-                        {selectedSnapshot.tags.map((tag) => (
-                          <InlineTag key={`${selectedSnapshot.id}-${tag.id}`} name={tag.name} accent />
+                  <span className="shrink-0 text-sm font-medium text-stone-500">
+                    {toolsExpanded ? t('snapshots.hideTools') : t('snapshots.showTools')}
+                  </span>
+                </div>
+              </button>
+
+              {toolsExpanded ? (
+                <div className="mt-4 border-t border-stone-200 pt-4">
+                  <div className="flex flex-wrap gap-2">
+                    <ToolButton primary onClick={() => { void onExportMarkdown(exportOptions) }}>
+                      {t('snapshots.exportMarkdown')}
+                    </ToolButton>
+                    <ToolButton onClick={() => { void onExportJson(exportOptions) }}>{t('snapshots.exportJson')}</ToolButton>
+                    <ToolButton onClick={() => { void onPreviewMarkdownImport() }}>{t('snapshots.importMarkdown')}</ToolButton>
+                    <ToolButton onClick={() => { void onPreviewJsonImport() }}>{t('snapshots.importJson')}</ToolButton>
+                  </div>
+
+                  {importPreview ? (
+                    <div className="mt-4 border-t border-amber-200 pt-4" data-testid="snapshots-import-preview">
+                      <div className="text-sm font-semibold text-amber-900">{t('snapshots.importPreview')}</div>
+                      <div className="mt-1 text-xs leading-5 text-amber-800">
+                        {t('snapshots.importPreviewSummary', {
+                          format: importPreview.format.toUpperCase(),
+                          files: importPreview.totalFiles,
+                          blocks: importPreview.totalBlocks,
+                          conflicts: importPreview.conflicts,
+                        })}
+                      </div>
+                      {importPreview.includesSettings ? (
+                        <div className="mt-1 text-xs leading-5 text-amber-800">
+                          {t('snapshots.importPreviewSettings', { count: importPreview.settingsEntryCount ?? 0 })}
+                        </div>
+                      ) : null}
+                      <div className="mt-3 space-y-1 text-xs leading-5 text-amber-800">
+                        {importPreview.samples.map((sample) => (
+                          <p key={`${sample.filename}-${sample.preview}`}>{sample.filename}{language === 'en' ? ': ' : '：'}{sample.preview}</p>
                         ))}
                       </div>
+                      <div className="mt-4 flex flex-wrap gap-2">
+                        {importPreview.conflicts > 0 ? (
+                          <>
+                            <ToolButton onClick={() => { void onConfirmImport('skip_all') }}>{t('snapshots.skipConflicts')}</ToolButton>
+                            <ToolButton primary onClick={() => { void onConfirmImport('overwrite_all') }}>
+                              {t('snapshots.overwriteConflicts')}
+                            </ToolButton>
+                          </>
+                        ) : (
+                          <ToolButton primary onClick={() => { void onConfirmImport('overwrite_all') }}>{t('snapshots.confirmImport')}</ToolButton>
+                        )}
+                        <ToolButton onClick={onDismissImportPreview}>{t('snapshots.cancel')}</ToolButton>
+                      </div>
+                    </div>
+                  ) : null}
+                </div>
+              ) : null}
+            </div>
+          </aside>
+        ) : null}
+
+        {showDetailPane ? (
+          <section className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-white" data-testid="snapshots-reading-pane">
+            {selectedSnapshot ? (
+              <>
+                {isEditing ? (
+                  <header className="border-b border-stone-200 px-6 py-5 sm:px-8">
+                    {isCompactLayout ? (
+                      <button
+                        type="button"
+                        onClick={() => setCompactPane('list')}
+                        className="mb-4 text-sm font-medium text-stone-500 transition hover:text-stone-900"
+                      >
+                        {t('snapshots.backToResults')}
+                      </button>
+                    ) : null}
+
+                    <div className="flex flex-wrap items-start justify-between gap-4">
+                      <div className="min-w-0 flex-1">
+                        <div className="text-xs font-semibold uppercase tracking-[0.18em] text-stone-400">{t('snapshots.reading')}</div>
+                        <label className="mt-3 block">
+                          <span className="text-xs font-medium text-stone-500">{t('snapshots.editTopic')}</span>
+                          <input
+                            value={topicDraft}
+                            onChange={(event) => setTopicDraft(event.target.value)}
+                            onKeyDown={(event) => {
+                              if (event.key === 'Escape') {
+                                handleCancelEdit()
+                              }
+                            }}
+                            placeholder={t('snapshots.editTopicPlaceholder')}
+                            className="mt-2 w-full rounded-lg border border-stone-200 bg-stone-50 px-3 py-2.5 text-[28px] font-semibold leading-tight text-stone-900 outline-none transition focus:border-violet-400 focus:bg-white sm:text-[32px]"
+                          />
+                        </label>
+                      </div>
+
+                      <div className="flex shrink-0 flex-wrap gap-2">
+                        <ToolButton onClick={handleCancelEdit} disabled={isSavingEdit}>{t('snapshots.cancel')}</ToolButton>
+                        <ToolButton primary onClick={() => { void handleSaveEditedSnapshot() }} disabled={saveDisabled}>
+                          {isSavingEdit ? t('snapshots.saving') : t('snapshots.save')}
+                        </ToolButton>
+                      </div>
+                    </div>
+                  </header>
+                ) : null}
+
+                <div className="min-h-0 flex-1 overflow-y-auto px-6 py-3 sm:px-8 sm:py-4">
+                  <div className="mx-auto w-full max-w-4xl">
+                    {isEditing ? (
+                      <label className="block">
+                        <span className="text-xs font-medium text-stone-500">{t('snapshots.editContent')}</span>
+                        <MarkdownTextarea
+                          value={contentDraft}
+                          onValueChange={setContentDraft}
+                          onKeyDown={(event) => {
+                            if (event.key === 'Escape') {
+                              handleCancelEdit()
+                            }
+                          }}
+                          placeholder={t('snapshots.editContentPlaceholder')}
+                          rows={18}
+                          className="mt-2 min-h-[420px] resize-y rounded-lg border border-stone-200 bg-stone-50 px-4 py-3 text-sm leading-7 text-stone-900 outline-none transition focus:border-violet-400 focus:bg-white"
+                        />
+                      </label>
                     ) : (
-                      <p className="mt-2 text-xs leading-5 text-stone-500">{t('snapshots.tagsEmpty')}</p>
+                      <>
+                        <div className="mb-3 flex flex-wrap items-center justify-between gap-3" data-testid="snapshots-reading-toolbar">
+                          {isCompactLayout ? (
+                            <button
+                              type="button"
+                              onClick={() => setCompactPane('list')}
+                              className="text-sm font-medium text-stone-500 transition hover:text-stone-900"
+                            >
+                              {t('snapshots.backToResults')}
+                            </button>
+                          ) : (
+                            <div />
+                          )}
+
+                          <div className="flex shrink-0 flex-wrap gap-2">
+                            <ToolButton onClick={handleBeginEdit}>{t('snapshots.edit')}</ToolButton>
+                            <ToolButton onClick={() => { void handleCopySelectedSnapshot() }}>{t('snapshots.copyFull')}</ToolButton>
+                            <ToolButton onClick={() => { void onRemoveSnapshot(selectedSnapshot.id) }}>{t('snapshots.delete')}</ToolButton>
+                          </div>
+                        </div>
+
+                        <div className="min-w-0 break-words" data-testid="snapshots-content-section">
+                          <MarkdownContent content={selectedSnapshot.content} />
+                        </div>
+
+                        <section className="mt-10 border-t border-stone-200 pt-6" data-testid="snapshots-reference-section">
+                          <h4 className="text-sm font-semibold text-stone-900">{t('snapshots.referenceSectionTitle')}</h4>
+                          <dl className="mt-4 grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+                            <MetaItem label={t('snapshots.createdLabel')} value={formatSnapshotTime(selectedSnapshot.createdAt)} />
+                            <MetaItem
+                              label={t('snapshots.updatedLabel')}
+                              value={isSnapshotEdited(selectedSnapshot) ? formatSnapshotTime(selectedSnapshot.updatedAt) : t('snapshots.notEditedYet')}
+                            />
+                            <MetaItem label={t('snapshots.referencesLabel')} value={t('snapshots.references', { count: selectedSnapshot.blockIds.length })} />
+                            <MetaItem
+                              label={t('snapshots.sourceLabel')}
+                              value={selectedSnapshot.notebookTitle ?? t('snapshots.sourceEmpty')}
+                            />
+                          </dl>
+                        </section>
+                      </>
                     )}
                   </div>
                 </div>
-                <div className="flex shrink-0 flex-wrap gap-2">
-                  {isEditing ? (
-                    <>
-                      <ToolButton onClick={handleCancelEdit} disabled={isSavingEdit}>{t('snapshots.cancel')}</ToolButton>
-                      <ToolButton primary onClick={() => { void handleSaveEditedSnapshot() }} disabled={saveDisabled}>
-                        {isSavingEdit ? t('snapshots.saving') : t('snapshots.save')}
-                      </ToolButton>
-                    </>
-                  ) : (
-                    <>
-                      <ToolButton onClick={handleBeginEdit}>{t('snapshots.edit')}</ToolButton>
-                      <ToolButton onClick={() => { void handleCopySelectedSnapshot() }}>{t('snapshots.copyFull')}</ToolButton>
-                      <ToolButton onClick={() => { void onRemoveSnapshot(selectedSnapshot.id) }}>{t('snapshots.delete')}</ToolButton>
-                    </>
-                  )}
+              </>
+            ) : (
+              <div className="flex h-full min-h-[320px] items-center justify-center px-6 py-12">
+                <div className="max-w-md text-center">
+                  <div className="text-xs font-semibold uppercase tracking-[0.18em] text-stone-400">{t('snapshots.title')}</div>
+                  <h3 className="mt-3 text-2xl font-semibold text-stone-900">
+                    {snapshotQuery ? t('snapshots.noMatchTitle') : t('snapshots.noSnapshotsTitle')}
+                  </h3>
+                  <p className="mt-3 text-sm leading-6 text-stone-500">
+                    {snapshotQuery
+                      ? t('snapshots.noMatchHint')
+                      : t('snapshots.noSnapshotsHint')}
+                  </p>
                 </div>
               </div>
-            </header>
-
-            <div className="min-h-0 flex-1 overflow-y-auto px-6 py-6 sm:px-8">
-              <div className="mx-auto min-w-0 max-w-4xl break-words">
-                {isEditing ? (
-                  <label className="block">
-                    <span className="text-xs font-medium text-stone-500">{t('snapshots.editContent')}</span>
-                    <MarkdownTextarea
-                      value={contentDraft}
-                      onValueChange={setContentDraft}
-                      onKeyDown={(event) => {
-                        if (event.key === 'Escape') {
-                          handleCancelEdit()
-                        }
-                      }}
-                      placeholder={t('snapshots.editContentPlaceholder')}
-                      rows={18}
-                      className="mt-2 min-h-[420px] resize-y rounded-lg border border-stone-200 bg-stone-50 px-4 py-3 text-sm leading-7 text-stone-900 outline-none transition focus:border-violet-400 focus:bg-white"
-                    />
-                  </label>
-                ) : (
-                  <MarkdownContent content={selectedSnapshot.content} />
-                )}
-              </div>
-            </div>
-          </>
-        ) : (
-          <div className="flex h-full min-h-[320px] items-center justify-center px-6 py-12">
-            <div className="max-w-md text-center">
-              <div className="text-xs font-semibold uppercase tracking-[0.18em] text-stone-400">{t('snapshots.title')}</div>
-              <h3 className="mt-3 text-2xl font-semibold text-stone-900">
-                {snapshotQuery ? t('snapshots.noMatchTitle') : t('snapshots.noSnapshotsTitle')}
-              </h3>
-              <p className="mt-3 text-sm leading-6 text-stone-500">
-                {snapshotQuery
-                  ? t('snapshots.noMatchHint')
-                  : t('snapshots.noSnapshotsHint')}
-              </p>
-            </div>
-          </div>
-        )}
-      </section>
+            )}
+          </section>
+        ) : null}
+      </div>
     </section>
   )
 }

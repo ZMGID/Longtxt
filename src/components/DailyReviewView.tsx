@@ -4,6 +4,8 @@ import type { DailyReviewResult } from '../../shared/types'
 import { changbu } from '../lib/changbu'
 import { useAppMeta } from '../hooks/useAppMeta'
 import { useDailyReview, useDocGenerationSettings, useSaveDailyReviewSnapshot } from '../hooks/useReview'
+import { formatDateByLanguage } from '../i18n/locale'
+import { useI18n } from '../i18n/useI18n'
 import { formatDateKeyLabel, formatTimeLabel } from '../lib/format'
 import { shiftDateKey } from '../lib/timelineReview'
 import { MarkdownContent } from './MarkdownContent'
@@ -46,6 +48,7 @@ interface DailyReviewStreamState {
 }
 
 export function DailyReviewView({ initialDateKey }: DailyReviewViewProps) {
+  const { language, t } = useI18n()
   const { toast } = useToast()
   const metaQuery = useAppMeta()
   const docGenerationSettingsQuery = useDocGenerationSettings()
@@ -67,6 +70,7 @@ export function DailyReviewView({ initialDateKey }: DailyReviewViewProps) {
   const settingsResolved = docGenerationSettingsQuery.isSuccess || docGenerationSettingsQuery.isError
   const streamOutputEnabled = docGenerationSettingsQuery.data?.streamOutput ?? true
   const reviewQuery = useDailyReview(
+    language,
     dateKey,
     requestState.version,
     requestState.forceRefresh,
@@ -80,11 +84,11 @@ export function DailyReviewView({ initialDateKey }: DailyReviewViewProps) {
   const providerMode = result?.mode ?? streamState.mode ?? metaQuery.data?.activeAiMode ?? 'mock'
   const topTagLabel = useMemo(() => {
     if (!result || result.topTags.length === 0) {
-      return '今天的内容还没有形成明显主题'
+      return t('review.daily.topTagEmpty')
     }
 
     return result.topTags.map((tag) => `#${tag}`).join(' · ')
-  }, [result])
+  }, [result, t])
 
   useEffect(() => {
     const url = new URL(window.location.href)
@@ -154,7 +158,7 @@ export function DailyReviewView({ initialDateKey }: DailyReviewViewProps) {
           requestId: null,
           content: '',
           loading: false,
-          error: error instanceof Error ? error : new Error('每日回顾生成失败。'),
+          error: error instanceof Error ? error : new Error(t('review.daily.generateFailed')),
           result: null,
           mode: null,
         })
@@ -163,7 +167,7 @@ export function DailyReviewView({ initialDateKey }: DailyReviewViewProps) {
     return () => {
       cancelled = true
     }
-  }, [dateKey, requestState.forceRefresh, requestState.version, settingsResolved, streamOutputEnabled])
+  }, [dateKey, requestState.forceRefresh, requestState.version, settingsResolved, streamOutputEnabled, t])
 
   useEffect(() => {
     if (!streamOutputEnabled) {
@@ -203,7 +207,7 @@ export function DailyReviewView({ initialDateKey }: DailyReviewViewProps) {
           return {
             ...current,
             loading: false,
-            error: new Error(chunk.error ?? '每日回顾生成失败。'),
+            error: new Error(chunk.error ?? t('review.daily.generateFailed')),
             content: chunk.fullText ?? current.content,
             mode: chunk.mode,
           }
@@ -261,13 +265,29 @@ export function DailyReviewView({ initialDateKey }: DailyReviewViewProps) {
             return {
               ...current,
               loading: false,
-              error: error instanceof Error ? error : new Error('每日回顾生成失败。'),
+              error: error instanceof Error ? error : new Error(t('review.daily.generateFailed')),
               content: chunk.fullText ?? current.content,
             }
           })
         })
     })
-  }, [streamOutputEnabled])
+  }, [streamOutputEnabled, t])
+
+  useEffect(() => {
+    activeRequestRef.current = {
+      requestId: null,
+      dateKey,
+    }
+    setStreamState({
+      requestId: null,
+      content: '',
+      loading: false,
+      error: null,
+      result: null,
+      mode: null,
+    })
+    setRequestState((current) => ({ version: current.version + 1, forceRefresh: false }))
+  }, [language])
 
   function switchDate(nextDateKey: string) {
     setDateKey(nextDateKey)
@@ -289,9 +309,9 @@ export function DailyReviewView({ initialDateKey }: DailyReviewViewProps) {
         content: result.content,
         blockIds: result.blockIds,
       })
-      toast('success', '已保存为文档快照。')
+      toast('success', t('review.daily.snapshotSaved'))
     } catch (error) {
-      toast('error', error instanceof Error ? error.message : '保存快照失败。')
+      toast('error', error instanceof Error ? error.message : t('review.daily.snapshotSaveFailed'))
     }
   }
 
@@ -301,7 +321,7 @@ export function DailyReviewView({ initialDateKey }: DailyReviewViewProps) {
         <div className="flex flex-wrap items-start justify-between gap-4">
           <div className="min-w-0 flex-1">
             <div className="flex flex-wrap items-center gap-3 text-[11px] font-semibold uppercase tracking-[0.18em] text-stone-400">
-              <span>每日回顾</span>
+              <span>{t('review.daily.title')}</span>
               <span className={`rounded-full border px-2 py-1 text-[10px] tracking-[0.14em] ${providerMode === 'live' ? 'border-emerald-200 text-emerald-700' : 'border-stone-200 text-stone-500'}`}>
                 {providerMode === 'live' ? 'Live AI' : 'Mock AI'}
               </span>
@@ -311,26 +331,26 @@ export function DailyReviewView({ initialDateKey }: DailyReviewViewProps) {
             </h3>
             <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-sm text-stone-500">
               <span>
-                {result ? `${result.blockCount} 个块` : '整理块内容中'}
-                {result ? ` · ${result.plannedEntryCount} 项安排 · ${result.doneEntryCount} 项完成` : ''}
+                {result ? t('review.daily.blocks', { count: result.blockCount }) : t('review.daily.sorting')}
+                {result ? ` · ${t('review.daily.entries', { planned: result.plannedEntryCount, done: result.doneEntryCount })}` : ''}
               </span>
               {result ? <span className="text-stone-400">{topTagLabel}</span> : null}
-              {result?.generatedAt ? <span className="text-stone-400">生成于 {formatTimeLabel(result.generatedAt)}</span> : null}
+              {result?.generatedAt ? <span className="text-stone-400">{t('review.daily.generatedAt', { time: formatTimeLabel(result.generatedAt) })}</span> : null}
             </div>
           </div>
 
           <div className="flex flex-wrap items-center gap-2">
             <ActionButton onClick={() => switchDate(shiftDateKey(dateKey, -1))} disabled={isGenerating || saveSnapshotMutation.isPending}>
-              前一天
+              {t('review.daily.prevDay')}
             </ActionButton>
             <ActionButton onClick={() => switchDate(shiftDateKey(dateKey, 1))} disabled={isGenerating || saveSnapshotMutation.isPending}>
-              后一天
+              {t('review.daily.nextDay')}
             </ActionButton>
             <ActionButton onClick={regenerate} disabled={isGenerating || saveSnapshotMutation.isPending}>
-              {isGenerating ? '生成中…' : '重新生成'}
+              {isGenerating ? t('review.common.generating') : t('review.common.regenerate')}
             </ActionButton>
             <ActionButton accent onClick={() => { void handleSaveSnapshot() }} disabled={!result || isGenerating || saveSnapshotMutation.isPending}>
-              {saveSnapshotMutation.isPending ? '保存中…' : '保存为快照'}
+              {saveSnapshotMutation.isPending ? t('review.common.savingSnapshot') : t('review.common.saveSnapshot')}
             </ActionButton>
           </div>
         </div>
@@ -341,13 +361,13 @@ export function DailyReviewView({ initialDateKey }: DailyReviewViewProps) {
 
         {settingsResolved && activeError ? (
           <div className="mx-auto w-full max-w-[860px] px-6 py-8">
-            <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-rose-400">生成失败</div>
-            <div className="mt-2 text-[22px] font-semibold tracking-[-0.02em] text-stone-900">这篇回顾暂时还没整理出来</div>
+            <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-rose-400">{t('review.daily.errorEyebrow')}</div>
+            <div className="mt-2 text-[22px] font-semibold tracking-[-0.02em] text-stone-900">{t('review.daily.errorTitle')}</div>
             <p className="mt-3 max-w-[640px] text-sm leading-7 text-stone-500">
-              {activeError instanceof Error ? activeError.message : '每日回顾生成失败。你可以稍后重试。'}
+              {activeError instanceof Error ? activeError.message : t('review.daily.errorHint')}
             </p>
             <div className="mt-5">
-              <ActionButton onClick={regenerate}>重新生成</ActionButton>
+              <ActionButton onClick={regenerate}>{t('review.common.regenerate')}</ActionButton>
             </div>
           </div>
         ) : null}
@@ -364,25 +384,25 @@ export function DailyReviewView({ initialDateKey }: DailyReviewViewProps) {
               <aside className="min-w-0 border-t border-stone-200 pt-6 text-sm text-stone-600">
                 <div className="space-y-3">
                   <div>
-                    <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-stone-400">引用块</div>
+                    <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-stone-400">{t('review.daily.sources')}</div>
                     <div className="mt-1 leading-6">
-                      {result.sourceBlocks.length > 0 ? `共 ${result.sourceBlocks.length} 条` : '今天没有块内容'}
+                      {result.sourceBlocks.length > 0 ? t('review.daily.sourceCount', { count: result.sourceBlocks.length }) : t('review.daily.noBlocks')}
                     </div>
                   </div>
 
                   <details open={result.sourceBlocks.length > 0} className="border-t border-stone-200 pt-3">
                     <summary className="cursor-pointer list-none text-sm font-medium text-stone-800 marker:hidden">
-                      查看引用内容
+                      {t('review.daily.viewSources')}
                     </summary>
                     <div className="mt-3 divide-y divide-stone-200">
                       {result.sourceBlocks.length > 0 ? result.sourceBlocks.map((block) => (
                         <div key={block.id} className="py-3 first:pt-0">
                           <div className="text-[11px] uppercase tracking-[0.12em] text-stone-400">
-                            {new Intl.DateTimeFormat('zh-CN', {
+                            {formatDateByLanguage(new Date(block.createdAt), {
                               hour: '2-digit',
                               minute: '2-digit',
                               hour12: false,
-                            }).format(new Date(block.createdAt))}
+                            }, language)}
                           </div>
                           <div className="mt-1.5 text-sm leading-6 text-stone-800">{block.preview}</div>
                           {block.tags.length > 0 ? (
@@ -390,7 +410,7 @@ export function DailyReviewView({ initialDateKey }: DailyReviewViewProps) {
                           ) : null}
                         </div>
                       )) : (
-                        <div className="py-1 text-sm leading-6 text-stone-500">这一天还没有可引用的块内容。</div>
+                        <div className="py-1 text-sm leading-6 text-stone-500">{t('review.daily.sourceEmpty')}</div>
                       )}
                     </div>
                   </details>
@@ -412,11 +432,11 @@ export function DailyReviewView({ initialDateKey }: DailyReviewViewProps) {
               <aside className="min-w-0 border-t border-stone-200 pt-6 text-sm text-stone-600">
                 <div className="space-y-3">
                   <div>
-                    <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-stone-400">生成状态</div>
-                    <div className="mt-1 leading-6">正在整理当天块内容与日历安排…</div>
+                    <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-stone-400">{t('review.common.streamStatus')}</div>
+                    <div className="mt-1 leading-6">{t('review.daily.streamingHint')}</div>
                   </div>
                   <div className="border-t border-stone-200 pt-3 text-xs leading-6 text-stone-400">
-                    已开启流式输出，会边生成边显示正文。
+                    {t('review.daily.streamingEnabled')}
                   </div>
                 </div>
               </aside>

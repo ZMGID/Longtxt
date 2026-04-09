@@ -1,5 +1,7 @@
 import { getAiInsightMethodDefinition } from '../../shared/aiInsights'
+import { getIntlLocale } from '../../shared/config'
 import type {
+  AppLanguage,
   AIExecutionMode,
   AiInsightMethodId,
   AiInsightResult,
@@ -51,7 +53,11 @@ function stripMarkdown(text: string): string {
     .trim()
 }
 
-function buildBlockPreview(block: Block): string {
+function getUntitledContentLabel(language: AppLanguage): string {
+  return language === 'en' ? 'Untitled content' : '未命名内容'
+}
+
+function buildBlockPreview(block: Block, language: AppLanguage): string {
   const summary = block.summary?.trim()
 
   if (summary) {
@@ -63,7 +69,7 @@ function buildBlockPreview(block: Block): string {
     .map((line) => stripMarkdown(line))
     .find(Boolean)
 
-  return firstLine ?? '未命名内容'
+  return firstLine ?? getUntitledContentLabel(language)
 }
 
 function truncate(text: string, maxLength: number): string {
@@ -79,11 +85,15 @@ function summarizeContent(text: string): string | null {
   return normalized ? truncate(normalized, 140) : null
 }
 
-function compareByCountThenName(left: [string, number], right: [string, number]): number {
-  return right[1] - left[1] || left[0].localeCompare(right[0], 'zh-Hans-CN')
+function compareByCountThenName(
+  left: [string, number],
+  right: [string, number],
+  language: AppLanguage,
+): number {
+  return right[1] - left[1] || left[0].localeCompare(right[0], getIntlLocale(language))
 }
 
-function buildTopTags(blocks: Block[]): string[] {
+function buildTopTags(blocks: Block[], language: AppLanguage): string[] {
   const counts = new Map<string, number>()
 
   for (const block of blocks) {
@@ -99,7 +109,7 @@ function buildTopTags(blocks: Block[]): string[] {
   }
 
   return Array.from(counts.entries())
-    .sort(compareByCountThenName)
+    .sort((left, right) => compareByCountThenName(left, right, language))
     .slice(0, 6)
     .map(([name]) => name)
 }
@@ -110,7 +120,7 @@ function sortBlocksByCreatedAt(blocks: Block[]): Block[] {
 
 function sortEntries(entries: CalendarEntry[]): CalendarEntry[] {
   return [...entries].sort((left, right) => {
-    const dateCompare = left.date.localeCompare(right.date, 'zh-Hans-CN')
+    const dateCompare = left.date.localeCompare(right.date)
 
     if (dateCompare !== 0) {
       return dateCompare
@@ -120,14 +130,14 @@ function sortEntries(entries: CalendarEntry[]): CalendarEntry[] {
       return Number(right.allDay) - Number(left.allDay)
     }
 
-    return (left.startTime ?? '').localeCompare(right.startTime ?? '', 'zh-Hans-CN')
+    return (left.startTime ?? '').localeCompare(right.startTime ?? '')
   })
 }
 
-function buildDailySourceBlocks(blocks: Block[]): DailyReviewSourceBlock[] {
+function buildDailySourceBlocks(blocks: Block[], language: AppLanguage): DailyReviewSourceBlock[] {
   return sortBlocksByCreatedAt(blocks).map((block) => ({
     id: block.id,
-    preview: buildBlockPreview(block),
+    preview: buildBlockPreview(block, language),
     createdAt: block.createdAt,
     updatedAt: block.updatedAt,
     tags: block.tags.map((tag) => tag.name),
@@ -135,13 +145,13 @@ function buildDailySourceBlocks(blocks: Block[]): DailyReviewSourceBlock[] {
   }))
 }
 
-function buildAiSourceBlocks(blocks: Block[]): AiInsightSourceBlock[] {
+function buildAiSourceBlocks(blocks: Block[], language: AppLanguage): AiInsightSourceBlock[] {
   return [...blocks]
     .sort((left, right) => new Date(right.createdAt).getTime() - new Date(left.createdAt).getTime())
     .map((block) => ({
       id: block.id,
       date: formatLocalDateKey(block.createdAt),
-      preview: buildBlockPreview(block),
+      preview: buildBlockPreview(block, language),
       createdAt: block.createdAt,
       updatedAt: block.updatedAt,
       tags: block.tags.map((tag) => tag.name),
@@ -149,21 +159,27 @@ function buildAiSourceBlocks(blocks: Block[]): AiInsightSourceBlock[] {
     }))
 }
 
-function buildDailyGenerationInput(blocks: Block[], entries: CalendarEntry[], date: string): DailyReviewGenerationInput {
+function buildDailyGenerationInput(
+  blocks: Block[],
+  entries: CalendarEntry[],
+  date: string,
+  language: AppLanguage,
+): DailyReviewGenerationInput {
   const sortedBlocks = sortBlocksByCreatedAt(blocks)
   const sortedEntries = sortEntries(entries)
 
   return {
+    language,
     date,
     blockCount: blocks.length,
     plannedEntryCount: entries.filter((entry) => entry.status === 'planned').length,
     doneEntryCount: entries.filter((entry) => entry.status === 'done').length,
     canceledEntryCount: entries.filter((entry) => entry.status === 'canceled').length,
-    topTags: buildTopTags(blocks),
+    topTags: buildTopTags(blocks, language),
     blocks: sortedBlocks.map((block) => ({
       id: block.id,
       createdAt: block.createdAt,
-      preview: buildBlockPreview(block),
+      preview: buildBlockPreview(block, language),
       content: truncate(block.content.trim(), 1_400),
       summary: block.summary ?? null,
       tags: block.tags.map((tag) => tag.name),
@@ -245,16 +261,17 @@ function buildAiInsightGenerationInput(params: {
   methodId: AiInsightMethodId
   anchorDate: string
   dayDetails: CalendarDayDetail[]
+  language: AppLanguage
 }): {
   input: AiInsightGenerationInput
   blocks: Block[]
   entries: CalendarEntry[]
   sourceBlocks: Block[]
 } {
-  const method = getAiInsightMethodDefinition(params.methodId)
+  const method = getAiInsightMethodDefinition(params.methodId, params.language)
 
   if (!method) {
-    throw new Error('未知的 AI 洞察方法。')
+    throw new Error(params.language === 'en' ? 'Unknown AI insight method.' : '未知的 AI 洞察方法。')
   }
 
   const dates = buildReviewDateRange(params.anchorDate, params.dayDetails.length || 14)
@@ -286,8 +303,8 @@ function buildAiInsightGenerationInput(params: {
       return {
         date,
         blockCount: dayBlocks.length,
-        topTags: buildTopTags(dayBlocks).slice(0, 4),
-        previews: dayBlocks.slice(0, 3).map(buildBlockPreview),
+        topTags: buildTopTags(dayBlocks, params.language).slice(0, 4),
+        previews: dayBlocks.slice(0, 3).map((block) => buildBlockPreview(block, params.language)),
         plannedEntryCount: dayEntries.filter((entry) => entry.status === 'planned').length,
         doneEntryCount: dayEntries.filter((entry) => entry.status === 'done').length,
         canceledEntryCount: dayEntries.filter((entry) => entry.status === 'canceled').length,
@@ -296,7 +313,8 @@ function buildAiInsightGenerationInput(params: {
     .filter((day) => day.blockCount > 0 || day.plannedEntryCount > 0 || day.doneEntryCount > 0 || day.canceledEntryCount > 0)
 
   return {
-    input: {
+      input: {
+      language: params.language,
       methodId: method.id,
       methodLabel: method.label,
       promptPreset: method.promptPreset,
@@ -307,13 +325,13 @@ function buildAiInsightGenerationInput(params: {
       plannedEntryCount: allEntries.filter((entry) => entry.status === 'planned').length,
       doneEntryCount: allEntries.filter((entry) => entry.status === 'done').length,
       canceledEntryCount: allEntries.filter((entry) => entry.status === 'canceled').length,
-      topTags: buildTopTags(allBlocks),
+      topTags: buildTopTags(allBlocks, params.language),
       dayDigests,
       blocks: sourceBlocks.map((block) => ({
         id: block.id,
         date: formatLocalDateKey(block.createdAt),
         createdAt: block.createdAt,
-        preview: buildBlockPreview(block),
+        preview: buildBlockPreview(block, params.language),
         content: truncate(block.content.trim(), 1_100),
         summary: block.summary ?? null,
         tags: block.tags.map((tag) => tag.name),
@@ -334,12 +352,15 @@ function buildAiInsightGenerationInput(params: {
   }
 }
 
-function buildEmptyDailyReview(date: string, mode: AIExecutionMode): DailyReviewResult {
-  const title = `每日回顾 ${date}`
+function buildEmptyDailyReview(date: string, mode: AIExecutionMode, language: AppLanguage): DailyReviewResult {
+  const isEnglish = language === 'en'
+  const title = isEnglish ? `Daily Review ${date}` : `每日回顾 ${date}`
   const content = [
-    '今天还没有形成可供整理的内容。',
+    isEnglish ? 'There is no content to summarize for today yet.' : '今天还没有形成可供整理的内容。',
     '',
-    '你可以先写下一两条块，或者补上当天的安排；等有了真实记录，这里会自动整理成一篇可阅读的回顾。',
+    isEnglish
+      ? 'Write one or two notes or add today’s schedule first. Once there are real records, this view will auto-generate a readable review.'
+      : '你可以先写下一两条块，或者补上当天的安排；等有了真实记录，这里会自动整理成一篇可阅读的回顾。',
   ].join('\n')
 
   return {
@@ -361,19 +382,31 @@ function buildEmptyDailyReview(date: string, mode: AIExecutionMode): DailyReview
   }
 }
 
-function buildEmptyAiInsight(methodId: AiInsightMethodId, anchorDate: string, mode: AIExecutionMode): AiInsightResult {
-  const method = getAiInsightMethodDefinition(methodId)
+function buildEmptyAiInsight(
+  methodId: AiInsightMethodId,
+  anchorDate: string,
+  mode: AIExecutionMode,
+  language: AppLanguage,
+): AiInsightResult {
+  const method = getAiInsightMethodDefinition(methodId, language)
+  const isEnglish = language === 'en'
 
   if (!method) {
-    throw new Error('未知的 AI 洞察方法。')
+    throw new Error(isEnglish ? 'Unknown AI insight method.' : '未知的 AI 洞察方法。')
   }
 
   const dates = buildReviewDateRange(anchorDate)
-  const title = `AI 洞察｜${method.label}｜${dates[0]}～${dates[dates.length - 1]}`
+  const title = isEnglish
+    ? `AI Insight | ${method.label} | ${dates[0]}~${dates[dates.length - 1]}`
+    : `AI 洞察｜${method.label}｜${dates[0]}～${dates[dates.length - 1]}`
   const content = [
-    `最近两周还没有足够的记录让「${method.label}」形成稳定分析。`,
+    isEnglish
+      ? `There are not enough records in the last two weeks to produce a stable analysis for "${method.label}".`
+      : `最近两周还没有足够的记录让「${method.label}」形成稳定分析。`,
     '',
-    '你可以先积累几天块内容或安排，再回来生成 AI 洞察。这里会优先依据真实记录来组织结论。',
+    isEnglish
+      ? 'Accumulate more notes or schedule entries for a few days, then regenerate AI insight. Conclusions are organized from real records first.'
+      : '你可以先积累几天块内容或安排，再回来生成 AI 洞察。这里会优先依据真实记录来组织结论。',
   ].join('\n')
 
   return {
@@ -421,18 +454,19 @@ export function prepareDailyReviewGeneration(params: {
   date: string
   dayDetail: CalendarDayDetail
   mode: AIExecutionMode
+  language: AppLanguage
 }): PreparedDailyReviewGeneration {
-  const { date, dayDetail, mode } = params
+  const { date, dayDetail, mode, language } = params
   const blocks = dayDetail.blocks
   const entries = dayDetail.entries
-  const input = buildDailyGenerationInput(blocks, entries, date)
+  const input = buildDailyGenerationInput(blocks, entries, date, language)
 
   if (input.blockCount === 0 && input.entries.length === 0) {
     return {
       input: null,
       blocks,
       entries,
-      emptyResult: buildEmptyDailyReview(date, mode),
+      emptyResult: buildEmptyDailyReview(date, mode, language),
     }
   }
 
@@ -447,18 +481,20 @@ export function prepareDailyReviewGeneration(params: {
 export function finalizeDailyReviewResult(params: {
   date: string
   mode: AIExecutionMode
+  language: AppLanguage
   input: DailyReviewGenerationInput
   blocks: Block[]
   entries: CalendarEntry[]
   content: string
 }): DailyReviewResult {
   const safeContent = sanitizeDailyReviewResponse(params.content).trim()
+  const isEnglish = params.language === 'en'
 
   if (!safeContent) {
-    throw new Error('每日回顾生成失败：模型没有返回内容。')
+    throw new Error(isEnglish ? 'Daily review generation failed: model returned no content.' : '每日回顾生成失败：模型没有返回内容。')
   }
 
-  const title = `每日回顾 ${params.date}`
+  const title = isEnglish ? `Daily Review ${params.date}` : `每日回顾 ${params.date}`
 
   return {
     date: params.date,
@@ -474,7 +510,7 @@ export function finalizeDailyReviewResult(params: {
     topTags: params.input.topTags,
     generatedAt: new Date().toISOString(),
     mode: params.mode,
-    sourceBlocks: buildDailySourceBlocks(params.blocks),
+    sourceBlocks: buildDailySourceBlocks(params.blocks, params.language),
     empty: false,
   }
 }
@@ -492,18 +528,20 @@ export function prepareAiInsightGeneration(params: {
   anchorDate: string
   dayDetails: CalendarDayDetail[]
   mode: AIExecutionMode
+  language: AppLanguage
 }): PreparedAiInsightGeneration {
-  const { methodId, anchorDate, dayDetails, mode } = params
-  const method = getAiInsightMethodDefinition(methodId)
+  const { methodId, anchorDate, dayDetails, mode, language } = params
+  const method = getAiInsightMethodDefinition(methodId, language)
 
   if (!method) {
-    throw new Error('未知的 AI 洞察方法。')
+    throw new Error(language === 'en' ? 'Unknown AI insight method.' : '未知的 AI 洞察方法。')
   }
 
   const prepared = buildAiInsightGenerationInput({
     methodId,
     anchorDate,
     dayDetails,
+    language,
   })
 
   if (prepared.input.blockCount === 0 && prepared.input.entries.length === 0) {
@@ -512,7 +550,7 @@ export function prepareAiInsightGeneration(params: {
       blocks: prepared.blocks,
       entries: prepared.entries,
       sourceBlocks: prepared.sourceBlocks,
-      emptyResult: buildEmptyAiInsight(methodId, anchorDate, mode),
+      emptyResult: buildEmptyAiInsight(methodId, anchorDate, mode, language),
     }
   }
 
@@ -529,25 +567,29 @@ export function finalizeAiInsightResult(params: {
   methodId: AiInsightMethodId
   anchorDate: string
   mode: AIExecutionMode
+  language: AppLanguage
   input: AiInsightGenerationInput
   blocks: Block[]
   entries: CalendarEntry[]
   sourceBlocks: Block[]
   content: string
 }): AiInsightResult {
-  const method = getAiInsightMethodDefinition(params.methodId)
+  const method = getAiInsightMethodDefinition(params.methodId, params.language)
+  const isEnglish = params.language === 'en'
 
   if (!method) {
-    throw new Error('未知的 AI 洞察方法。')
+    throw new Error(isEnglish ? 'Unknown AI insight method.' : '未知的 AI 洞察方法。')
   }
 
   const safeContent = sanitizeAiInsightResponse(params.content).trim()
 
   if (!safeContent) {
-    throw new Error('AI 洞察生成失败：模型没有返回内容。')
+    throw new Error(isEnglish ? 'AI insight generation failed: model returned no content.' : 'AI 洞察生成失败：模型没有返回内容。')
   }
 
-  const title = `AI 洞察｜${method.label}｜${params.input.rangeStart}～${params.input.rangeEnd}`
+  const title = isEnglish
+    ? `AI Insight | ${method.label} | ${params.input.rangeStart}~${params.input.rangeEnd}`
+    : `AI 洞察｜${method.label}｜${params.input.rangeStart}～${params.input.rangeEnd}`
 
   return {
     methodId: params.methodId,
@@ -566,7 +608,7 @@ export function finalizeAiInsightResult(params: {
     topTags: params.input.topTags,
     generatedAt: new Date().toISOString(),
     mode: params.mode,
-    sourceBlocks: buildAiSourceBlocks(params.sourceBlocks),
+    sourceBlocks: buildAiSourceBlocks(params.sourceBlocks, params.language),
     empty: false,
   }
 }
@@ -576,11 +618,13 @@ export async function generateDailyReview(params: {
   dayDetail: CalendarDayDetail
   llmProvider: LLMProvider
   mode: AIExecutionMode
+  language: AppLanguage
 }): Promise<DailyReviewResult> {
   const prepared = prepareDailyReviewGeneration({
     date: params.date,
     dayDetail: params.dayDetail,
     mode: params.mode,
+    language: params.language,
   })
 
   if (prepared.emptyResult) {
@@ -590,7 +634,7 @@ export async function generateDailyReview(params: {
   const generationInput = prepared.input
 
   if (!generationInput) {
-    throw new Error('每日回顾生成输入缺失。')
+    throw new Error(params.language === 'en' ? 'Missing daily review generation input.' : '每日回顾生成输入缺失。')
   }
 
   const content = await params.llmProvider.generateDailyReview(generationInput)
@@ -598,6 +642,7 @@ export async function generateDailyReview(params: {
   return finalizeDailyReviewResult({
     date: params.date,
     mode: params.mode,
+    language: params.language,
     input: generationInput,
     blocks: prepared.blocks,
     entries: prepared.entries,
@@ -611,12 +656,14 @@ export async function generateAiInsight(params: {
   dayDetails: CalendarDayDetail[]
   llmProvider: LLMProvider
   mode: AIExecutionMode
+  language: AppLanguage
 }): Promise<AiInsightResult> {
   const prepared = prepareAiInsightGeneration({
     methodId: params.methodId,
     anchorDate: params.anchorDate,
     dayDetails: params.dayDetails,
     mode: params.mode,
+    language: params.language,
   })
 
   if (prepared.emptyResult) {
@@ -626,7 +673,7 @@ export async function generateAiInsight(params: {
   const generationInput = prepared.input
 
   if (!generationInput) {
-    throw new Error('AI 洞察生成输入缺失。')
+    throw new Error(params.language === 'en' ? 'Missing AI insight generation input.' : 'AI 洞察生成输入缺失。')
   }
 
   const content = await params.llmProvider.generateAiInsight(generationInput)
@@ -635,6 +682,7 @@ export async function generateAiInsight(params: {
     methodId: params.methodId,
     anchorDate: params.anchorDate,
     mode: params.mode,
+    language: params.language,
     input: generationInput,
     blocks: prepared.blocks,
     entries: prepared.entries,
@@ -643,12 +691,12 @@ export async function generateAiInsight(params: {
   })
 }
 
-export function buildDailyReviewSnapshotContent(title: string, content: string): string {
+export function buildDailyReviewSnapshotContent(title: string, content: string, language: AppLanguage = 'zh'): string {
   const safeTitle = title.trim()
   const safeContent = content.trim()
 
   if (!safeContent) {
-    throw new Error('每日回顾内容不能为空。')
+    throw new Error(language === 'en' ? 'Daily review content cannot be empty.' : '每日回顾内容不能为空。')
   }
 
   if (safeContent.startsWith('# ')) {
@@ -658,12 +706,12 @@ export function buildDailyReviewSnapshotContent(title: string, content: string):
   return `# ${safeTitle}\n\n${safeContent}`
 }
 
-export function buildAiInsightSnapshotContent(title: string, content: string): string {
+export function buildAiInsightSnapshotContent(title: string, content: string, language: AppLanguage = 'zh'): string {
   const safeTitle = title.trim()
   const safeContent = content.trim()
 
   if (!safeContent) {
-    throw new Error('AI 洞察内容不能为空。')
+    throw new Error(language === 'en' ? 'AI insight content cannot be empty.' : 'AI 洞察内容不能为空。')
   }
 
   if (safeContent.startsWith('# ')) {

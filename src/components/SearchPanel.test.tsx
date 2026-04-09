@@ -285,7 +285,7 @@ describe('SearchPanel', () => {
     expect(screen.getByText('本次参考块')).toBeInTheDocument()
     expect(screen.getByText('本次参考')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: '新建 notebook' })).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: '加入「产品整理」' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '加入当前 notebook「产品整理」' })).toBeInTheDocument()
   })
 
   it('allows saving a generated document even when no source blocks were referenced', () => {
