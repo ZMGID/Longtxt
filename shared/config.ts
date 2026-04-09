@@ -1,6 +1,16 @@
-import type { AIConfig, BlockEnrichSettings, CalendarSettings, DocGenerationSettings, ExternalAccessSettings, UISettings } from './types'
+import type {
+  AIConfig,
+  AppLanguage,
+  BlockEnrichSettings,
+  CalendarSettings,
+  DocGenerationSettings,
+  ExternalAccessSettings,
+  ReviewMode,
+  UISettings,
+} from './types'
 
 export const APP_NAME = '长布'
+export const DEFAULT_APP_LANGUAGE: AppLanguage = 'zh'
 
 export const DEFAULT_PAGE_SIZE = 200
 export const BLOCK_ENRICH_SETTINGS_KEY = 'block_enrich_settings'
@@ -38,6 +48,7 @@ export const DEFAULT_AI_CONFIG: AIConfig = {
     apiKey: '',
     model: 'text-embedding-3-small',
   },
+  multimodalImageAnalysisEnabled: false,
 }
 
 export const DEFAULT_DOC_GENERATION_SETTINGS: DocGenerationSettings = {
@@ -57,6 +68,7 @@ export const DEFAULT_BLOCK_ENRICH_SETTINGS: BlockEnrichSettings = {
 
 export const DEFAULT_UI_SETTINGS: UISettings = {
   showMiniTimeline: true,
+  language: DEFAULT_APP_LANGUAGE,
 }
 
 export const DEFAULT_CALENDAR_SETTINGS: CalendarSettings = {
@@ -70,6 +82,36 @@ export const DEFAULT_EXTERNAL_ACCESS_SETTINGS: ExternalAccessSettings = {
   enabled: false,
   generatedAt: null,
   skillTarget: 'claude-code',
+}
+
+export function normalizeAIConfig(
+  value: Partial<AIConfig> | null | undefined,
+): AIConfig {
+  return {
+    llm: {
+      ...DEFAULT_AI_CONFIG.llm,
+      ...value?.llm,
+    },
+    embedding: {
+      ...DEFAULT_AI_CONFIG.embedding,
+      ...value?.embedding,
+    },
+    multimodalImageAnalysisEnabled: typeof value?.multimodalImageAnalysisEnabled === 'boolean'
+      ? value.multimodalImageAnalysisEnabled
+      : DEFAULT_AI_CONFIG.multimodalImageAnalysisEnabled,
+  }
+}
+
+export function parseAIConfig(raw: string | null): AIConfig {
+  if (!raw) {
+    return DEFAULT_AI_CONFIG
+  }
+
+  try {
+    return normalizeAIConfig(JSON.parse(raw) as Partial<AIConfig>)
+  } catch {
+    return DEFAULT_AI_CONFIG
+  }
 }
 
 function clampDocGenerationReferenceBlocks(value: number): number {
@@ -292,6 +334,9 @@ export function normalizeUISettings(
     showMiniTimeline: typeof value?.showMiniTimeline === 'boolean'
       ? value.showMiniTimeline
       : DEFAULT_UI_SETTINGS.showMiniTimeline,
+    language: value?.language === 'en' || value?.language === 'zh'
+      ? value.language
+      : DEFAULT_UI_SETTINGS.language,
   }
 }
 
@@ -305,6 +350,67 @@ export function parseUISettings(raw: string | null): UISettings {
   } catch {
     return DEFAULT_UI_SETTINGS
   }
+}
+
+export function getIntlLocale(language: AppLanguage): string {
+  return language === 'en' ? 'en-US' : 'zh-CN'
+}
+
+export function getAppDisplayName(language: AppLanguage): string {
+  return language === 'en' ? 'Changbu' : APP_NAME
+}
+
+export function getCollator(
+  language: AppLanguage,
+  options?: Intl.CollatorOptions,
+): Intl.Collator {
+  return new Intl.Collator(getIntlLocale(language), options)
+}
+
+export function getNumberFormatter(
+  language: AppLanguage,
+  options?: Intl.NumberFormatOptions,
+): Intl.NumberFormat {
+  return new Intl.NumberFormat(getIntlLocale(language), options)
+}
+
+export function getDateFormatter(
+  language: AppLanguage,
+  options?: Intl.DateTimeFormatOptions,
+): Intl.DateTimeFormat {
+  return new Intl.DateTimeFormat(getIntlLocale(language), options)
+}
+
+interface WindowTitleOptions {
+  reviewMode?: ReviewMode | string | null
+}
+
+export function getWindowTitle(
+  kind: 'main' | 'settings' | 'review',
+  language: AppLanguage,
+  options: WindowTitleOptions = {},
+): string {
+  const appName = getAppDisplayName(language)
+  const reviewMode = options.reviewMode ?? 'daily-review'
+  const isEnglish = language === 'en'
+
+  if (kind === 'main') {
+    return appName
+  }
+
+  if (kind === 'settings') {
+    return isEnglish ? `Settings - ${appName}` : `设置 - ${appName}`
+  }
+
+  if (reviewMode === 'ai-insights') {
+    return isEnglish ? `AI Insights - ${appName}` : `AI 洞察 - ${appName}`
+  }
+
+  if (reviewMode === 'recent-shifts') {
+    return isEnglish ? `Recent Shifts - ${appName}` : `近期变化 - ${appName}`
+  }
+
+  return isEnglish ? `Daily Review - ${appName}` : `每日回顾 - ${appName}`
 }
 
 export function normalizeExternalAccessSettings(

@@ -1,7 +1,7 @@
 import Database from 'better-sqlite3'
 import { v4 as uuid } from 'uuid'
 
-import type { Snapshot, Tag, TagKind, TagSource } from '../../shared/types'
+import type { Snapshot, SnapshotUpdateInput, Tag, TagKind, TagSource } from '../../shared/types'
 
 interface SnapshotRow {
   id: string
@@ -11,6 +11,7 @@ interface SnapshotRow {
   notebook_id: string | null
   notebook_title: string | null
   created_at: string
+  updated_at: string
 }
 
 interface SnapshotBlockTagRow {
@@ -31,6 +32,7 @@ function mapSnapshotRow(row: SnapshotRow): Snapshot {
     notebookId: row.notebook_id,
     notebookTitle: row.notebook_title,
     createdAt: row.created_at,
+    updatedAt: row.updated_at,
   }
 }
 
@@ -114,19 +116,21 @@ export function createSnapshot(
   blockIds: string[],
   notebookId?: string | null,
 ): Snapshot {
+  const createdAt = new Date().toISOString()
   const row = {
     id: uuid(),
     topic,
     content,
     block_ids: JSON.stringify(blockIds),
     notebook_id: notebookId ?? null,
-    created_at: new Date().toISOString(),
+    created_at: createdAt,
+    updated_at: createdAt,
   }
 
   db.prepare(
     `
-      INSERT INTO snapshots (id, topic, content, block_ids, notebook_id, created_at)
-      VALUES (@id, @topic, @content, @block_ids, @notebook_id, @created_at)
+      INSERT INTO snapshots (id, topic, content, block_ids, notebook_id, created_at, updated_at)
+      VALUES (@id, @topic, @content, @block_ids, @notebook_id, @created_at, @updated_at)
     `,
   ).run(row)
 
@@ -168,7 +172,8 @@ export function listSnapshots(db: Database.Database, query = '', notebookId?: st
           s.block_ids,
           s.notebook_id,
           n.title AS notebook_title,
-          s.created_at
+          s.created_at,
+          s.updated_at
         FROM snapshots s
         LEFT JOIN notebooks n ON n.id = s.notebook_id
         ${whereClause}
@@ -191,7 +196,8 @@ export function getSnapshot(db: Database.Database, id: string): Snapshot {
           s.block_ids,
           s.notebook_id,
           n.title AS notebook_title,
-          s.created_at
+          s.created_at,
+          s.updated_at
         FROM snapshots s
         LEFT JOIN notebooks n ON n.id = s.notebook_id
         WHERE s.id = ?
@@ -204,6 +210,34 @@ export function getSnapshot(db: Database.Database, id: string): Snapshot {
   }
 
   return hydrateSnapshotTags(db, [mapSnapshotRow(row)])[0]!
+}
+
+export function updateSnapshot(
+  db: Database.Database,
+  id: string,
+  patch: SnapshotUpdateInput,
+  updatedAt: string,
+): Snapshot {
+  const result = db.prepare(
+    `
+      UPDATE snapshots
+      SET topic = @topic,
+          content = @content,
+          updated_at = @updated_at
+      WHERE id = @id
+    `,
+  ).run({
+    id,
+    topic: patch.topic,
+    content: patch.content,
+    updated_at: updatedAt,
+  })
+
+  if (result.changes === 0) {
+    throw new Error('快照不存在。')
+  }
+
+  return getSnapshot(db, id)
 }
 
 export function removeSnapshot(db: Database.Database, id: string): void {

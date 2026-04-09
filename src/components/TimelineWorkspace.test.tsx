@@ -3,6 +3,9 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { Block, CalendarEntry } from '../../shared/types'
+import { I18nContext } from '../i18n/context'
+import { resolveMessage, type MessageKey } from '../i18n/messages'
+import type { AppLanguage } from '../i18n/locale'
 import { TimelineWorkspace } from './TimelineWorkspace'
 
 const hookMocks = vi.hoisted(() => ({
@@ -85,10 +88,12 @@ function renderWorkspace({
   width = 1400,
   blocks = sampleBlocks,
   entries = upcomingEntries,
+  language = 'zh',
 }: {
   width?: number
   blocks?: Block[]
   entries?: CalendarEntry[]
+  language?: AppLanguage
 } = {}) {
   setWindowSize(width)
   hookMocks.useUpcomingCalendarEntries.mockReturnValue({
@@ -105,27 +110,40 @@ function renderWorkspace({
       },
     },
   })
+  const translate = (key: MessageKey) => resolveMessage(key, language)
 
   const renderResult = render(
-    <QueryClientProvider client={queryClient}>
-      <TimelineWorkspace
-        blocks={blocks}
-        loading={false}
-        loadingMore={false}
-        hasMore={false}
-        showMiniTimeline
-        tagSuggestions={[]}
-        onSave={vi.fn(async () => {})}
-        onDelete={vi.fn(async () => {})}
-        onAddTag={vi.fn(async () => {})}
-        onRemoveTag={vi.fn(async () => {})}
-        onTagClick={vi.fn()}
-        onLoadMore={vi.fn(async () => {})}
-        upcomingDays={30}
-        onOpenCalendarDate={onOpenCalendarDate}
-        onOpenReview={onOpenReview}
-      />
-    </QueryClientProvider>,
+    <I18nContext.Provider
+      value={{
+        language,
+        uiSettings: { showMiniTimeline: true, language },
+        t: translate,
+        compareText: (left, right) => left.localeCompare(right),
+        formatNumber: (value) => `${value}`,
+        formatDate: (value) => String(value),
+        formatRelativeTime: (value) => String(value),
+      }}
+    >
+      <QueryClientProvider client={queryClient}>
+        <TimelineWorkspace
+          blocks={blocks}
+          loading={false}
+          loadingMore={false}
+          hasMore={false}
+          showMiniTimeline
+          tagSuggestions={[]}
+          onSave={vi.fn(async () => {})}
+          onDelete={vi.fn(async () => {})}
+          onAddTag={vi.fn(async () => {})}
+          onRemoveTag={vi.fn(async () => {})}
+          onTagClick={vi.fn()}
+          onLoadMore={vi.fn(async () => {})}
+          upcomingDays={30}
+          onOpenCalendarDate={onOpenCalendarDate}
+          onOpenReview={onOpenReview}
+        />
+      </QueryClientProvider>
+    </I18nContext.Provider>,
   )
 
   return {
@@ -223,13 +241,27 @@ describe('TimelineWorkspace', () => {
     expect(onOpenReview).toHaveBeenCalledWith('daily-review', '2026-04-07')
   })
 
+  it('localizes review mode controls in english', () => {
+    const { onOpenReview } = renderWorkspace({ width: 1400, language: 'en' })
+
+    fireEvent.click(screen.getByRole('button', { name: 'Review' }))
+
+    expect(screen.getByRole('button', { name: 'Daily Review' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'AI Insights' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Recent Shifts' })).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Daily Review' }))
+
+    expect(onOpenReview).toHaveBeenCalledWith('daily-review', '2026-04-07')
+  })
+
   it('adopts the latest loaded day when blocks arrive after an empty initial render', () => {
     vi.useFakeTimers()
     vi.setSystemTime(new Date('2026-05-10T09:00:00.000Z'))
 
     const { rerender, queryClient } = renderWorkspace({ width: 1400, blocks: [] })
 
-    expect(screen.getByText('5月 2026')).toBeInTheDocument()
+    expect(screen.getByText(/(?:2026年5月|5月 2026)/)).toBeInTheDocument()
 
     rerender(
       <QueryClientProvider client={queryClient}>
@@ -253,6 +285,6 @@ describe('TimelineWorkspace', () => {
       </QueryClientProvider>,
     )
 
-    expect(screen.getByText('4月 2026')).toBeInTheDocument()
+    expect(screen.getByText(/(?:2026年4月|4月 2026)/)).toBeInTheDocument()
   })
 })

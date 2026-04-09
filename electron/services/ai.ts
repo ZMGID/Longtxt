@@ -1,7 +1,17 @@
 import { createHash } from 'node:crypto'
 
 import { getAiInsightMethodDefinition } from '../../shared/aiInsights'
-import type { AIConfig, AIEndpointConfig, AIExecutionMode, AiInsightMethodId, ApiTestResult, Block, CalendarEntryStatus } from '../../shared/types'
+import type {
+  AIConfig,
+  AIEndpointConfig,
+  AIExecutionMode,
+  AiInsightMethodId,
+  ApiTestResult,
+  AppLanguage,
+  Block,
+  BlockImageAnnotation,
+  CalendarEntryStatus,
+} from '../../shared/types'
 
 const EMBEDDING_TIMEOUT_MS = 30_000
 const CHAT_TIMEOUT_MS = 90_000
@@ -67,12 +77,22 @@ interface TagSuggestionInput {
   categoryCandidates: string[]
   detailCandidates: string[]
   userTags: string[]
+  images?: TagSuggestionImageInput[]
+  skippedImages?: number
 }
 
 interface TagSuggestionResult {
   categories: string[]
   detailTags: string[]
   summary: string | null
+  imageAnnotations: BlockImageAnnotation[]
+}
+
+export interface TagSuggestionImageInput {
+  index: number
+  altText: string | null
+  url: string
+  mimeType: string | null
 }
 
 export interface TagSuggestionBatchOptions {
@@ -98,6 +118,7 @@ export interface CalendarSuggestionExtractionResult {
 }
 
 export interface DailyReviewGenerationInput {
+  language: AppLanguage
   date: string
   blockCount: number
   plannedEntryCount: number
@@ -123,6 +144,7 @@ export interface DailyReviewGenerationInput {
 }
 
 export interface AiInsightGenerationInput {
+  language: AppLanguage
   methodId: AiInsightMethodId
   methodLabel: string
   promptPreset: string
@@ -163,9 +185,23 @@ export interface AiInsightGenerationInput {
   }>
 }
 
+interface ChatTextPart {
+  type: 'text'
+  text: string
+}
+
+interface ChatImagePart {
+  type: 'image_url'
+  image_url: {
+    url: string
+  }
+}
+
+type ChatContentPart = ChatTextPart | ChatImagePart
+
 interface ChatMessage {
   role: 'system' | 'user' | 'assistant'
-  content: string
+  content: string | ChatContentPart[]
 }
 
 interface LLMCompletionOptions {
@@ -284,11 +320,13 @@ export function createConfigFingerprint(config: AIConfig): string {
         model: resolved.embedding.model,
         key: resolved.embedding.apiKey,
       },
+      multimodalImageAnalysisEnabled: config.multimodalImageAnalysisEnabled,
     })
   } catch {
     payload = JSON.stringify({
       llm: config.llm,
       embedding: config.embedding,
+      multimodalImageAnalysisEnabled: config.multimodalImageAnalysisEnabled,
     })
   }
 
@@ -304,6 +342,33 @@ function buildHeaders(config: AIEndpointConfig): Record<string, string> {
     Authorization: `Bearer ${config.apiKey.trim()}`,
     'Content-Type': 'application/json',
   }
+}
+
+const PROBE_IMAGE_DATA_URL = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9WnSUs8AAAAASUVORK5CYII='
+
+function isMultimodalCapabilityError(error: unknown): boolean {
+  if (!(error instanceof Error)) {
+    return false
+  }
+
+  const message = error.message.toLowerCase()
+
+  return [
+    'image_url',
+    'does not support image',
+    'does not support multimodal',
+    'multimodal',
+    'vision',
+    'unsupported content type',
+    'invalid chat format',
+    'input image',
+  ].some((pattern) => message.includes(pattern))
+}
+
+function buildTagSuggestionOutputFormat(multimodal: boolean): string {
+  return multimodal
+    ? '请基于用户输入内容输出严格 JSON，格式为 {"categories":["分类1"],"detail_tags":["细标签1","细标签2"],"summary":"简短总结","image_annotations":[{"index":0,"annotation":"图片内容批注"}]}。'
+    : '请基于用户输入内容输出严格 JSON，格式为 {"categories":["分类1"],"detail_tags":["细标签1","细标签2"],"summary":"简短总结"}。'
 }
 
 function extractChatMessageText(response: OpenAICompatibleChatCompletionResponse): string {
@@ -325,6 +390,30 @@ function extractChatMessageText(response: OpenAICompatibleChatCompletionResponse
 
 function formatProviderError(message: string, details?: string): Error {
   return new Error(details ? `${message}：${details}` : message)
+}
+
+function formatLocalizedError(message: string, details: string | null, language: AppLanguage): string {
+  if (details) {
+    return language === 'en' ? `${message}: ${details}` : `${message}：${details}`
+  }
+
+  return language === 'en' ? `${message}.` : `${message}。`
+}
+
+function localizeProbeAiDetail(message: string, language: AppLanguage): string {
+  if (language !== 'en') {
+    return message
+  }
+
+  return message
+    .replaceAll('请求超时', 'Request timed out')
+    .replaceAll('模型列表请求失败：', 'Model list request failed: ')
+    .replaceAll('Embedding 请求失败：', 'Embedding request failed: ')
+    .replaceAll('Embedding 响应格式无效', 'Embedding response format is invalid')
+    .replaceAll('LLM 请求失败：', 'LLM request failed: ')
+    .replaceAll('LLM 响应格式无效', 'LLM response format is invalid')
+    .replaceAll('LLM 流式请求失败：', 'LLM streaming request failed: ')
+    .replaceAll('LLM 流式响应为空', 'LLM streaming response is empty')
 }
 
 async function readErrorMessage(response: Response): Promise<string> {
@@ -631,15 +720,54 @@ function buildMockDocument(topic: string, blocks: Block[], writingGuide?: string
   ].join('\n')
 }
 
-function formatEntryTimeLabel(entry: DailyReviewGenerationInput['entries'][number]): string {
+function formatEntryTimeLabel(
+  entry: DailyReviewGenerationInput['entries'][number],
+  language: AppLanguage,
+): string {
   if (entry.allDay || !entry.startTime) {
-    return '全天'
+    return language === 'en' ? 'all day' : '全天'
   }
 
   return entry.startTime
 }
 
 function buildMockDailyReview(input: DailyReviewGenerationInput): string {
+  if (input.language === 'en') {
+    const tagText = input.topTags.length > 0 ? input.topTags.map((tag) => `#${tag}`).join(', ') : 'no stable themes yet'
+    const firstParagraph = [
+      `On ${input.date}, there were ${input.blockCount} notes recorded.`,
+      input.entries.length > 0
+        ? ` Calendar had ${input.plannedEntryCount} planned, ${input.doneEntryCount} done, and ${input.canceledEntryCount} canceled items.`
+        : ' There were no extra calendar events, so the rhythm mainly came from notes.',
+      ` Main themes were around ${tagText}.`,
+    ].join('')
+
+    const entryParagraph = input.entries.length > 0
+      ? `Calendar split the day into a few clear checkpoints: ${input.entries
+        .slice(0, 5)
+        .map((entry) => `${formatEntryTimeLabel(entry, input.language)} "${entry.title}" ${entry.status === 'done' ? 'was completed' : entry.status === 'canceled' ? 'was later canceled' : 'remained an important task'}`)
+        .join(', ')}.`
+      : 'Without fixed schedule entries, the day looked more like continuous progress: capture thoughts, write notes, then gradually merge loose threads.'
+
+    const blockParagraphs = input.blocks.slice(0, 4).map((block, index) => {
+      const tagLabel = block.tags.length > 0 ? ` and it connected with ${block.tags.slice(0, 3).join(', ')}` : ''
+      return `${index === 0 ? 'Most visible first was' : 'Then came'} "${block.preview}"${tagLabel}. It preserved a concrete focus segment from today and made the day more than a timeline of events.`
+    })
+
+    const closingParagraph = input.blockCount > 0
+      ? 'Taken together, this day was not defined by one single event. It was a day of parallel threads, some already landed and some still in draft form, but now clearly visible as a whole.'
+      : 'There are still no concrete note blocks today, so this remains a placeholder page waiting for real records.'
+
+    return [
+      firstParagraph,
+      entryParagraph,
+      ...blockParagraphs,
+      closingParagraph,
+    ]
+      .filter(Boolean)
+      .join('\n\n')
+  }
+
   const tagText = input.topTags.length > 0 ? input.topTags.map((tag) => `#${tag}`).join('、') : '暂时还没有形成特别稳定的主题'
   const firstParagraph = [
     `${input.date} 这一天一共留下了 ${input.blockCount} 条记录，`,
@@ -652,7 +780,7 @@ function buildMockDailyReview(input: DailyReviewGenerationInput): string {
   const entryParagraph = input.entries.length > 0
     ? `日历上的安排把这一天切成了几个清晰的节点：${input.entries
       .slice(0, 5)
-      .map((entry) => `${formatEntryTimeLabel(entry)}的「${entry.title}」${entry.status === 'done' ? '已经完成' : entry.status === 'canceled' ? '后来取消了' : '仍然是今天的重要安排'}`)
+      .map((entry) => `${formatEntryTimeLabel(entry, input.language)}的「${entry.title}」${entry.status === 'done' ? '已经完成' : entry.status === 'canceled' ? '后来取消了' : '仍然是今天的重要安排'}`)
       .join('，')}。`
     : '因为没有排定的日历事项，这一天更像是一种连续推进：想到什么、记下什么，再慢慢把零散的线头拢到一起。'
 
@@ -701,27 +829,52 @@ function buildAiInsightLead(input: AiInsightGenerationInput): {
   entryLabel: string
   reviewSpanLabel: string
 } {
-  const method = getAiInsightMethodDefinition(input.methodId)
-  const tagsLabel = input.topTags.length > 0 ? input.topTags.map((tag) => `#${tag}`).join('、') : '还没有稳定成型的主题'
+  const method = getAiInsightMethodDefinition(input.methodId, input.language)
+  const isEnglish = input.language === 'en'
+  const tagsLabel = input.topTags.length > 0
+    ? input.topTags.map((tag) => `#${tag}`).join(isEnglish ? ', ' : '、')
+    : isEnglish ? 'no stable themes yet' : '还没有稳定成型的主题'
   const busiestDay = [...input.dayDigests].sort((left, right) => right.blockCount - left.blockCount || right.date.localeCompare(left.date))[0]
-  const newestPreview = input.blocks[0]?.preview ?? '这段时间还没有留下明显的块线索'
+  const newestPreview = input.blocks[0]?.preview ?? (isEnglish ? 'no clearly highlighted note thread in this period yet' : '这段时间还没有留下明显的块线索')
   const entryLabel = input.entries.length > 0
-    ? `安排 ${input.plannedEntryCount} 项，完成 ${input.doneEntryCount} 项，取消 ${input.canceledEntryCount} 项`
-    : '这段时间没有额外的日历安排'
+    ? isEnglish
+      ? `${input.plannedEntryCount} planned, ${input.doneEntryCount} done, ${input.canceledEntryCount} canceled`
+      : `安排 ${input.plannedEntryCount} 项，完成 ${input.doneEntryCount} 项，取消 ${input.canceledEntryCount} 项`
+    : isEnglish ? 'no extra calendar schedule in this period' : '这段时间没有额外的日历安排'
 
   return {
     methodLabel: method?.label ?? input.methodLabel,
     tagsLabel,
-    busiestDayLabel: busiestDay ? `${busiestDay.date}（${busiestDay.blockCount} 条块）` : '暂无明显高峰日',
+    busiestDayLabel: busiestDay
+      ? isEnglish
+        ? `${busiestDay.date} (${busiestDay.blockCount} blocks)`
+        : `${busiestDay.date}（${busiestDay.blockCount} 条块）`
+      : isEnglish ? 'no obvious peak day' : '暂无明显高峰日',
     newestPreview,
     entryLabel,
-    reviewSpanLabel: `${input.rangeStart} 至 ${input.rangeEnd}`,
+    reviewSpanLabel: isEnglish ? `${input.rangeStart} to ${input.rangeEnd}` : `${input.rangeStart} 至 ${input.rangeEnd}`,
   }
 }
 
 function buildMockAiInsight(input: AiInsightGenerationInput): string {
   const lead = buildAiInsightLead(input)
-  const previewList = input.blocks.slice(0, 3).map((block) => `- ${block.date} · ${block.preview}`).join('\n') || '- 暂无重点块'
+  const previewList = input.blocks.slice(0, 3).map((block) => `- ${block.date} · ${block.preview}`).join('\n') || (input.language === 'en' ? '- No highlighted blocks yet' : '- 暂无重点块')
+
+  if (input.language === 'en') {
+    return [
+      `## Core signal under "${lead.methodLabel}"`,
+      `Across ${lead.reviewSpanLabel}, recurring attention still clusters around ${lead.tagsLabel}. The highest-density day was ${lead.busiestDayLabel}.`,
+      '',
+      '## What this likely means now',
+      `Calendar rhythm (${lead.entryLabel}) shaped timing, but note content still explains where sustained cognitive load went.`,
+      '',
+      '## Most actionable thread',
+      `If only one thread should be pushed next, start from the one that appears repeatedly and is already concrete enough to execute. Current representative sample: "${lead.newestPreview}".`,
+      '',
+      '## Evidence from recent samples',
+      previewList,
+    ].join('\n')
+  }
 
   switch (input.methodId) {
     case 'values-clarification':
@@ -869,6 +1022,58 @@ function buildDocumentMessages(topic: string, blocks: Block[], writingGuide?: st
 }
 
 function buildDailyReviewMessages(input: DailyReviewGenerationInput): ChatMessage[] {
+  if (input.language === 'en') {
+    const blockSection = input.blocks.length > 0
+      ? input.blocks.map((block, index) => [
+        `Block ${index + 1}`,
+        `Time: ${block.createdAt}`,
+        `Tags: ${block.tags.join(', ') || 'none'}`,
+        `Summary: ${block.summary?.trim() || 'none'}`,
+        `Preview: ${block.preview}`,
+        'Content:',
+        block.content,
+      ].join('\n')).join('\n\n---\n\n')
+      : 'No note blocks for today.'
+
+    const entrySection = input.entries.length > 0
+      ? input.entries.map((entry, index) => [
+        `Entry ${index + 1}`,
+        `Title: ${entry.title}`,
+        `Time: ${entry.allDay ? 'all day' : entry.startTime ?? 'time not set'}`,
+        `Status: ${entry.status}`,
+        `Notes: ${entry.notes ?? 'none'}`,
+      ].join('\n')).join('\n\n')
+      : 'No calendar entries for today.'
+
+    return [
+      {
+        role: 'system',
+        content: [
+          'You are Changbu\'s daily review assistant.',
+          'Write a Markdown daily review strictly based on today\'s note blocks and calendar entries.',
+          'Keep the tone natural and grounded. Do not fabricate events, conclusions, feelings, motives, or outcomes.',
+          'If context is insufficient, explicitly say so.',
+          'Do not output code fences or JSON.',
+        ].join('\n'),
+      },
+      {
+        role: 'user',
+        content: [
+          `Date: ${input.date}`,
+          `Blocks: ${input.blockCount}`,
+          `Calendar: ${input.plannedEntryCount} planned, ${input.doneEntryCount} done, ${input.canceledEntryCount} canceled`,
+          `Top tags: ${input.topTags.join(', ') || 'none'}`,
+          '',
+          'Calendar entries:',
+          entrySection,
+          '',
+          'Note blocks:',
+          blockSection,
+        ].join('\n'),
+      },
+    ]
+  }
+
   const blockSection = input.blocks.length > 0
     ? input.blocks.map((block, index) => [
       `块 ${index + 1}`,
@@ -925,6 +1130,77 @@ function buildDailyReviewMessages(input: DailyReviewGenerationInput): ChatMessag
 
 
 function buildAiInsightMessages(input: AiInsightGenerationInput): ChatMessage[] {
+  if (input.language === 'en') {
+    const daySection = input.dayDigests.length > 0
+      ? input.dayDigests.map((day, index) => [
+        `Day ${index + 1}`,
+        `Date: ${day.date}`,
+        `Blocks: ${day.blockCount}`,
+        `Themes: ${day.topTags.join(', ') || 'none'}`,
+        `Previews: ${day.previews.join('; ') || 'none'}`,
+        `Calendar: ${day.plannedEntryCount} planned, ${day.doneEntryCount} done, ${day.canceledEntryCount} canceled`,
+      ].join('\n')).join('\n\n')
+      : 'No day-level records in this period.'
+
+    const blockSection = input.blocks.length > 0
+      ? input.blocks.map((block, index) => [
+        `Reference block ${index + 1}`,
+        `Date: ${block.date}`,
+        `Time: ${block.createdAt}`,
+        `Tags: ${block.tags.join(', ') || 'none'}`,
+        `Summary: ${block.summary?.trim() || 'none'}`,
+        `Preview: ${block.preview}`,
+        'Content:',
+        block.content,
+      ].join('\n')).join('\n\n---\n\n')
+      : 'No reference blocks in this period.'
+
+    const entrySection = input.entries.length > 0
+      ? input.entries.map((entry, index) => [
+        `Entry ${index + 1}`,
+        `Date: ${entry.date}`,
+        `Title: ${entry.title}`,
+        `Time: ${entry.allDay ? 'all day' : entry.startTime ?? 'time not set'}`,
+        `Status: ${entry.status}`,
+        `Notes: ${entry.notes ?? 'none'}`,
+      ].join('\n')).join('\n\n')
+      : 'No calendar entries in this period.'
+
+    return [
+      {
+        role: 'system',
+        content: [
+          'You are Changbu\'s AI insight assistant.',
+          'Write a Markdown insight strictly from note blocks and calendar entries in the last two weeks.',
+          'Do not fabricate facts. Any interpretation must remain probabilistic.',
+          'If using CBT/MBTI language, keep it observational and non-diagnostic.',
+          'Do not output code fences or JSON.',
+        ].join('\n'),
+      },
+      {
+        role: 'user',
+        content: [
+          `Method: ${input.methodLabel}`,
+          `Method requirement: ${input.promptPreset}`,
+          `Anchor date: ${input.anchorDate}`,
+          `Range: ${input.rangeStart} to ${input.rangeEnd}`,
+          `Blocks in range: ${input.blockCount}`,
+          `Calendar in range: ${input.plannedEntryCount} planned, ${input.doneEntryCount} done, ${input.canceledEntryCount} canceled`,
+          `Top tags: ${input.topTags.join(', ') || 'none'}`,
+          '',
+          '14-day day-level summary:',
+          daySection,
+          '',
+          'Key reference blocks:',
+          blockSection,
+          '',
+          'Calendar entries in range:',
+          entrySection,
+        ].join('\n'),
+      },
+    ]
+  }
+
   const daySection = input.dayDigests.length > 0
     ? input.dayDigests.map((day, index) => [
       `日期 ${index + 1}`,
@@ -1015,13 +1291,42 @@ function normalizeSuggestedTag(tag: unknown): string {
   return typeof tag === 'string' ? tag.trim().replace(/\s+/g, ' ') : ''
 }
 
+function sanitizeImageAnnotations(value: unknown): BlockImageAnnotation[] {
+  if (!Array.isArray(value)) {
+    return []
+  }
+
+  return value
+    .map((item) => {
+      const index = typeof item?.index === 'number' ? Math.trunc(item.index) : Number.NaN
+      const annotation = typeof item?.annotation === 'string'
+        ? item.annotation.trim().replace(/\s+/g, ' ').slice(0, 240)
+        : ''
+
+      if (!Number.isInteger(index) || index < 0 || !annotation) {
+        return null
+      }
+
+      return { index, annotation }
+    })
+    .filter((item): item is BlockImageAnnotation => Boolean(item))
+    .sort((left, right) => left.index - right.index)
+}
+
 function sanitizeStructuredTags(
   payload: unknown,
   categoryCandidates: string[],
   detailCandidates: string[],
   userTags: string[],
 ): TagSuggestionResult {
-  const data = payload as { categories?: unknown; detail_tags?: unknown; detailTags?: unknown; summary?: unknown }
+  const data = payload as {
+    categories?: unknown
+    detail_tags?: unknown
+    detailTags?: unknown
+    summary?: unknown
+    image_annotations?: unknown
+    imageAnnotations?: unknown
+  }
   const categorySet = new Set(categoryCandidates.map((tag) => tag.toLowerCase()))
   const detailMemorySet = new Set([...detailCandidates, ...userTags].map((tag) => tag.toLowerCase()))
 
@@ -1065,6 +1370,7 @@ function sanitizeStructuredTags(
       typeof data?.summary === 'string'
         ? data.summary.trim().replace(/\s+/g, ' ').slice(0, 80) || null
         : null,
+    imageAnnotations: sanitizeImageAnnotations(data?.image_annotations ?? data?.imageAnnotations),
   }
 }
 
@@ -1077,6 +1383,7 @@ function sanitizeStructuredTagBatch(
     categories: [],
     detailTags: [],
     summary: null,
+    imageAnnotations: [],
   }))
 
   if (!Array.isArray(data?.items)) {
@@ -1099,40 +1406,87 @@ function sanitizeStructuredTagBatch(
   return fallback
 }
 
-function buildTagSuggestionInstructions(formatDescription: string): string {
+function buildTagSuggestionInstructions(formatDescription: string, options: { multimodal: boolean; fallbackToTextOnly: boolean }): string {
   return [
     '你是长布的标签分配助手。',
     formatDescription,
     '分类标签用于大类归档，数量 1 到 3 个。',
     '细标签用于体现块里具体在说什么，数量 1 到 5 个，必须具体，优先名词性内容标签。',
     'summary 是这个块的一句简短总结，用于连接图和块预览，尽量控制在 12 到 30 个汉字之间。',
+    options.multimodal
+      ? '如果输入里附带图片，请结合图片与文本生成 image_annotations。index 必须对应图片顺序，从 0 开始。annotation 是可用于检索和打标签的简短图片内容批注。'
+      : '如果原文里出现图片 Markdown / 图片链接，但这次没有真实图片输入，不能假装看到了图片，只能依据 alt、URL 和上下文谨慎描述。',
+    options.fallbackToTextOnly ? '本次图片未被实际分析，禁止虚构图片细节。' : '',
     '细标签要尽量体现设备、产品、考试、方法、概念、项目对象、资料主题等具体内容。',
     '不要用空泛标签替代具体内容，例如不要只写“学习”“生活”“工具”来代替块里真正的对象。',
     '分类标签允许更概括，但细标签必须具体。',
     '优先复用给定的分类候选、细标签记忆和用户标签。',
     '不要把用户标签原样机械复制进输出，只有内容确实匹配时才复用。',
     '不要输出解释、不要输出 Markdown、不要输出额外字段。',
-  ].join('\n')
+  ].filter(Boolean).join('\n')
 }
 
-function buildTagSuggestionMessages(input: TagSuggestionInput): ChatMessage[] {
+function buildTextOnlyTagSuggestionUserContent(input: TagSuggestionInput, options: { fallbackToTextOnly: boolean }): string {
+  return [
+    `分类候选：${input.categoryCandidates.join('、') || '无'}`,
+    `细标签记忆：${input.detailCandidates.join('、') || '无'}`,
+    `用户标签记忆：${input.userTags.join('、') || '无'}`,
+    input.images?.length
+      ? `图片输入状态：未发送真实图片，共 ${input.images.length} 张图片${input.skippedImages ? `，另有 ${input.skippedImages} 张跳过` : ''}。`
+      : '图片输入状态：无图片。',
+    options.fallbackToTextOnly ? '说明：本次只能依据图片 alt / URL / 上下文推断，不能假装已经看图。' : '',
+    '',
+    '内容如下：',
+    input.content,
+  ].filter(Boolean).join('\n')
+}
+
+function buildMultimodalTagSuggestionUserContent(input: TagSuggestionInput): ChatContentPart[] {
+  const parts: ChatContentPart[] = [
+    {
+      type: 'text',
+      text: [
+        `分类候选：${input.categoryCandidates.join('、') || '无'}`,
+        `细标签记忆：${input.detailCandidates.join('、') || '无'}`,
+        `用户标签记忆：${input.userTags.join('、') || '无'}`,
+        `真实图片输入：${input.images?.length ?? 0} 张${input.skippedImages ? `，另有 ${input.skippedImages} 张因限制或格式问题未发送` : ''}。`,
+        '',
+        '文字内容如下：',
+        input.content,
+      ].join('\n'),
+    },
+  ]
+
+  for (const image of input.images ?? []) {
+    parts.push({
+      type: 'text',
+      text: `图片 index=${image.index}，alt=${image.altText?.trim() || '无'}。请据此返回对应 image_annotations 条目。`,
+    })
+    parts.push({
+      type: 'image_url',
+      image_url: {
+        url: image.url,
+      },
+    })
+  }
+
+  return parts
+}
+
+function buildTagSuggestionMessages(input: TagSuggestionInput, options: { multimodal: boolean; fallbackToTextOnly: boolean }): ChatMessage[] {
   return [
     {
       role: 'system',
       content: buildTagSuggestionInstructions(
-        '请基于用户输入内容输出严格 JSON，格式为 {"categories":["分类1"],"detail_tags":["细标签1","细标签2"],"summary":"简短总结"}。',
+        buildTagSuggestionOutputFormat(options.multimodal),
+        options,
       ),
     },
     {
       role: 'user',
-      content: [
-        `分类候选：${input.categoryCandidates.join('、') || '无'}`,
-        `细标签记忆：${input.detailCandidates.join('、') || '无'}`,
-        `用户标签记忆：${input.userTags.join('、') || '无'}`,
-        '',
-        '内容如下：',
-        input.content,
-      ].join('\n'),
+      content: options.multimodal
+        ? buildMultimodalTagSuggestionUserContent(input)
+        : buildTextOnlyTagSuggestionUserContent(input, { fallbackToTextOnly: options.fallbackToTextOnly }),
     },
   ]
 }
@@ -1143,6 +1497,10 @@ function buildBatchTagSuggestionMessages(inputs: TagSuggestionInput[]): ChatMess
       role: 'system',
       content: buildTagSuggestionInstructions(
         '请基于用户输入内容输出严格 JSON，格式为 {"items":[{"index":0,"categories":["分类1"],"detail_tags":["细标签1"],"summary":"简短总结"}]}。',
+        {
+          multimodal: false,
+          fallbackToTextOnly: false,
+        },
       ),
     },
     {
@@ -1188,6 +1546,30 @@ function buildCalendarSuggestionMessages(input: CalendarSuggestionExtractionInpu
         '内容如下：',
         input.content,
       ].join('\n'),
+    },
+  ]
+}
+
+function buildMultimodalProbeMessages(): ChatMessage[] {
+  return [
+    {
+      role: 'system',
+      content: 'You are a connectivity probe. Reply with OK if you can read the image input.',
+    },
+    {
+      role: 'user',
+      content: [
+        {
+          type: 'text',
+          text: 'Reply with OK only after reading the attached image.',
+        },
+        {
+          type: 'image_url',
+          image_url: {
+            url: PROBE_IMAGE_DATA_URL,
+          },
+        },
+      ],
     },
   ]
 }
@@ -1299,8 +1681,22 @@ function estimateTokenCount(text: string): number {
   )
 }
 
+function estimateMessageContentTokens(content: string | ChatContentPart[]): number {
+  if (typeof content === 'string') {
+    return estimateTokenCount(content)
+  }
+
+  return content.reduce((total, part) => {
+    if (part.type === 'text') {
+      return total + estimateTokenCount(part.text)
+    }
+
+    return total + 256
+  }, 0)
+}
+
 function estimateMessageTokens(messages: ChatMessage[]): number {
-  return messages.reduce((total, message) => total + estimateTokenCount(message.content) + 16, 0)
+  return messages.reduce((total, message) => total + estimateMessageContentTokens(message.content) + 16, 0)
 }
 
 function resolveApproxContextWindow(model: string): number {
@@ -1385,7 +1781,11 @@ export function createMockLLMProvider(mode: AIExecutionMode): LLMProvider {
     },
 
     async *streamDailyReview(input) {
-      const prelude = mode === 'live' ? '当前 live provider 不可用，以下内容由模拟编排器生成。\n\n' : ''
+      const prelude = mode === 'live'
+        ? input.language === 'en'
+          ? 'Live provider is currently unavailable. The following content is generated by the mock formatter.\n\n'
+          : '当前 live provider 不可用，以下内容由模拟编排器生成。\n\n'
+        : ''
       const content = `${prelude}${buildMockDailyReview(input)}`.trim()
 
       for (const chunk of chunkText(content, 60)) {
@@ -1395,7 +1795,11 @@ export function createMockLLMProvider(mode: AIExecutionMode): LLMProvider {
     },
 
     async *streamAiInsight(input) {
-      const prelude = mode === 'live' ? '当前 live provider 不可用，以下内容由模拟编排器生成。\n\n' : ''
+      const prelude = mode === 'live'
+        ? input.language === 'en'
+          ? 'Live provider is currently unavailable. The following content is generated by the mock formatter.\n\n'
+          : '当前 live provider 不可用，以下内容由模拟编排器生成。\n\n'
+        : ''
       const content = `${prelude}${buildMockAiInsight(input)}`.trim()
 
       for (const chunk of chunkText(content, 60)) {
@@ -1409,6 +1813,7 @@ export function createMockLLMProvider(mode: AIExecutionMode): LLMProvider {
         categories: [],
         detailTags: input.detailCandidates.slice(0, 3),
         summary: input.content.replace(/\s+/g, ' ').trim().slice(0, 32) || null,
+        imageAnnotations: [],
       }
     },
 
@@ -1417,6 +1822,7 @@ export function createMockLLMProvider(mode: AIExecutionMode): LLMProvider {
         categories: [],
         detailTags: input.detailCandidates.slice(0, 3),
         summary: input.content.replace(/\s+/g, ' ').trim().slice(0, 32) || null,
+        imageAnnotations: [],
       }))
     },
 
@@ -1425,12 +1831,20 @@ export function createMockLLMProvider(mode: AIExecutionMode): LLMProvider {
     },
 
     async generateDailyReview(input) {
-      const prelude = mode === 'live' ? '当前 live provider 不可用，以下内容由模拟编排器生成。\n\n' : ''
+      const prelude = mode === 'live'
+        ? input.language === 'en'
+          ? 'Live provider is currently unavailable. The following content is generated by the mock formatter.\n\n'
+          : '当前 live provider 不可用，以下内容由模拟编排器生成。\n\n'
+        : ''
       return `${prelude}${buildMockDailyReview(input)}`.trim()
     },
 
     async generateAiInsight(input) {
-      const prelude = mode === 'live' ? '当前 live provider 不可用，以下内容由模拟编排器生成。\n\n' : ''
+      const prelude = mode === 'live'
+        ? input.language === 'en'
+          ? 'Live provider is currently unavailable. The following content is generated by the mock formatter.\n\n'
+          : '当前 live provider 不可用，以下内容由模拟编排器生成。\n\n'
+        : ''
       return `${prelude}${buildMockAiInsight(input)}`.trim()
     },
   }
@@ -1439,8 +1853,32 @@ export function createMockLLMProvider(mode: AIExecutionMode): LLMProvider {
 export function createLiveLLMProvider(config: AIConfig, sink?: TokenUsageSink): LLMProvider {
   const resolved = buildResolvedConfig(config)
   const suggestSingleTags = async (input: TagSuggestionInput): Promise<TagSuggestionResult> => {
-    const messages = buildTagSuggestionMessages(input)
-    const text = await completeText(resolved.llm, messages, {
+    const canUseMultimodal = config.multimodalImageAnalysisEnabled && (input.images?.length ?? 0) > 0
+
+    if (canUseMultimodal) {
+      try {
+        const multimodalMessages = buildTagSuggestionMessages(input, {
+          multimodal: true,
+          fallbackToTextOnly: false,
+        })
+        const text = await completeText(resolved.llm, multimodalMessages, {
+          temperature: 0,
+          maxTokens: 420,
+        }, sink)
+        const parsed = extractJsonObject(text)
+        return sanitizeStructuredTags(parsed, input.categoryCandidates, input.detailCandidates, input.userTags)
+      } catch (error) {
+        if (!isMultimodalCapabilityError(error)) {
+          throw error
+        }
+      }
+    }
+
+    const textOnlyMessages = buildTagSuggestionMessages(input, {
+      multimodal: false,
+      fallbackToTextOnly: (input.images?.length ?? 0) > 0,
+    })
+    const text = await completeText(resolved.llm, textOnlyMessages, {
       temperature: 0,
       maxTokens: 260,
     }, sink)
@@ -1531,7 +1969,7 @@ export function createLiveLLMProvider(config: AIConfig, sink?: TokenUsageSink): 
       const sanitized = sanitizeDailyReviewResponse(text)
 
       if (!sanitized) {
-        throw formatProviderError('每日回顾响应为空')
+        throw formatProviderError(input.language === 'en' ? 'Daily review response is empty' : '每日回顾响应为空')
       }
 
       return sanitized
@@ -1546,7 +1984,7 @@ export function createLiveLLMProvider(config: AIConfig, sink?: TokenUsageSink): 
       const sanitized = sanitizeAiInsightResponse(text)
 
       if (!sanitized) {
-        throw formatProviderError('AI 洞察响应为空')
+        throw formatProviderError(input.language === 'en' ? 'AI insight response is empty' : 'AI 洞察响应为空')
       }
 
       return sanitized
@@ -1554,7 +1992,7 @@ export function createLiveLLMProvider(config: AIConfig, sink?: TokenUsageSink): 
   }
 }
 
-export async function probeAiConfig(config: AIConfig): Promise<ApiTestResult> {
+export async function probeAiConfig(config: AIConfig, language: AppLanguage = 'zh'): Promise<ApiTestResult> {
   const checkedAt = new Date().toISOString()
   const configFingerprint = createConfigFingerprint(config)
   let resolved: ResolvedAIConfig
@@ -1570,13 +2008,18 @@ export async function probeAiConfig(config: AIConfig): Promise<ApiTestResult> {
       embeddingOk: false,
       llmOk: false,
       llmStreamingOk: false,
+      llmMultimodalOk: false,
       resolvedBaseUrl: config.llm.endpoint.trim() || config.embedding.endpoint.trim(),
       embeddingModel: config.embedding.model.trim(),
       embeddingDimension: null,
       chatModel: config.llm.model.trim(),
       checkedAt,
       configFingerprint,
-      error: error instanceof Error ? `地址解析失败：${error.message}` : '地址解析失败。',
+      error: formatLocalizedError(
+        language === 'en' ? 'Address resolution failed' : '地址解析失败',
+        error instanceof Error ? error.message : null,
+        language,
+      ),
     }
   }
 
@@ -1586,6 +2029,7 @@ export async function probeAiConfig(config: AIConfig): Promise<ApiTestResult> {
     embeddingOk: false,
     llmOk: false,
     llmStreamingOk: false,
+    llmMultimodalOk: false,
     resolvedBaseUrl,
     embeddingModel: resolved.embedding.model,
     embeddingDimension: null,
@@ -1601,19 +2045,33 @@ export async function probeAiConfig(config: AIConfig): Promise<ApiTestResult> {
   } catch (error) {
     return {
       ...result,
-      error: error instanceof Error ? `模型列表检测失败：${error.message}` : '模型列表检测失败。',
+      error: formatLocalizedError(
+        language === 'en' ? 'Model list check failed' : '模型列表检测失败',
+        error instanceof Error ? localizeProbeAiDetail(error.message, language) : null,
+        language,
+      ),
     }
   }
 
   const missingModels = [
-    availableModels.embeddingModels.includes(resolved.embedding.model) ? null : `Embedding 模型 ${resolved.embedding.model}`,
-    availableModels.llmModels.includes(resolved.llm.model) ? null : `LLM 模型 ${resolved.llm.model}`,
+    availableModels.embeddingModels.includes(resolved.embedding.model)
+      ? null
+      : language === 'en'
+        ? `Embedding model ${resolved.embedding.model}`
+        : `Embedding 模型 ${resolved.embedding.model}`,
+    availableModels.llmModels.includes(resolved.llm.model)
+      ? null
+      : language === 'en'
+        ? `LLM model ${resolved.llm.model}`
+        : `LLM 模型 ${resolved.llm.model}`,
   ].filter((item): item is string => Boolean(item))
 
   if (missingModels.length > 0) {
     return {
       ...result,
-      error: `模型列表检测失败：未找到 ${missingModels.join('，')}。`,
+      error: language === 'en'
+        ? `Model list check failed: Missing ${missingModels.join(', ')}.`
+        : `模型列表检测失败：未找到 ${missingModels.join('，')}。`,
     }
   }
 
@@ -1626,7 +2084,11 @@ export async function probeAiConfig(config: AIConfig): Promise<ApiTestResult> {
   } catch (error) {
     return {
       ...result,
-      error: error instanceof Error ? `Embedding 检测失败：${error.message}` : 'Embedding 检测失败。',
+      error: formatLocalizedError(
+        language === 'en' ? 'Embedding check failed' : 'Embedding 检测失败',
+        error instanceof Error ? localizeProbeAiDetail(error.message, language) : null,
+        language,
+      ),
     }
   }
 
@@ -1653,7 +2115,11 @@ export async function probeAiConfig(config: AIConfig): Promise<ApiTestResult> {
   } catch (error) {
     return {
       ...result,
-      error: error instanceof Error ? `LLM 检测失败：${error.message}` : 'LLM 检测失败。',
+      error: formatLocalizedError(
+        language === 'en' ? 'LLM check failed' : 'LLM 检测失败',
+        error instanceof Error ? localizeProbeAiDetail(error.message, language) : null,
+        language,
+      ),
     }
   }
 
@@ -1686,12 +2152,47 @@ export async function probeAiConfig(config: AIConfig): Promise<ApiTestResult> {
   } catch (error) {
     return {
       ...result,
-      error: error instanceof Error ? `LLM 流式检测失败：${error.message}` : 'LLM 流式检测失败。',
+      error: formatLocalizedError(
+        language === 'en' ? 'LLM streaming check failed' : 'LLM 流式检测失败',
+        error instanceof Error ? localizeProbeAiDetail(error.message, language) : null,
+        language,
+      ),
+    }
+  }
+
+  if (config.multimodalImageAnalysisEnabled) {
+    try {
+      const text = await completeText(
+        resolved.llm,
+        buildMultimodalProbeMessages(),
+        {
+          temperature: 0,
+          maxTokens: 16,
+        },
+      )
+
+      result.llmMultimodalOk = text.trim().length > 0
+    } catch (error) {
+      if (isMultimodalCapabilityError(error)) {
+        result.llmMultimodalOk = false
+      } else {
+        return {
+          ...result,
+          error: formatLocalizedError(
+            language === 'en' ? 'LLM multimodal check failed' : 'LLM 多模态检测失败',
+            error instanceof Error ? localizeProbeAiDetail(error.message, language) : null,
+            language,
+          ),
+        }
+      }
     }
   }
 
   return {
     ...result,
-    success: result.modelsOk && result.embeddingOk && result.llmOk && result.llmStreamingOk,
+    success: result.modelsOk
+      && result.embeddingOk
+      && result.llmOk
+      && result.llmStreamingOk,
   }
 }

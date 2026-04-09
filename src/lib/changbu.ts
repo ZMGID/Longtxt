@@ -1,8 +1,13 @@
 import type { ChangbuApi } from '../../shared/types'
+import { getCurrentLanguage } from '../i18n/locale'
 
 function getApi(): ChangbuApi {
   if (!window.changbu) {
-    throw new Error('长布桌面 API 尚未注入。请通过 Electron 启动应用。')
+    throw new Error(
+      getCurrentLanguage() === 'en'
+        ? 'Changbu desktop API has not been injected. Please launch the app via Electron.'
+        : '长布桌面 API 尚未注入。请通过 Electron 启动应用。',
+    )
   }
 
   return window.changbu

@@ -275,20 +275,75 @@ function migrateBlockAttachmentsSchema(db: Database.Database): void {
   db.exec(`CREATE INDEX IF NOT EXISTS idx_block_attachments_attachment_id ON block_attachments (attachment_id);`)
 }
 
+function migrateBlocksFtsSchema(db: Database.Database): void {
+  const row = db
+    .prepare(
+      `
+        SELECT sql
+        FROM sqlite_master
+        WHERE type = 'table'
+          AND name = 'blocks_fts'
+      `,
+    )
+    .get() as { sql: string } | undefined
+
+  const sql = row?.sql ?? ''
+
+  if (sql.includes('search_text')) {
+    return
+  }
+
+  db.exec(`DROP TRIGGER IF EXISTS blocks_ai;`)
+  db.exec(`DROP TRIGGER IF EXISTS blocks_ad;`)
+  db.exec(`DROP TRIGGER IF EXISTS blocks_au;`)
+  db.exec(`DROP TABLE IF EXISTS blocks_fts;`)
+  db.exec(`
+    CREATE VIRTUAL TABLE blocks_fts USING fts5(
+      search_text,
+      content='blocks',
+      content_rowid='rowid',
+      tokenize='trigram'
+    );
+  `)
+  db.exec(`
+    CREATE TRIGGER blocks_ai AFTER INSERT ON blocks BEGIN
+      INSERT INTO blocks_fts(rowid, search_text) VALUES (new.rowid, new.search_text);
+    END;
+  `)
+  db.exec(`
+    CREATE TRIGGER blocks_ad AFTER DELETE ON blocks BEGIN
+      INSERT INTO blocks_fts(blocks_fts, rowid, search_text) VALUES ('delete', old.rowid, old.search_text);
+    END;
+  `)
+  db.exec(`
+    CREATE TRIGGER blocks_au AFTER UPDATE OF content, search_text ON blocks BEGIN
+      INSERT INTO blocks_fts(blocks_fts, rowid, search_text) VALUES ('delete', old.rowid, old.search_text);
+      INSERT INTO blocks_fts(rowid, search_text) VALUES (new.rowid, new.search_text);
+    END;
+  `)
+  db.exec(`INSERT INTO blocks_fts(rowid, search_text) SELECT rowid, search_text FROM blocks;`)
+}
+
 export function initializeDatabase(db: Database.Database): DatabaseBootstrapResult {
   db.pragma('journal_mode = WAL')
   db.pragma('foreign_keys = ON')
   db.exec(baseMigrations)
   ensureColumn(db, 'blocks', 'summary', `ALTER TABLE blocks ADD COLUMN summary TEXT;`)
+  ensureColumn(db, 'blocks', 'image_annotations', `ALTER TABLE blocks ADD COLUMN image_annotations TEXT;`)
+  ensureColumn(db, 'blocks', 'search_text', `ALTER TABLE blocks ADD COLUMN search_text TEXT NOT NULL DEFAULT '';`)
+  db.exec(`UPDATE blocks SET search_text = content WHERE search_text IS NULL OR search_text = '';`)
   ensureColumn(db, 'tags', 'normalized_name', `ALTER TABLE tags ADD COLUMN normalized_name TEXT;`)
   ensureColumn(db, 'tags', 'kind', `ALTER TABLE tags ADD COLUMN kind TEXT NOT NULL DEFAULT 'detail';`)
   ensureColumn(db, 'snapshots', 'notebook_id', `ALTER TABLE snapshots ADD COLUMN notebook_id TEXT;`)
+  ensureColumn(db, 'snapshots', 'updated_at', `ALTER TABLE snapshots ADD COLUMN updated_at TEXT;`)
+  db.exec(`UPDATE snapshots SET updated_at = created_at WHERE updated_at IS NULL OR updated_at = '';`)
   db.exec(`CREATE INDEX IF NOT EXISTS idx_snapshots_notebook_id ON snapshots (notebook_id);`)
   seedDefaultTags(db)
   migrateTagKinds(db)
   migrateNotebookItemsSchema(db)
   migrateLegacyNotebookBlocks(db)
   migrateBlockAttachmentsSchema(db)
+  migrateBlocksFtsSchema(db)
 
   let vectorReady = false
 

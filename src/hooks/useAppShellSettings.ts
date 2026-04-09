@@ -3,20 +3,19 @@ import { useEffect, useState } from 'react'
 import {
   CALENDAR_SETTINGS_KEY,
   DEFAULT_CALENDAR_SETTINGS,
-  DEFAULT_UI_SETTINGS,
   UI_SETTINGS_KEY,
   parseCalendarSettings,
-  parseUISettings,
 } from '../../shared/config'
-import type { CalendarSettings, UISettings } from '../../shared/types'
+import type { CalendarSettings } from '../../shared/types'
 import { changbu } from '../lib/changbu'
+import { parseRendererUISettings, type RendererUISettings } from '../i18n/locale'
 
 export function useAppShellSettings(): {
   calendarSettings: CalendarSettings
-  uiSettings: UISettings
+  uiSettings: RendererUISettings
 } {
   const [calendarSettings, setCalendarSettings] = useState<CalendarSettings>(DEFAULT_CALENDAR_SETTINGS)
-  const [uiSettings, setUiSettings] = useState<UISettings>(DEFAULT_UI_SETTINGS)
+  const [uiSettings, setUiSettings] = useState<RendererUISettings>(() => parseRendererUISettings(null))
 
   useEffect(() => {
     let active = true
@@ -32,7 +31,7 @@ export function useAppShellSettings(): {
       }
 
       setCalendarSettings(parseCalendarSettings(savedCalendar))
-      setUiSettings(parseUISettings(savedUi))
+      setUiSettings(parseRendererUISettings(savedUi))
     }
 
     void syncShellSettings()

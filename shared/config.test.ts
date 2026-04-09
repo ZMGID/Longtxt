@@ -1,11 +1,16 @@
 import { describe, expect, it } from 'vitest'
 
 import {
+  DEFAULT_AI_CONFIG,
   DEFAULT_BLOCK_ENRICH_SETTINGS,
   DEFAULT_CALENDAR_SETTINGS,
   DEFAULT_DOC_GENERATION_SETTINGS,
   DEFAULT_EXTERNAL_ACCESS_SETTINGS,
   DEFAULT_UI_SETTINGS,
+  getAppDisplayName,
+  getIntlLocale,
+  getWindowTitle,
+  parseAIConfig,
   parseBlockEnrichSettings,
   parseCalendarSettings,
   parseDocGenerationSettings,
@@ -45,7 +50,81 @@ describe('parseUISettings', () => {
   it('parses the mini timeline toggle', () => {
     expect(parseUISettings(JSON.stringify({ showMiniTimeline: false }))).toEqual({
       showMiniTimeline: false,
+      language: 'zh',
     })
+  })
+
+  it('keeps supported language values and normalizes invalid values', () => {
+    expect(parseUISettings(JSON.stringify({ language: 'en' }))).toEqual({
+      showMiniTimeline: true,
+      language: 'en',
+    })
+
+    expect(parseUISettings(JSON.stringify({ showMiniTimeline: false, language: 'jp' }))).toEqual({
+      showMiniTimeline: false,
+      language: 'zh',
+    })
+  })
+})
+
+describe('parseAIConfig', () => {
+  it('falls back to defaults when the saved value is missing or invalid', () => {
+    expect(parseAIConfig(null)).toEqual(DEFAULT_AI_CONFIG)
+    expect(parseAIConfig('not-json')).toEqual(DEFAULT_AI_CONFIG)
+  })
+
+  it('keeps old configs compatible and defaults multimodal to false', () => {
+    expect(parseAIConfig(JSON.stringify({
+      llm: {
+        endpoint: 'https://api.example.com/v1',
+        apiKey: 'llm-key',
+        model: 'gpt-4.1-mini',
+      },
+      embedding: {
+        endpoint: 'https://api.example.com/v1',
+        apiKey: 'embed-key',
+        model: 'text-embedding-3-small',
+      },
+    }))).toEqual({
+      llm: {
+        endpoint: 'https://api.example.com/v1',
+        apiKey: 'llm-key',
+        model: 'gpt-4.1-mini',
+      },
+      embedding: {
+        endpoint: 'https://api.example.com/v1',
+        apiKey: 'embed-key',
+        model: 'text-embedding-3-small',
+      },
+      multimodalImageAnalysisEnabled: false,
+    })
+  })
+
+  it('normalizes invalid multimodal values to false', () => {
+    expect(parseAIConfig(JSON.stringify({
+      multimodalImageAnalysisEnabled: 'yes',
+    }))).toEqual({
+      ...DEFAULT_AI_CONFIG,
+      multimodalImageAnalysisEnabled: false,
+    })
+  })
+})
+
+describe('language helpers', () => {
+  it('resolves locale and app display name by language', () => {
+    expect(getIntlLocale('zh')).toBe('zh-CN')
+    expect(getIntlLocale('en')).toBe('en-US')
+    expect(getAppDisplayName('zh')).toBe('长布')
+    expect(getAppDisplayName('en')).toBe('Changbu')
+  })
+
+  it('builds localized window titles', () => {
+    expect(getWindowTitle('main', 'zh')).toBe('长布')
+    expect(getWindowTitle('settings', 'zh')).toBe('设置 - 长布')
+    expect(getWindowTitle('review', 'zh', { reviewMode: 'ai-insights' })).toBe('AI 洞察 - 长布')
+    expect(getWindowTitle('main', 'en')).toBe('Changbu')
+    expect(getWindowTitle('settings', 'en')).toBe('Settings - Changbu')
+    expect(getWindowTitle('review', 'en', { reviewMode: 'recent-shifts' })).toBe('Recent Shifts - Changbu')
   })
 })
 

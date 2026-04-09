@@ -30,6 +30,7 @@ function buildLiveConfig(): AIConfig {
       apiKey: 'key-2',
       model: 'text-embedding-3-small',
     },
+    multimodalImageAnalysisEnabled: false,
   }
 }
 
@@ -490,6 +491,7 @@ describe('app context', () => {
         apiKey: 'key-2',
         model: 'text-embedding-3-small',
       },
+      multimodalImageAnalysisEnabled: false,
     }
 
     await context.setSetting(
@@ -504,6 +506,7 @@ describe('app context', () => {
         embeddingOk: true,
         llmOk: true,
         llmStreamingOk: true,
+        llmMultimodalOk: false,
         resolvedBaseUrl: 'https://api.example.com',
         embeddingModel: 'text-embedding-3-small',
         embeddingDimension: 1024,
@@ -607,6 +610,7 @@ describe('app context', () => {
         apiKey: 'key-1',
         model: 'BAAI/bge-m3',
       },
+      multimodalImageAnalysisEnabled: false,
     }
 
     const encoder = new TextEncoder()
@@ -663,6 +667,112 @@ describe('app context', () => {
     expect(meta.activeAiMode).toBe('live')
     expect(meta.vectorDimension).toBe(4)
     expect(meta.lastAiTestResult?.embeddingDimension).toBe(4)
+
+    global.fetch = originalFetch
+  })
+
+  it('does not refresh image blocks when probing an unsaved multimodal config', async () => {
+    const originalFetch = global.fetch
+    const blockEvents: BlockChangedEvent[] = []
+    const context = makeContext({
+      onBlockChanged: (event) => {
+        blockEvents.push(event)
+      },
+    })
+
+    await context.createBlock(`带图内容\n\n![截图](${ONE_PIXEL_PNG_DATA_URL})`)
+    await context.whenIdle()
+    blockEvents.length = 0
+
+    const multimodalConfig = {
+      ...buildLiveConfig(),
+      multimodalImageAnalysisEnabled: true,
+    }
+    const encoder = new TextEncoder()
+    const stream = new ReadableStream({
+      start(controller) {
+        controller.enqueue(encoder.encode('data: {"choices":[{"delta":{"content":"OK"}}]}\n\n'))
+        controller.enqueue(encoder.encode('data: [DONE]\n\n'))
+        controller.close()
+      },
+    })
+
+    global.fetch = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            data: [{ id: 'text-embedding-3-small' }, { id: 'gpt-4o-mini' }],
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } },
+        ),
+      )
+      .mockResolvedValueOnce(makeEmbeddingResponse([[0.1, 0.2, 0.3, 0.4]]))
+      .mockResolvedValueOnce(makeLlmResponse('探测成功'))
+      .mockResolvedValueOnce(
+        new Response(stream, {
+          status: 200,
+          headers: {
+            'Content-Type': 'text/event-stream',
+          },
+        }),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            choices: [{ message: { content: 'OK' } }],
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } },
+        ),
+      ) as typeof global.fetch
+
+    const probe = await context.testApi(multimodalConfig)
+    expect(probe.success).toBe(true)
+    await context.whenIdle()
+
+    expect(blockEvents).toHaveLength(0)
+    expect((await context.getMeta()).activeAiMode).toBe('mock')
+
+    global.fetch = originalFetch
+  })
+
+  it('localizes api probe errors using the current ui language', async () => {
+    const originalFetch = global.fetch
+    const context = makeContext()
+
+    await context.setSetting('ui_settings', JSON.stringify({
+      showMiniTimeline: true,
+      language: 'en',
+    }))
+
+    global.fetch = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            data: [{ id: 'text-embedding-3-small' }, { id: 'gpt-4o-mini' }],
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } },
+        ),
+      )
+      .mockResolvedValueOnce(makeEmbeddingResponse([[0.11, 0.12, 0.13, 0.14]]))
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            error: {
+              message: 'invalid api key',
+            },
+          }),
+          { status: 401, headers: { 'Content-Type': 'application/json' } },
+        ),
+      ) as typeof global.fetch
+
+    const probe = await context.testApi(buildLiveConfig())
+
+    expect(probe.success).toBe(false)
+    expect(probe.error).toContain('LLM check failed')
+    expect(probe.error).toContain('LLM request failed')
+    expect(probe.error).toContain('invalid api key')
 
     global.fetch = originalFetch
   })
@@ -1519,6 +1629,38 @@ describe('app context', () => {
     expect((await context.getSnapshot(snapshot.id)).blockIds).toEqual([])
   })
 
+  it('updates snapshot topic and content without changing the creation timestamp', async () => {
+    const context = makeContext()
+
+    const snapshot = await context.saveSnapshot('初版主题', '# 初版主题\n\n第一版正文。', [])
+    await new Promise((resolve) => setTimeout(resolve, 5))
+
+    const updated = await context.updateSnapshot(snapshot.id, {
+      topic: '修订主题',
+      content: '# 修订主题\n\n第二版正文。',
+    })
+
+    expect(updated.topic).toBe('修订主题')
+    expect(updated.content).toContain('第二版正文。')
+    expect(updated.createdAt).toBe(snapshot.createdAt)
+    expect(new Date(updated.updatedAt).getTime()).toBeGreaterThan(new Date(snapshot.updatedAt).getTime())
+  })
+
+  it('rejects invalid snapshot updates and unknown snapshot ids', async () => {
+    const context = makeContext()
+    const snapshot = await context.saveSnapshot('有效主题', '# 有效主题\n\n有效正文。', [])
+
+    await expect(context.updateSnapshot(snapshot.id, {
+      topic: '   ',
+      content: '# 有效主题\n\n有效正文。',
+    })).rejects.toThrow('内容不能为空。')
+
+    await expect(context.updateSnapshot('missing-snapshot', {
+      topic: '有效主题',
+      content: '# 有效主题\n\n有效正文。',
+    })).rejects.toThrow('快照不存在。')
+  })
+
   it('generates daily review from day blocks and calendar entries', async () => {
     const originalFetch = global.fetch
     const context = makeContext()
@@ -1708,6 +1850,33 @@ describe('app context', () => {
     expect(history[0].content.trim().length).toBeGreaterThan(0)
   })
 
+  it('emits empty daily review chunks asynchronously after start resolves', async () => {
+    vi.useFakeTimers()
+    const chunks: ReviewGenerationChunk[] = []
+    const context = makeContext({
+      onReviewGenerationChunk: (chunk) => {
+        chunks.push(chunk)
+      },
+    })
+
+    const started = await context.startDailyReviewGeneration('2026-04-08')
+    await Promise.resolve()
+
+    expect(chunks).toHaveLength(0)
+
+    await vi.runAllTimersAsync()
+    await context.whenIdle()
+
+    expect(chunks).toContainEqual(expect.objectContaining({
+      requestId: started.requestId,
+      kind: 'daily-review',
+      date: '2026-04-08',
+      done: true,
+    }))
+
+    vi.useRealTimers()
+  })
+
   it('records empty ai insight history and skips duplicates on cache hits', async () => {
     const context = makeContext()
     const anchorDate = '2026-04-08'
@@ -1726,6 +1895,34 @@ describe('app context', () => {
       content: first.content,
       blockIds: [],
     })
+  })
+
+  it('emits empty ai insight chunks asynchronously after start resolves', async () => {
+    vi.useFakeTimers()
+    const chunks: ReviewGenerationChunk[] = []
+    const context = makeContext({
+      onReviewGenerationChunk: (chunk) => {
+        chunks.push(chunk)
+      },
+    })
+
+    const started = await context.startAiInsightGeneration('cbt-patterns', '2026-04-08')
+    await Promise.resolve()
+
+    expect(chunks).toHaveLength(0)
+
+    await vi.runAllTimersAsync()
+    await context.whenIdle()
+
+    expect(chunks).toContainEqual(expect.objectContaining({
+      requestId: started.requestId,
+      kind: 'ai-insight',
+      methodId: 'cbt-patterns',
+      date: '2026-04-08',
+      done: true,
+    }))
+
+    vi.useRealTimers()
   })
 
   it('lists ai insight history by method in reverse chronological order', async () => {
@@ -1788,6 +1985,33 @@ describe('app context', () => {
     expect(snapshot.blockIds).toEqual([block.id])
     expect(snapshot.content).toContain('# AI 洞察｜默认洞察｜2026-03-26～2026-04-08')
     expect(snapshot.content).toContain('最近主要围绕发布与巡检推进。')
+  })
+
+  it('switches review output language and avoids reusing previous-language cached results', async () => {
+    const context = makeContext()
+    const anchorDate = '2026-04-08'
+
+    await context.createBlock('这几天主要在推进发布收尾和巡检。')
+    await context.whenIdle()
+
+    const zhDaily = await context.generateDailyReview(anchorDate)
+    const zhInsight = await context.generateAiInsight('default-insight', anchorDate)
+
+    expect(zhDaily.title).toBe('每日回顾 2026-04-08')
+    expect(zhInsight.title).toContain('AI 洞察｜')
+
+    await context.setSetting('ui_settings', JSON.stringify({
+      showMiniTimeline: true,
+      language: 'en',
+    }))
+
+    const enDaily = await context.generateDailyReview(anchorDate)
+    const enInsight = await context.generateAiInsight('default-insight', anchorDate)
+
+    expect(enDaily).not.toBe(zhDaily)
+    expect(enInsight).not.toBe(zhInsight)
+    expect(enDaily.title).toBe('Daily Review 2026-04-08')
+    expect(enInsight.title).toContain('AI Insight |')
   })
 
   it('supports notebook reference review, notebook generation, and notebook-bound snapshots', async () => {

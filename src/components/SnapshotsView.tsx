@@ -1,7 +1,10 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 
-import type { ExportOptions, ImportConflictStrategy, ImportPreview, Snapshot, Tag } from '../../shared/types'
+import type { ExportOptions, ImportConflictStrategy, ImportPreview, Snapshot, SnapshotUpdateInput, Tag } from '../../shared/types'
+import { compareText, formatDateByLanguage } from '../i18n/locale'
+import { useI18n } from '../i18n/useI18n'
 import { MarkdownContent } from './MarkdownContent'
+import { MarkdownTextarea } from './MarkdownTextarea'
 import { useToast } from './toast-context'
 
 interface SnapshotsViewProps {
@@ -11,6 +14,7 @@ interface SnapshotsViewProps {
   importPreview: ImportPreview | null
   onSnapshotQueryChange: (value: string) => void
   onSelectSnapshot: (snapshotId: string) => void
+  onUpdateSnapshot: (snapshotId: string, patch: SnapshotUpdateInput) => Promise<void>
   onRemoveSnapshot: (snapshotId: string) => Promise<void>
   onExportMarkdown: (options: ExportOptions) => Promise<void>
   onExportJson: (options: ExportOptions) => Promise<void>
@@ -21,7 +25,15 @@ interface SnapshotsViewProps {
 }
 
 function formatSnapshotTime(value: string): string {
-  return new Date(value).toLocaleString('zh-CN', { hour12: false })
+  return formatDateByLanguage(new Date(value), {
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: false,
+  })
 }
 
 function getSnapshotPreview(content: string): string {
@@ -32,6 +44,10 @@ function getSnapshotPreview(content: string): string {
     .slice(0, 120)
 }
 
+function isSnapshotEdited(snapshot: Snapshot): boolean {
+  return snapshot.updatedAt !== snapshot.createdAt
+}
+
 const SUPPRESSED_FILTER_TAGS = new Set(['TODO', '重要', '临时', '归档'])
 const SNAPSHOT_TAG_PREVIEW_LIMIT = 3
 
@@ -39,19 +55,22 @@ function ToolButton({
   children,
   onClick,
   primary = false,
+  disabled = false,
 }: {
   children: string
   onClick: () => void
   primary?: boolean
+  disabled?: boolean
 }) {
   return (
     <button
       type="button"
       onClick={onClick}
+      disabled={disabled}
       className={`rounded-md border px-3 py-2 text-sm font-medium transition ${
         primary
-          ? 'border-violet-500 bg-violet-500 text-white hover:bg-violet-600'
-          : 'border-stone-200 bg-white text-stone-700 hover:bg-stone-50'
+          ? 'border-violet-500 bg-violet-500 text-white hover:bg-violet-600 disabled:border-violet-200 disabled:bg-violet-200 disabled:text-white'
+          : 'border-stone-200 bg-white text-stone-700 hover:bg-stone-50 disabled:border-stone-200 disabled:bg-stone-100 disabled:text-stone-400'
       }`}
     >
       {children}
@@ -84,6 +103,7 @@ export function SnapshotsView({
   importPreview,
   onSnapshotQueryChange,
   onSelectSnapshot,
+  onUpdateSnapshot,
   onRemoveSnapshot,
   onExportMarkdown,
   onExportJson,
@@ -92,14 +112,51 @@ export function SnapshotsView({
   onConfirmImport,
   onDismissImportPreview,
 }: SnapshotsViewProps) {
+  const { language, t } = useI18n()
   const { toast } = useToast()
   const [selectedTags, setSelectedTags] = useState<string[]>([])
   const [dateRange, setDateRange] = useState<{ start: string; end: string }>({ start: '', end: '' })
+  const [isEditing, setIsEditing] = useState(false)
+  const [topicDraft, setTopicDraft] = useState('')
+  const [contentDraft, setContentDraft] = useState('')
+  const [isSavingEdit, setIsSavingEdit] = useState(false)
+  const previousSelectedSnapshotIdRef = useRef<string | null>(null)
 
   const selectedSnapshot = useMemo(
     () => snapshots.find((snapshot) => snapshot.id === selectedSnapshotId) ?? snapshots[0] ?? null,
     [selectedSnapshotId, snapshots],
   )
+  const selectedSnapshotKey = selectedSnapshot?.id ?? null
+  const selectedSnapshotTopic = selectedSnapshot?.topic ?? ''
+  const selectedSnapshotContent = selectedSnapshot?.content ?? ''
+
+  useEffect(() => {
+    if (previousSelectedSnapshotIdRef.current === selectedSnapshotKey) {
+      return
+    }
+
+    previousSelectedSnapshotIdRef.current = selectedSnapshotKey
+
+    if (!selectedSnapshotKey) {
+      setIsEditing(false)
+      setTopicDraft('')
+      setContentDraft('')
+      return
+    }
+
+    setIsEditing(false)
+    setTopicDraft(selectedSnapshotTopic)
+    setContentDraft(selectedSnapshotContent)
+  }, [selectedSnapshotContent, selectedSnapshotKey, selectedSnapshotTopic])
+
+  useEffect(() => {
+    if (!selectedSnapshotKey || isEditing) {
+      return
+    }
+
+    setTopicDraft(selectedSnapshotTopic)
+    setContentDraft(selectedSnapshotContent)
+  }, [isEditing, selectedSnapshotContent, selectedSnapshotKey, selectedSnapshotTopic])
 
   const exportOptions: ExportOptions = {
     includeAttachments: true,
@@ -161,7 +218,7 @@ export function SnapshotsView({
           return right.count - left.count
         }
 
-        return left.name.localeCompare(right.name, 'zh-Hans-CN')
+        return compareText(left.name, right.name)
       })
       .slice(0, 24)
   }, [selectedTags, snapshots])
@@ -173,9 +230,49 @@ export function SnapshotsView({
 
     try {
       await navigator.clipboard.writeText(selectedSnapshot.content)
-      toast('success', '已复制到剪贴板。')
+      toast('success', t('snapshots.copied'))
     } catch {
-      toast('error', '复制失败，请稍后重试。')
+      toast('error', t('snapshots.copyFailed'))
+    }
+  }
+
+  function handleBeginEdit() {
+    if (!selectedSnapshot) {
+      return
+    }
+
+    setTopicDraft(selectedSnapshot.topic)
+    setContentDraft(selectedSnapshot.content)
+    setIsEditing(true)
+  }
+
+  function handleCancelEdit() {
+    if (selectedSnapshot) {
+      setTopicDraft(selectedSnapshot.topic)
+      setContentDraft(selectedSnapshot.content)
+    } else {
+      setTopicDraft('')
+      setContentDraft('')
+    }
+
+    setIsEditing(false)
+  }
+
+  async function handleSaveEditedSnapshot() {
+    if (!selectedSnapshot || isSavingEdit) {
+      return
+    }
+
+    setIsSavingEdit(true)
+
+    try {
+      await onUpdateSnapshot(selectedSnapshot.id, {
+        topic: topicDraft,
+        content: contentDraft,
+      })
+      setIsEditing(false)
+    } finally {
+      setIsSavingEdit(false)
     }
   }
 
@@ -185,6 +282,8 @@ export function SnapshotsView({
     )
   }
 
+  const saveDisabled = !topicDraft.trim() || !contentDraft.trim() || isSavingEdit
+
   return (
     <section
       className="flex h-full min-h-0 min-w-0 flex-1 self-stretch flex-col overflow-hidden border-t border-stone-200 bg-[#f7f5f2] text-stone-900 md:flex-row"
@@ -192,25 +291,27 @@ export function SnapshotsView({
     >
       <aside className="flex min-h-0 w-full shrink-0 flex-col border-b border-stone-200 bg-[#f6f4f1] md:h-full md:w-[340px] md:border-b-0 md:border-r">
         <div className="px-4 pb-4 pt-5 sm:px-5">
-          <div className="text-xs font-semibold uppercase tracking-[0.18em] text-stone-400">文档快照</div>
-          <h2 className="mt-3 text-[24px] font-semibold text-stone-900">浏览与切换</h2>
-          <p className="mt-2 text-sm leading-6 text-stone-500">左侧只负责找快照，右侧专心阅读内容。</p>
+          <div className="text-xs font-semibold uppercase tracking-[0.18em] text-stone-400">{t('snapshots.title')}</div>
+          <h2 className="mt-3 text-[24px] font-semibold text-stone-900">{t('snapshots.browseTitle')}</h2>
+          <p className="mt-2 text-sm leading-6 text-stone-500">{t('snapshots.browseHint')}</p>
 
           <div className="mt-4">
             <label className="block text-xs font-medium text-stone-500" htmlFor="snapshot-query">
-              搜索
+              {t('snapshots.search')}
             </label>
             <input
               id="snapshot-query"
               value={snapshotQuery}
               onChange={(event) => onSnapshotQueryChange(event.target.value)}
-              placeholder="搜索快照主题…"
+              placeholder={t('snapshots.searchPlaceholder')}
               className="mt-2 w-full rounded-md border border-stone-200 bg-white px-3 py-2.5 text-sm text-stone-900 outline-none transition focus:border-violet-400"
             />
           </div>
 
           <div className="mt-3 text-xs text-stone-500">
-            共 {snapshots.length} 条快照{selectedTags.length > 0 ? ` · 已选 ${selectedTags.length} 个标签` : ''}
+            {selectedTags.length > 0
+              ? t('snapshots.countWithTags', { count: snapshots.length, tagCount: selectedTags.length })
+              : t('snapshots.count', { count: snapshots.length })}
           </div>
         </div>
 
@@ -236,7 +337,7 @@ export function SnapshotsView({
                       <p className={`min-w-0 truncate text-sm font-semibold ${active ? 'text-stone-900' : 'text-stone-700'}`}>
                         {snapshot.topic}
                       </p>
-                      <span className="shrink-0 text-[11px] text-stone-400">{snapshot.blockIds.length} 块</span>
+                      <span className="shrink-0 text-[11px] text-stone-400">{t('snapshots.blockCount', { count: snapshot.blockIds.length })}</span>
                     </div>
                     {preview ? <p className="mt-1 line-clamp-2 text-xs leading-5 text-stone-500">{preview}</p> : null}
                     <p className="mt-2 text-[11px] leading-5 text-stone-400">
@@ -262,8 +363,8 @@ export function SnapshotsView({
           ) : (
             <div className="px-5 py-8 text-sm leading-6 text-stone-500">
               {snapshotQuery
-                ? `没有找到与“${snapshotQuery}”相关的快照。`
-                : '还没有保存的文档快照。先在搜索生成页产出文档，再点击“保存快照”。'}
+                ? t('snapshots.emptyByQuery', { query: snapshotQuery })
+                : t('snapshots.emptyNoData')}
             </div>
           )}
         </div>
@@ -271,9 +372,9 @@ export function SnapshotsView({
         <div className="border-t border-stone-200 px-4 py-4 sm:px-5" data-testid="snapshots-tools">
           <div className="flex items-start justify-between gap-4">
             <div>
-              <div className="text-xs font-semibold uppercase tracking-[0.18em] text-stone-400">导出与备份</div>
-              <div className="mt-2 text-sm font-semibold text-stone-900">标签筛选、导入与导出</div>
-              <p className="mt-1 text-xs leading-5 text-stone-500">标签筛选始终显示；导入导出依然保留在次级区域，不抢主阅读区。</p>
+              <div className="text-xs font-semibold uppercase tracking-[0.18em] text-stone-400">{t('snapshots.exportBackup')}</div>
+              <div className="mt-2 text-sm font-semibold text-stone-900">{t('snapshots.filterImportExportTitle')}</div>
+              <p className="mt-1 text-xs leading-5 text-stone-500">{t('snapshots.filterImportExportHint')}</p>
             </div>
             {hasFilters ? (
               <button
@@ -284,14 +385,14 @@ export function SnapshotsView({
                 }}
                 className="shrink-0 text-xs font-medium text-stone-500 transition hover:text-stone-900"
               >
-                清空筛选
+                {t('snapshots.clearFilters')}
               </button>
             ) : null}
           </div>
 
           <div className="mt-4 border-t border-stone-200 pt-4" data-testid="snapshots-tag-filter-section">
-            <div className="text-xs font-medium text-stone-500">标签筛选</div>
-            <p className="mt-1 text-xs leading-5 text-stone-500">这里显示当前快照真实关联的标签，并按连接图同样的优先级排序。</p>
+            <div className="text-xs font-medium text-stone-500">{t('snapshots.tagFilter')}</div>
+            <p className="mt-1 text-xs leading-5 text-stone-500">{t('snapshots.tagFilterHint')}</p>
             {snapshotFilterTags.length > 0 ? (
               <div className="mt-2 flex flex-wrap gap-2">
                 {snapshotFilterTags.map((tag) => {
@@ -316,28 +417,28 @@ export function SnapshotsView({
               </div>
             ) : (
               <div className="mt-2 text-xs leading-5 text-stone-500">
-                {snapshots.length > 0 ? '当前快照引用块里还没有可用于筛选导出的标签。' : '暂无可用标签。'}
+                {snapshots.length > 0 ? t('snapshots.tagFilterEmpty') : t('snapshots.tagFilterNoTags')}
               </div>
             )}
           </div>
 
           <div className="mt-4 border-t border-stone-200 pt-4">
-            <div className="text-xs font-medium text-stone-500">导入与导出</div>
+            <div className="text-xs font-medium text-stone-500">{t('snapshots.importExport')}</div>
             <div className="mt-3 flex flex-wrap gap-2">
               <ToolButton primary onClick={() => { void onExportMarkdown(exportOptions) }}>
-                导出 Markdown
+                {t('snapshots.exportMarkdown')}
               </ToolButton>
-              <ToolButton onClick={() => { void onExportJson(exportOptions) }}>导出 JSON</ToolButton>
-              <ToolButton onClick={() => { void onPreviewMarkdownImport() }}>导入 Markdown</ToolButton>
-              <ToolButton onClick={() => { void onPreviewJsonImport() }}>导入 JSON</ToolButton>
+              <ToolButton onClick={() => { void onExportJson(exportOptions) }}>{t('snapshots.exportJson')}</ToolButton>
+              <ToolButton onClick={() => { void onPreviewMarkdownImport() }}>{t('snapshots.importMarkdown')}</ToolButton>
+              <ToolButton onClick={() => { void onPreviewJsonImport() }}>{t('snapshots.importJson')}</ToolButton>
             </div>
           </div>
 
           <div className="mt-4 grid gap-3 sm:grid-cols-2">
             <label className="block">
-              <span className="text-xs font-medium text-stone-500">起始日期</span>
+              <span className="text-xs font-medium text-stone-500">{t('snapshots.startDate')}</span>
               <input
-                aria-label="起始日期"
+                aria-label={t('snapshots.startDate')}
                 type="date"
                 value={dateRange.start}
                 onChange={(event) => setDateRange((current) => ({ ...current, start: event.target.value }))}
@@ -345,9 +446,9 @@ export function SnapshotsView({
               />
             </label>
             <label className="block">
-              <span className="text-xs font-medium text-stone-500">结束日期</span>
+              <span className="text-xs font-medium text-stone-500">{t('snapshots.endDate')}</span>
               <input
-                aria-label="结束日期"
+                aria-label={t('snapshots.endDate')}
                 type="date"
                 value={dateRange.end}
                 onChange={(event) => setDateRange((current) => ({ ...current, end: event.target.value }))}
@@ -358,33 +459,37 @@ export function SnapshotsView({
 
           {importPreview ? (
             <div className="mt-4 border-t border-amber-200 pt-4" data-testid="snapshots-import-preview">
-              <div className="text-sm font-semibold text-amber-900">导入预览</div>
+              <div className="text-sm font-semibold text-amber-900">{t('snapshots.importPreview')}</div>
               <div className="mt-1 text-xs leading-5 text-amber-800">
-                {importPreview.format.toUpperCase()} · {importPreview.totalFiles} 个文件 / {importPreview.totalBlocks} 个块
-                {` · 冲突 ${importPreview.conflicts}`}
+                {t('snapshots.importPreviewSummary', {
+                  format: importPreview.format.toUpperCase(),
+                  files: importPreview.totalFiles,
+                  blocks: importPreview.totalBlocks,
+                  conflicts: importPreview.conflicts,
+                })}
               </div>
               {importPreview.includesSettings ? (
                 <div className="mt-1 text-xs leading-5 text-amber-800">
-                  含设置快照 · {importPreview.settingsEntryCount ?? 0} 项设置会在导入时一并恢复
+                  {t('snapshots.importPreviewSettings', { count: importPreview.settingsEntryCount ?? 0 })}
                 </div>
               ) : null}
               <div className="mt-3 space-y-1 text-xs leading-5 text-amber-800">
                 {importPreview.samples.map((sample) => (
-                  <p key={`${sample.filename}-${sample.preview}`}>{sample.filename}：{sample.preview}</p>
+                  <p key={`${sample.filename}-${sample.preview}`}>{sample.filename}{language === 'en' ? ': ' : '：'}{sample.preview}</p>
                 ))}
               </div>
               <div className="mt-4 flex flex-wrap gap-2">
                 {importPreview.conflicts > 0 ? (
                   <>
-                    <ToolButton onClick={() => { void onConfirmImport('skip_all') }}>全部跳过冲突</ToolButton>
+                    <ToolButton onClick={() => { void onConfirmImport('skip_all') }}>{t('snapshots.skipConflicts')}</ToolButton>
                     <ToolButton primary onClick={() => { void onConfirmImport('overwrite_all') }}>
-                      全部覆盖冲突
+                      {t('snapshots.overwriteConflicts')}
                     </ToolButton>
                   </>
                 ) : (
-                  <ToolButton primary onClick={() => { void onConfirmImport('overwrite_all') }}>确认导入</ToolButton>
+                  <ToolButton primary onClick={() => { void onConfirmImport('overwrite_all') }}>{t('snapshots.confirmImport')}</ToolButton>
                 )}
-                <ToolButton onClick={onDismissImportPreview}>取消</ToolButton>
+                <ToolButton onClick={onDismissImportPreview}>{t('snapshots.cancel')}</ToolButton>
               </div>
             </div>
           ) : null}
@@ -397,17 +502,35 @@ export function SnapshotsView({
             <header className="border-b border-stone-200 px-6 py-5 sm:px-8">
               <div className="flex flex-wrap items-start justify-between gap-4">
                 <div className="min-w-0 flex-1">
-                  <div className="text-xs font-semibold uppercase tracking-[0.18em] text-stone-400">阅读</div>
-                  <h3 className="mt-3 text-[28px] font-semibold leading-tight text-stone-900 sm:text-[32px]">
-                    {selectedSnapshot.topic}
-                  </h3>
+                  <div className="text-xs font-semibold uppercase tracking-[0.18em] text-stone-400">{t('snapshots.reading')}</div>
+                  {isEditing ? (
+                    <label className="mt-3 block">
+                      <span className="text-xs font-medium text-stone-500">{t('snapshots.editTopic')}</span>
+                      <input
+                        value={topicDraft}
+                        onChange={(event) => setTopicDraft(event.target.value)}
+                        onKeyDown={(event) => {
+                          if (event.key === 'Escape') {
+                            handleCancelEdit()
+                          }
+                        }}
+                        placeholder={t('snapshots.editTopicPlaceholder')}
+                        className="mt-2 w-full rounded-lg border border-stone-200 bg-stone-50 px-3 py-2.5 text-[28px] font-semibold leading-tight text-stone-900 outline-none transition focus:border-violet-400 focus:bg-white sm:text-[32px]"
+                      />
+                    </label>
+                  ) : (
+                    <h3 className="mt-3 text-[28px] font-semibold leading-tight text-stone-900 sm:text-[32px]">
+                      {selectedSnapshot.topic}
+                    </h3>
+                  )}
                   <div className="mt-3 flex flex-wrap gap-x-4 gap-y-1 text-sm leading-6 text-stone-500">
                     <span>{formatSnapshotTime(selectedSnapshot.createdAt)}</span>
-                    <span>引用 {selectedSnapshot.blockIds.length} 个块</span>
-                    {selectedSnapshot.notebookTitle ? <span>来自 {selectedSnapshot.notebookTitle}</span> : null}
+                    {isSnapshotEdited(selectedSnapshot) ? <span>{t('snapshots.editedAt', { time: formatSnapshotTime(selectedSnapshot.updatedAt) })}</span> : null}
+                    <span>{t('snapshots.references', { count: selectedSnapshot.blockIds.length })}</span>
+                    {selectedSnapshot.notebookTitle ? <span>{t('snapshots.fromNotebook', { title: selectedSnapshot.notebookTitle })}</span> : null}
                   </div>
                   <div className="mt-4 border-t border-stone-200 pt-4">
-                    <div className="text-xs font-medium text-stone-500">标签</div>
+                    <div className="text-xs font-medium text-stone-500">{t('snapshots.tags')}</div>
                     {selectedSnapshot.tags && selectedSnapshot.tags.length > 0 ? (
                       <div className="mt-2 flex flex-wrap gap-2">
                         {selectedSnapshot.tags.map((tag) => (
@@ -415,34 +538,64 @@ export function SnapshotsView({
                         ))}
                       </div>
                     ) : (
-                      <p className="mt-2 text-xs leading-5 text-stone-500">当前快照还没有可显示的关联标签。</p>
+                      <p className="mt-2 text-xs leading-5 text-stone-500">{t('snapshots.tagsEmpty')}</p>
                     )}
                   </div>
                 </div>
                 <div className="flex shrink-0 flex-wrap gap-2">
-                  <ToolButton onClick={() => { void handleCopySelectedSnapshot() }}>复制全文</ToolButton>
-                  <ToolButton onClick={() => { void onRemoveSnapshot(selectedSnapshot.id) }}>删除</ToolButton>
+                  {isEditing ? (
+                    <>
+                      <ToolButton onClick={handleCancelEdit} disabled={isSavingEdit}>{t('snapshots.cancel')}</ToolButton>
+                      <ToolButton primary onClick={() => { void handleSaveEditedSnapshot() }} disabled={saveDisabled}>
+                        {isSavingEdit ? t('snapshots.saving') : t('snapshots.save')}
+                      </ToolButton>
+                    </>
+                  ) : (
+                    <>
+                      <ToolButton onClick={handleBeginEdit}>{t('snapshots.edit')}</ToolButton>
+                      <ToolButton onClick={() => { void handleCopySelectedSnapshot() }}>{t('snapshots.copyFull')}</ToolButton>
+                      <ToolButton onClick={() => { void onRemoveSnapshot(selectedSnapshot.id) }}>{t('snapshots.delete')}</ToolButton>
+                    </>
+                  )}
                 </div>
               </div>
             </header>
 
             <div className="min-h-0 flex-1 overflow-y-auto px-6 py-6 sm:px-8">
               <div className="mx-auto min-w-0 max-w-4xl break-words">
-                <MarkdownContent content={selectedSnapshot.content} />
+                {isEditing ? (
+                  <label className="block">
+                    <span className="text-xs font-medium text-stone-500">{t('snapshots.editContent')}</span>
+                    <MarkdownTextarea
+                      value={contentDraft}
+                      onValueChange={setContentDraft}
+                      onKeyDown={(event) => {
+                        if (event.key === 'Escape') {
+                          handleCancelEdit()
+                        }
+                      }}
+                      placeholder={t('snapshots.editContentPlaceholder')}
+                      rows={18}
+                      className="mt-2 min-h-[420px] resize-y rounded-lg border border-stone-200 bg-stone-50 px-4 py-3 text-sm leading-7 text-stone-900 outline-none transition focus:border-violet-400 focus:bg-white"
+                    />
+                  </label>
+                ) : (
+                  <MarkdownContent content={selectedSnapshot.content} />
+                )}
               </div>
             </div>
           </>
         ) : (
           <div className="flex h-full min-h-[320px] items-center justify-center px-6 py-12">
             <div className="max-w-md text-center">
-              <div className="text-xs font-semibold uppercase tracking-[0.18em] text-stone-400">文档快照</div>
+              <div className="text-xs font-semibold uppercase tracking-[0.18em] text-stone-400">{t('snapshots.title')}</div>
               <h3 className="mt-3 text-2xl font-semibold text-stone-900">
-                {snapshotQuery ? '没有匹配的快照' : '还没有文档快照'}
+                {snapshotQuery ? t('snapshots.noMatchTitle') : t('snapshots.noSnapshotsTitle')}
               </h3>
               <p className="mt-3 text-sm leading-6 text-stone-500">
                 {snapshotQuery
-                  ? '换一个关键词，或者清空搜索后查看全部快照。'
-                  : '先在搜索生成页生成一篇文档，再点击“保存快照”，这里就会出现可回看的版本。'}
+                  ? t('snapshots.noMatchHint')
+                  : t('snapshots.noSnapshotsHint')}
               </p>
             </div>
           </div>

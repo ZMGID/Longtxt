@@ -35,6 +35,7 @@ function renderSnapshots(overrides: Partial<ComponentProps<typeof SnapshotsView>
         notebookId: 'notebook-1',
         notebookTitle: '产品笔记',
         createdAt: '2026-04-01T08:00:00.000Z',
+        updatedAt: '2026-04-01T08:00:00.000Z',
       },
       {
         id: 'snapshot-2',
@@ -48,6 +49,7 @@ function renderSnapshots(overrides: Partial<ComponentProps<typeof SnapshotsView>
         notebookId: 'notebook-2',
         notebookTitle: '路线规划',
         createdAt: '2026-04-02T09:30:00.000Z',
+        updatedAt: '2026-04-03T10:45:00.000Z',
       },
     ],
     selectedSnapshotId: 'snapshot-1',
@@ -55,6 +57,7 @@ function renderSnapshots(overrides: Partial<ComponentProps<typeof SnapshotsView>
     importPreview: null,
     onSnapshotQueryChange: vi.fn(),
     onSelectSnapshot: vi.fn(),
+    onUpdateSnapshot: vi.fn(async () => {}),
     onRemoveSnapshot: vi.fn(async () => {}),
     onExportMarkdown: vi.fn(async () => {}),
     onExportJson: vi.fn(async () => {}),
@@ -65,7 +68,7 @@ function renderSnapshots(overrides: Partial<ComponentProps<typeof SnapshotsView>
     ...overrides,
   }
 
-  render(
+  const renderResult = render(
     <ToastContext.Provider value={{ toast }}>
       <SnapshotsView {...props} />
     </ToastContext.Provider>,
@@ -74,6 +77,7 @@ function renderSnapshots(overrides: Partial<ComponentProps<typeof SnapshotsView>
   return {
     props,
     toast,
+    ...renderResult,
   }
 }
 
@@ -146,6 +150,7 @@ describe('SnapshotsView', () => {
             { id: 'tag-meta', name: 'TODO', isDefault: true, kind: 'detail', source: 'auto' },
           ],
           createdAt: '2026-04-01T08:00:00.000Z',
+          updatedAt: '2026-04-01T08:00:00.000Z',
         },
       ],
       selectedSnapshotId: 'snapshot-1',
@@ -163,6 +168,56 @@ describe('SnapshotsView', () => {
 
     expect(screen.getAllByText('需求').length).toBeGreaterThan(0)
     expect(screen.getAllByText('技术').length).toBeGreaterThan(0)
+  })
+
+  it('supports editing topic and content in place', async () => {
+    const { props } = renderSnapshots()
+
+    fireEvent.click(screen.getByRole('button', { name: '编辑' }))
+    fireEvent.change(screen.getByPlaceholderText('输入快照主题'), { target: { value: '项目回顾（修订）' } })
+    fireEvent.change(screen.getByPlaceholderText('输入快照正文，支持 Markdown。'), { target: { value: '# 项目回顾（修订）\n\n更新后的正文。' } })
+    fireEvent.click(screen.getByRole('button', { name: '保存' }))
+
+    await waitFor(() => {
+      expect(props.onUpdateSnapshot).toHaveBeenCalledWith('snapshot-1', {
+        topic: '项目回顾（修订）',
+        content: '# 项目回顾（修订）\n\n更新后的正文。',
+      })
+    })
+  })
+
+  it('cancels editing and resets drafts when selection changes', () => {
+    const { props, rerender, toast } = renderSnapshots()
+
+    fireEvent.click(screen.getByRole('button', { name: '编辑' }))
+    fireEvent.change(screen.getByPlaceholderText('输入快照主题'), { target: { value: '临时草稿主题' } })
+    fireEvent.click(screen.getByRole('button', { name: '取消' }))
+
+    expect(props.onUpdateSnapshot).not.toHaveBeenCalled()
+    expect(screen.queryByDisplayValue('临时草稿主题')).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: '编辑' }))
+    fireEvent.change(screen.getByPlaceholderText('输入快照主题'), { target: { value: '另一个临时草稿' } })
+
+    rerender(
+      <ToastContext.Provider value={{ toast }}>
+        <SnapshotsView
+          {...props}
+          selectedSnapshotId="snapshot-2"
+        />
+      </ToastContext.Provider>,
+    )
+
+    expect(screen.queryByDisplayValue('另一个临时草稿')).not.toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: '路线图整理' })).toBeInTheDocument()
+  })
+
+  it('shows edited metadata when a snapshot has been updated', () => {
+    renderSnapshots({
+      selectedSnapshotId: 'snapshot-2',
+    })
+
+    expect(screen.getByText(/已编辑/)).toBeInTheDocument()
   })
 
   it('shows import preview actions and supports copy plus delete', async () => {

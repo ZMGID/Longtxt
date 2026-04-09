@@ -3,6 +3,8 @@ CREATE TABLE IF NOT EXISTS blocks (
   id TEXT PRIMARY KEY,
   content TEXT NOT NULL,
   summary TEXT,
+  image_annotations TEXT,
+  search_text TEXT NOT NULL DEFAULT '',
   status TEXT NOT NULL DEFAULT 'pending',
   ai_mode TEXT NOT NULL DEFAULT 'mock',
   error_message TEXT,
@@ -73,7 +75,8 @@ CREATE TABLE IF NOT EXISTS snapshots (
   content TEXT NOT NULL,
   block_ids TEXT NOT NULL,
   notebook_id TEXT REFERENCES notebooks(id) ON DELETE SET NULL,
-  created_at TEXT NOT NULL
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
 );
 
 CREATE INDEX IF NOT EXISTS idx_snapshots_created_at ON snapshots (created_at);
@@ -174,23 +177,23 @@ CREATE INDEX IF NOT EXISTS idx_notebook_items_block_id ON notebook_items (block_
 CREATE INDEX IF NOT EXISTS idx_notebook_reference_reviews_notebook_id ON notebook_reference_reviews (notebook_id);
 
 CREATE VIRTUAL TABLE IF NOT EXISTS blocks_fts USING fts5(
-  content,
+  search_text,
   content='blocks',
   content_rowid='rowid',
   tokenize='trigram'
 );
 
 CREATE TRIGGER IF NOT EXISTS blocks_ai AFTER INSERT ON blocks BEGIN
-  INSERT INTO blocks_fts(rowid, content) VALUES (new.rowid, new.content);
+  INSERT INTO blocks_fts(rowid, search_text) VALUES (new.rowid, new.search_text);
 END;
 
 CREATE TRIGGER IF NOT EXISTS blocks_ad AFTER DELETE ON blocks BEGIN
-  INSERT INTO blocks_fts(blocks_fts, rowid, content) VALUES ('delete', old.rowid, old.content);
+  INSERT INTO blocks_fts(blocks_fts, rowid, search_text) VALUES ('delete', old.rowid, old.search_text);
 END;
 
-CREATE TRIGGER IF NOT EXISTS blocks_au AFTER UPDATE OF content ON blocks BEGIN
-  INSERT INTO blocks_fts(blocks_fts, rowid, content) VALUES ('delete', old.rowid, old.content);
-  INSERT INTO blocks_fts(rowid, content) VALUES (new.rowid, new.content);
+CREATE TRIGGER IF NOT EXISTS blocks_au AFTER UPDATE OF content, search_text ON blocks BEGIN
+  INSERT INTO blocks_fts(blocks_fts, rowid, search_text) VALUES ('delete', old.rowid, old.search_text);
+  INSERT INTO blocks_fts(rowid, search_text) VALUES (new.rowid, new.search_text);
 END;
 
 CREATE TABLE IF NOT EXISTS failed_block_vectors (

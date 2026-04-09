@@ -12,6 +12,8 @@ export type CalendarEntryStatus = 'planned' | 'done' | 'canceled'
 
 export type CalendarEntrySource = 'manual' | 'ai-accepted'
 
+export type AppLanguage = 'zh' | 'en'
+
 export interface Tag {
   id: string
   name: string
@@ -27,10 +29,16 @@ export interface TagSuggestion {
   kind: TagKind
 }
 
+export interface BlockImageAnnotation {
+  index: number
+  annotation: string
+}
+
 export interface Block {
   id: string
   content: string
   summary?: string | null
+  imageAnnotations?: BlockImageAnnotation[] | null
   tags: Tag[]
   createdAt: string
   updatedAt: string
@@ -81,6 +89,12 @@ export interface Snapshot {
   notebookId?: string | null
   notebookTitle?: string | null
   createdAt: string
+  updatedAt: string
+}
+
+export interface SnapshotUpdateInput {
+  topic: string
+  content: string
 }
 
 export type ReviewMode = 'daily-review' | 'ai-insights' | 'recent-shifts'
@@ -319,6 +333,7 @@ export interface AIEndpointConfig {
 export interface AIConfig {
   llm: AIEndpointConfig
   embedding: AIEndpointConfig
+  multimodalImageAnalysisEnabled: boolean
 }
 
 export interface DocGenerationSettings {
@@ -338,6 +353,7 @@ export interface BlockEnrichSettings {
 
 export interface UISettings {
   showMiniTimeline: boolean
+  language: AppLanguage
 }
 
 export interface CalendarSettings {
@@ -403,6 +419,7 @@ export interface ApiTestResult {
   embeddingOk: boolean
   llmOk: boolean
   llmStreamingOk: boolean
+  llmMultimodalOk: boolean
   resolvedBaseUrl: string
   embeddingModel: string
   embeddingDimension: number | null
@@ -659,6 +676,7 @@ export interface ChangbuApi {
   }
   snapshots: {
     save(topic: string, content: string, blockIds: string[], notebookId?: string | null): Promise<Snapshot>
+    update(id: string, patch: SnapshotUpdateInput): Promise<Snapshot>
     list(query?: string, notebookId?: string | null): Promise<Snapshot[]>
     get(id: string): Promise<Snapshot>
     remove(id: string): Promise<void>

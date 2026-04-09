@@ -1,7 +1,7 @@
 import { ipcMain } from 'electron'
 
 import { IPC_CHANNELS } from '../../shared/ipc'
-import type { AiInsightSnapshotInput, DailyReviewSnapshotInput, RendererExportOptions } from '../../shared/types'
+import type { AiInsightSnapshotInput, DailyReviewSnapshotInput, RendererExportOptions, SnapshotUpdateInput } from '../../shared/types'
 import type { AppContext } from '../appContext'
 
 type IpcHandler = (event: unknown, ...args: unknown[]) => unknown
@@ -37,6 +37,7 @@ export function createIpcHandlers(context: AppContext, extraHandlers: Record<str
     [IPC_CHANNELS.tags.list]: (_event: unknown, query?: string) => context.listTags(query),
     [IPC_CHANNELS.snapshots.save]: (_event: unknown, topic: string, content: string, blockIds: string[], notebookId?: string | null) =>
       context.saveSnapshot(topic, content, blockIds, notebookId),
+    [IPC_CHANNELS.snapshots.update]: (_event: unknown, id: string, patch: SnapshotUpdateInput) => context.updateSnapshot(id, patch),
     [IPC_CHANNELS.snapshots.list]: (_event: unknown, query?: string, notebookId?: string | null) => context.listSnapshots(query, notebookId),
     [IPC_CHANNELS.snapshots.get]: (_event: unknown, id: string) => context.getSnapshot(id),
     [IPC_CHANNELS.snapshots.remove]: (_event: unknown, id: string) => context.removeSnapshot(id),

@@ -2,6 +2,7 @@ import { ChangbuEventBridge } from './components/ChangbuEventBridge'
 import { SettingsPanel } from './components/SettingsPanel'
 import { ToastProvider } from './components/Toast'
 import { useSettingsController } from './hooks/useSettingsController'
+import { useI18n } from './i18n/useI18n'
 
 export default function SettingsWindowApp() {
   return (
@@ -13,6 +14,7 @@ export default function SettingsWindowApp() {
 
 function SettingsWindowInner() {
   const settingsPanelProps = useSettingsController()
+  const { t } = useI18n()
 
   return (
     <>
@@ -22,7 +24,7 @@ function SettingsWindowInner() {
         <div className="window-drag-region flex h-11 shrink-0 items-center justify-end px-3">
           <button
             type="button"
-            aria-label="关闭设置窗口"
+            aria-label={t('settings.window.close')}
             data-testid="settings-window-close"
             onClick={() => window.close()}
             className="window-no-drag flex h-8 w-8 items-center justify-center rounded-md text-stone-400 transition hover:bg-black/[0.04] hover:text-stone-700"

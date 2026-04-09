@@ -10,15 +10,18 @@ import {
   DEFAULT_PAGE_SIZE,
   DOC_GENERATION_SETTINGS_KEY,
   EXTERNAL_ACCESS_SETTINGS_KEY,
+  getIntlLocale,
   UI_SETTINGS_KEY,
   parseBlockEnrichSettings,
   parseCalendarSettings,
   parseDocGenerationSettings,
   parseExternalAccessSettings,
+  parseUISettings,
 } from '../shared/config'
 import { isAiInsightMethodId } from '../shared/aiInsights'
 import type {
   AIConfig,
+  AppLanguage,
   AIExecutionMode,
   ApiTestResult,
   AiInsightMethodId,
@@ -35,6 +38,7 @@ import type {
 } from '../shared/types'
 import { buildSearchPreview } from '../shared/searchPreview'
 import {
+  buildBlockSearchText,
   addManualTagToBlock,
   clearAutoBlockTags,
   countBlocks,
@@ -43,13 +47,17 @@ import {
   getBlockById,
   getBlockContextWindow,
   getBlocksByIds,
+  getBlockSearchTextsByIds,
   listBlocksByDate as listBlocksByDateInDb,
+  listBlockIdsWithMarkdownImages,
   listRecentBlockContentRows,
   listRecentBlockContents,
   listBlocks,
   removeTagFromBlock,
+  replaceBlockImageDerivedData,
   syncAutoBlockTags,
   updateBlockContent,
+  updateBlockEnrichmentResult,
   updateBlockState,
 } from './db/blocks'
 import {
@@ -89,7 +97,7 @@ import {
 } from './db/notebooks'
 import { searchBlocks as searchBlocksInDatabase, searchBlocksByTag } from './db/search'
 import { getSetting as getDbSetting, parseAIConfig, setSetting as setDbSetting } from './db/settings'
-import { createSnapshot, getSnapshot, listSnapshots, removeSnapshot } from './db/snapshots'
+import { createSnapshot, getSnapshot, listSnapshots, removeSnapshot, updateSnapshot as updateSnapshotInDb } from './db/snapshots'
 import { getOrCreateTag, getTagMemory, listAvailableTags } from './db/tags'
 import {
   countBlockVectors,
@@ -126,7 +134,9 @@ import { selectDocumentReferenceBlocks, selectDocumentReferenceResults } from '.
 import { createTaggerEngine } from './services/tagger'
 import {
   cleanupOrphanAttachments as cleanupOrphanAttachmentsService,
+  hasMarkdownImages,
   rebuildAttachmentIndex as rebuildAttachmentIndexService,
+  resolveBlockImageInputs,
   saveImageDataUrl,
   syncBlockAttachmentRecords,
 } from './services/attachments'
@@ -186,6 +196,7 @@ const FILE_BACKED_SETTING_KEYS = new Set([
 const MAX_ENRICH_RETRIES = 1
 const ENRICH_RETRY_DELAY_MS = 500
 const TAGGER_CORPUS_LIMIT = 50
+const MAX_ENRICH_IMAGES = 4
 const VECTOR_REINDEX_BATCH_SIZE = 12
 const SEARCH_CACHE_LIMIT = 32
 const SEARCH_CACHE_TTL_MS = 5 * 60 * 1000
@@ -254,6 +265,15 @@ export function createAppContext(options: AppContextOptions): AppContext {
     return parseAIConfig(settingsStore.get('ai_config'))
   }
 
+  function hasEquivalentAiTransport(left: AIConfig, right: AIConfig): boolean {
+    return left.llm.endpoint.trim() === right.llm.endpoint.trim()
+      && left.llm.apiKey.trim() === right.llm.apiKey.trim()
+      && left.llm.model.trim() === right.llm.model.trim()
+      && left.embedding.endpoint.trim() === right.embedding.endpoint.trim()
+      && left.embedding.apiKey.trim() === right.embedding.apiKey.trim()
+      && left.embedding.model.trim() === right.embedding.model.trim()
+  }
+
   function getDocGenerationSettings(): DocGenerationSettings {
     return parseDocGenerationSettings(settingsStore.get(DOC_GENERATION_SETTINGS_KEY))
   }
@@ -266,18 +286,50 @@ export function createAppContext(options: AppContextOptions): AppContext {
     return parseCalendarSettings(settingsStore.get(CALENDAR_SETTINGS_KEY))
   }
 
+  function getUiSettings() {
+    return parseUISettings(settingsStore.get(UI_SETTINGS_KEY))
+  }
+
   function getExternalAccessSettings() {
     return parseExternalAccessSettings(settingsStore.get(EXTERNAL_ACCESS_SETTINGS_KEY))
   }
 
-  function getDailyReviewCacheKey(dateKey: string): string {
-    const configFingerprint = getSavedConfigFingerprint()
-    return `${normalizeCalendarDate(dateKey)}::${getExecutionMode()}::${configFingerprint ?? 'no-config'}`
+  function t(zh: string, en: string): string {
+    return getUiSettings().language === 'en' ? en : zh
   }
 
-  function getAiInsightCacheKey(methodId: string, dateKey: string): string {
+  function scheduleBlocksForImageAnalysisRefresh(blockIds: string[]): void {
+    const blocks = getBlocksByIds(db, blockIds)
+
+    for (const block of blocks) {
+      const enrichGeneration = advanceBlockEnrichGeneration(block.id)
+      scheduleEnrich(block.id, block.content, enrichGeneration)
+    }
+  }
+
+  function clearBlocksImageAnalysisDerivedState(blockIds: string[]): Block[] {
+    const updatedBlocks: Block[] = []
+
+    for (const block of getBlocksByIds(db, blockIds)) {
+      updatedBlocks.push(replaceBlockImageDerivedData(
+        db,
+        block.id,
+        null,
+        buildBlockSearchText(block.content),
+      ))
+    }
+
+    return updatedBlocks
+  }
+
+  function getDailyReviewCacheKey(dateKey: string, language: AppLanguage): string {
     const configFingerprint = getSavedConfigFingerprint()
-    return `${methodId}::${normalizeCalendarDate(dateKey)}::${getExecutionMode()}::${configFingerprint ?? 'no-config'}`
+    return `${normalizeCalendarDate(dateKey)}::${language}::${getExecutionMode()}::${configFingerprint ?? 'no-config'}`
+  }
+
+  function getAiInsightCacheKey(methodId: string, dateKey: string, language: AppLanguage): string {
+    const configFingerprint = getSavedConfigFingerprint()
+    return `${methodId}::${normalizeCalendarDate(dateKey)}::${language}::${getExecutionMode()}::${configFingerprint ?? 'no-config'}`
   }
 
   function clearDailyReviewCache(): void {
@@ -392,13 +444,15 @@ export function createAppContext(options: AppContextOptions): AppContext {
   }
 
   function normalizeGraphTagFilters(tagNames: string[]): string[] {
+    const locale = getIntlLocale(getUiSettings().language)
+
     return Array.from(
       new Set(
         tagNames
           .map((tag) => tag.trim())
           .filter(Boolean),
       ),
-    ).sort((left, right) => left.localeCompare(right, 'zh-Hans-CN'))
+    ).sort((left, right) => left.localeCompare(right, locale))
   }
 
   function getGraphCacheKey(tagNames: string[]): string {
@@ -590,7 +644,7 @@ export function createAppContext(options: AppContextOptions): AppContext {
   }
 
   function rememberRuntimeAiError(error: unknown): void {
-    lastAiError = error instanceof Error ? error.message : 'AI 运行失败。'
+    lastAiError = error instanceof Error ? error.message : t('AI 运行失败。', 'AI runtime failed.')
   }
 
   function emitReviewChunk(chunk: ReviewGenerationChunk): void {
@@ -666,6 +720,28 @@ export function createAppContext(options: AppContextOptions): AppContext {
     } catch {
       return null
     }
+  }
+
+  function getTaggerImageInputs(content: string): {
+    images: Awaited<ReturnType<typeof resolveBlockImageInputs>>['images']
+    skippedCount: number
+  } | Promise<{
+    images: Awaited<ReturnType<typeof resolveBlockImageInputs>>['images']
+    skippedCount: number
+  }> {
+    const config = getSavedConfig()
+
+    if (getExecutionMode() !== 'live' || !config.multimodalImageAnalysisEnabled || !hasMarkdownImages(content)) {
+      return {
+        images: [],
+        skippedCount: 0,
+      }
+    }
+
+    return resolveBlockImageInputs(options.dataDirectory, content, MAX_ENRICH_IMAGES).then((resolved) => ({
+      images: resolved.images,
+      skippedCount: resolved.skippedCount,
+    }))
   }
 
   async function syncCalendarSuggestionsForBlock(
@@ -943,7 +1019,8 @@ export function createAppContext(options: AppContextOptions): AppContext {
           continue
         }
 
-        const embeddings = await embeddingProvider.embed(batch.map((block) => block.content))
+        const searchTextMap = getBlockSearchTextsByIds(db, batch.map((block) => block.id))
+        const embeddings = await embeddingProvider.embed(batch.map((block) => searchTextMap.get(block.id) ?? block.content))
         const latestJobs = new Map(getPendingBlockVectorsByIds(db, batch.map((block) => block.id)).map((job) => [job.blockId, job]))
         const completedIds: string[] = []
 
@@ -996,15 +1073,16 @@ export function createAppContext(options: AppContextOptions): AppContext {
       })
     } catch (error) {
       // 将当前 pending batch 中尚未完成的块记录到失败表
-      const remainingJobs = listPendingBlockVectors(db, VECTOR_REINDEX_BATCH_SIZE)
-      for (const job of remainingJobs) {
-        try {
-          const block = getBlockById(db, job.blockId)
-          insertFailedBlockVector(db, block.id, block.content, error instanceof Error ? error.message : String(error))
-        } catch {
-          continue
+        const remainingJobs = listPendingBlockVectors(db, VECTOR_REINDEX_BATCH_SIZE)
+        for (const job of remainingJobs) {
+          try {
+            const block = getBlockById(db, job.blockId)
+            const searchText = getBlockSearchTextsByIds(db, [block.id]).get(block.id) ?? block.content
+            insertFailedBlockVector(db, block.id, searchText, error instanceof Error ? error.message : String(error))
+          } catch {
+            continue
+          }
         }
-      }
       removePendingBlockVectors(db, remainingJobs.map((j) => j.blockId))
 
       if (mode === 'live') {
@@ -1134,9 +1212,15 @@ export function createAppContext(options: AppContextOptions): AppContext {
   ): Promise<boolean> {
     const { mode, llmProvider } = getProviders()
     const tagMemory = getTagMemory(db)
+    const imageInputResult = getTaggerImageInputs(content)
+    const { images, skippedCount } = imageInputResult instanceof Promise
+      ? await imageInputResult
+      : imageInputResult
     const assignment = await tagger.assign(content, {
       corpusContents: [content, ...listRecentBlockContents(db, TAGGER_CORPUS_LIMIT, blockId)],
       liveLlmProvider: mode === 'live' ? llmProvider : null,
+      imageInputs: images,
+      skippedImageCount: skippedCount,
       tagMemory,
     })
     const currentBlock = getFreshBlockForEnrich(blockId, generation)
@@ -1155,11 +1239,15 @@ export function createAppContext(options: AppContextOptions): AppContext {
       clearRuntimeAiError()
     }
 
-    const block = updateBlockState(db, {
+    const previousSearchText = getBlockSearchTextsByIds(db, [blockId]).get(blockId) ?? content
+    const nextSearchText = buildBlockSearchText(content, assignment.imageAnnotations)
+    const block = updateBlockEnrichmentResult(db, {
       id: blockId,
       status: 'ready',
       aiMode: mode,
       summary: assignment.summary,
+      imageAnnotations: assignment.imageAnnotations,
+      searchText: nextSearchText,
       updatedAt: currentBlock.updatedAt,
     })
 
@@ -1168,6 +1256,10 @@ export function createAppContext(options: AppContextOptions): AppContext {
       reason: 'enriched',
     })
 
+    if (nextSearchText !== previousSearchText) {
+      enqueueBlocksForVectorReindex([block])
+      scheduleCurrentVectorReindex()
+    }
     void trackTask(syncCalendarSuggestionsForBlock(blockId, generation, llmProvider, mode))
 
     return true
@@ -1199,7 +1291,9 @@ export function createAppContext(options: AppContextOptions): AppContext {
             status: 'pending',
             aiMode,
             updatedAt: currentBlock.updatedAt,
-            errorMessage: error instanceof Error ? `自动重试中：${error.message}` : '自动重试中。',
+            errorMessage: error instanceof Error
+              ? `${t('自动重试中', 'Auto retrying')}: ${error.message}`
+              : t('自动重试中。', 'Auto retrying.'),
           })
 
           emitBlockChangedWithDerivedInvalidation({
@@ -1226,7 +1320,7 @@ export function createAppContext(options: AppContextOptions): AppContext {
           status: 'error',
           aiMode,
           updatedAt: failedBlock.updatedAt,
-          errorMessage: error instanceof Error ? error.message : '后台处理失败。',
+          errorMessage: error instanceof Error ? error.message : t('后台处理失败。', 'Background processing failed.'),
         })
 
         emitBlockChangedWithDerivedInvalidation({
@@ -1292,11 +1386,25 @@ export function createAppContext(options: AppContextOptions): AppContext {
         return
       }
 
+      const imageRequests = currentRequests.filter((request) => request.hasImages)
+
+      if (imageRequests.length > 0) {
+        for (const request of imageRequests) {
+          await runEnrichWithRetry(request.blockId, request.content, request.generation)
+        }
+      }
+
+      const textOnlyRequests = currentRequests.filter((request) => !request.hasImages)
+
+      if (textOnlyRequests.length === 0) {
+        return
+      }
+
       try {
         const tagMemory = getTagMemory(db)
-        const recentCorpusSnapshot = listRecentBlockContentRows(db, TAGGER_CORPUS_LIMIT + currentRequests.length)
+        const recentCorpusSnapshot = listRecentBlockContentRows(db, TAGGER_CORPUS_LIMIT + textOnlyRequests.length)
         const assignments = await tagger.assignBatch(
-          currentRequests.map((request) => ({
+          textOnlyRequests.map((request) => ({
             content: request.content,
             options: {
               corpusContents: (() => {
@@ -1327,8 +1435,9 @@ export function createAppContext(options: AppContextOptions): AppContext {
         )
 
         clearRuntimeAiError()
+        let shouldReindexAfterBatch = false
 
-        for (const [index, request] of currentRequests.entries()) {
+        for (const [index, request] of textOnlyRequests.entries()) {
           const currentBlock = getFreshBlockForEnrich(request.blockId, request.generation)
 
           if (!currentBlock) {
@@ -1343,11 +1452,15 @@ export function createAppContext(options: AppContextOptions): AppContext {
 
           syncAutoBlockTags(db, request.blockId, tags)
 
-          const block = updateBlockState(db, {
+          const previousSearchText = getBlockSearchTextsByIds(db, [request.blockId]).get(request.blockId) ?? request.content
+          const nextSearchText = buildBlockSearchText(request.content, assignment.imageAnnotations)
+          const block = updateBlockEnrichmentResult(db, {
             id: request.blockId,
             status: 'ready',
             aiMode: 'live',
             summary: assignment.summary,
+            imageAnnotations: assignment.imageAnnotations,
+            searchText: nextSearchText,
             updatedAt: currentBlock.updatedAt,
           })
 
@@ -1356,12 +1469,20 @@ export function createAppContext(options: AppContextOptions): AppContext {
             reason: 'enriched',
           })
 
+          if (nextSearchText !== previousSearchText) {
+            enqueueBlocksForVectorReindex([block])
+            shouldReindexAfterBatch = true
+          }
           void trackTask(syncCalendarSuggestionsForBlock(request.blockId, request.generation, llmProvider, 'live'))
+        }
+
+        if (shouldReindexAfterBatch) {
+          scheduleCurrentVectorReindex()
         }
 
         return
       } catch (error) {
-        const retryableRequests = getActiveQueuedEnrichRequests(requests)
+        const retryableRequests = getActiveQueuedEnrichRequests(textOnlyRequests)
 
         if (retryableRequests.length === 0) {
           return
@@ -1383,7 +1504,9 @@ export function createAppContext(options: AppContextOptions): AppContext {
               status: 'pending',
               aiMode: 'live',
               updatedAt: currentBlock.updatedAt,
-              errorMessage: error instanceof Error ? `自动重试中：${error.message}` : '自动重试中。',
+              errorMessage: error instanceof Error
+                ? `${t('自动重试中', 'Auto retrying')}: ${error.message}`
+                : t('自动重试中。', 'Auto retrying.'),
             })
 
             emitBlockChangedWithDerivedInvalidation({
@@ -1410,7 +1533,7 @@ export function createAppContext(options: AppContextOptions): AppContext {
             status: 'error',
             aiMode: 'live',
             updatedAt: currentBlock.updatedAt,
-            errorMessage: error instanceof Error ? error.message : '后台处理失败。',
+            errorMessage: error instanceof Error ? error.message : t('后台处理失败。', 'Background processing failed.'),
           })
 
           emitBlockChangedWithDerivedInvalidation({
@@ -1453,6 +1576,8 @@ export function createAppContext(options: AppContextOptions): AppContext {
   }
 
   function scheduleEnrich(blockId: string, content: string, generation: number): void {
+    const hasImages = hasMarkdownImages(content)
+
     if (!shouldUseQueuedEnrich()) {
       void trackTask(runEnrichWithRetry(blockId, content, generation))
       return
@@ -1464,6 +1589,7 @@ export function createAppContext(options: AppContextOptions): AppContext {
         blockId,
         content,
         generation,
+        hasImages,
       },
     ]
 
@@ -1906,7 +2032,14 @@ export function createAppContext(options: AppContextOptions): AppContext {
     },
 
     async saveSnapshot(topic, content, blockIds, notebookId) {
-      return createSnapshot(db, validateContent(topic), content, blockIds, notebookId)
+      return createSnapshot(db, validateContent(topic), validateContent(content), blockIds, notebookId)
+    },
+
+    async updateSnapshot(id, patch) {
+      return updateSnapshotInDb(db, id, {
+        topic: validateContent(patch.topic),
+        content: validateContent(patch.content),
+      }, new Date().toISOString())
     },
 
     async listSnapshots(query = '', notebookId) {
@@ -1935,7 +2068,8 @@ export function createAppContext(options: AppContextOptions): AppContext {
 
     async generateDailyReview(dateKey, forceRefresh = false) {
       const normalizedDate = normalizeCalendarDate(dateKey)
-      const cacheKey = getDailyReviewCacheKey(normalizedDate)
+      const language = getUiSettings().language
+      const cacheKey = getDailyReviewCacheKey(normalizedDate, language)
 
       if (!forceRefresh) {
         const cached = dailyReviewCache.get(cacheKey)
@@ -1955,6 +2089,7 @@ export function createAppContext(options: AppContextOptions): AppContext {
             dayDetail,
             llmProvider,
             mode,
+            language,
           })
 
           dailyReviewCache.set(cacheKey, result)
@@ -1983,11 +2118,12 @@ export function createAppContext(options: AppContextOptions): AppContext {
 
     async generateAiInsight(methodId, dateKey, forceRefresh = false) {
       if (!isAiInsightMethodId(methodId)) {
-        throw new Error('未知的 AI 洞察方法。')
+        throw new Error(t('未知的 AI 洞察方法。', 'Unknown AI insight method.'))
       }
 
       const normalizedDate = normalizeCalendarDate(dateKey)
-      const cacheKey = getAiInsightCacheKey(methodId, normalizedDate)
+      const language = getUiSettings().language
+      const cacheKey = getAiInsightCacheKey(methodId, normalizedDate, language)
 
       if (!forceRefresh) {
         const cached = aiInsightCache.get(cacheKey)
@@ -2009,6 +2145,7 @@ export function createAppContext(options: AppContextOptions): AppContext {
             dayDetails,
             llmProvider,
             mode,
+            language,
           })
 
           aiInsightCache.set(cacheKey, result)
@@ -2038,7 +2175,7 @@ export function createAppContext(options: AppContextOptions): AppContext {
 
     async listAiInsightHistory(methodId = null, limit = 30) {
       if (methodId !== null && methodId !== undefined && !isAiInsightMethodId(methodId)) {
-        throw new Error('未知的 AI 洞察方法。')
+        throw new Error(t('未知的 AI 洞察方法。', 'Unknown AI insight method.'))
       }
 
       return listAiInsightHistoryRecords(db, methodId ?? null, limit)
@@ -2046,7 +2183,8 @@ export function createAppContext(options: AppContextOptions): AppContext {
 
     async startDailyReviewGeneration(dateKey, forceRefresh = false) {
       const normalizedDate = normalizeCalendarDate(dateKey)
-      const cacheKey = getDailyReviewCacheKey(normalizedDate)
+      const language = getUiSettings().language
+      const cacheKey = getDailyReviewCacheKey(normalizedDate, language)
       const { mode, llmProvider } = getProviders()
       const requestId = uuid()
       const start = buildDailyReviewStart(requestId, normalizedDate, mode)
@@ -2069,18 +2207,21 @@ export function createAppContext(options: AppContextOptions): AppContext {
           date: normalizedDate,
           dayDetail,
           mode,
+          language,
         })
 
         if (prepared.emptyResult) {
           dailyReviewCache.set(cacheKey, prepared.emptyResult)
-          emitDailyReviewResultChunk(start, prepared.emptyResult)
+          setTimeout(() => {
+            emitDailyReviewResultChunk(start, prepared.emptyResult as Awaited<ReturnType<typeof generateDailyReviewContent>>)
+          }, 0)
           return
         }
 
         const generationInput = prepared.input
 
         if (!generationInput) {
-          throw new Error('每日回顾生成输入缺失。')
+          throw new Error(t('每日回顾生成输入缺失。', 'Missing daily review generation input.'))
         }
 
         try {
@@ -2101,6 +2242,7 @@ export function createAppContext(options: AppContextOptions): AppContext {
           const result = finalizeDailyReviewResult({
             date: normalizedDate,
             mode,
+            language,
             input: generationInput,
             blocks: prepared.blocks,
             entries: prepared.entries,
@@ -2131,7 +2273,7 @@ export function createAppContext(options: AppContextOptions): AppContext {
             delta: '',
             done: true,
             mode,
-            error: error instanceof Error ? error.message : '每日回顾生成失败。',
+            error: error instanceof Error ? error.message : t('每日回顾生成失败。', 'Daily review generation failed.'),
           })
         }
       })())
@@ -2141,11 +2283,12 @@ export function createAppContext(options: AppContextOptions): AppContext {
 
     async startAiInsightGeneration(methodId, dateKey, forceRefresh = false) {
       if (!isAiInsightMethodId(methodId)) {
-        throw new Error('未知的 AI 洞察方法。')
+        throw new Error(t('未知的 AI 洞察方法。', 'Unknown AI insight method.'))
       }
 
       const normalizedDate = normalizeCalendarDate(dateKey)
-      const cacheKey = getAiInsightCacheKey(methodId, normalizedDate)
+      const language = getUiSettings().language
+      const cacheKey = getAiInsightCacheKey(methodId, normalizedDate, language)
       const { mode, llmProvider } = getProviders()
       const requestId = uuid()
       const start = buildAiInsightStart(requestId, methodId, normalizedDate, mode)
@@ -2170,19 +2313,22 @@ export function createAppContext(options: AppContextOptions): AppContext {
           anchorDate: normalizedDate,
           dayDetails,
           mode,
+          language,
         })
 
         if (prepared.emptyResult) {
           aiInsightCache.set(cacheKey, prepared.emptyResult)
           recordAiInsightHistory(prepared.emptyResult)
-          emitAiInsightResultChunk(start, prepared.emptyResult)
+          setTimeout(() => {
+            emitAiInsightResultChunk(start, prepared.emptyResult as Awaited<ReturnType<typeof generateAiInsightContent>>)
+          }, 0)
           return
         }
 
         const generationInput = prepared.input
 
         if (!generationInput) {
-          throw new Error('AI 洞察生成输入缺失。')
+          throw new Error(t('AI 洞察生成输入缺失。', 'Missing AI insight generation input.'))
         }
 
         try {
@@ -2205,6 +2351,7 @@ export function createAppContext(options: AppContextOptions): AppContext {
             methodId,
             anchorDate: normalizedDate,
             mode,
+            language,
             input: generationInput,
             blocks: prepared.blocks,
             entries: prepared.entries,
@@ -2238,7 +2385,7 @@ export function createAppContext(options: AppContextOptions): AppContext {
             delta: '',
             done: true,
             mode,
-            error: error instanceof Error ? error.message : 'AI 洞察生成失败。',
+            error: error instanceof Error ? error.message : t('AI 洞察生成失败。', 'AI insight generation failed.'),
           })
         }
       })())
@@ -2248,18 +2395,18 @@ export function createAppContext(options: AppContextOptions): AppContext {
 
     async saveDailyReviewSnapshot(input) {
       const safeTitle = validateContent(input.title)
-      const snapshotContent = buildDailyReviewSnapshotContent(safeTitle, input.content)
-      return createSnapshot(db, safeTitle, snapshotContent, input.blockIds)
+      const snapshotContent = buildDailyReviewSnapshotContent(safeTitle, input.content, getUiSettings().language)
+      return createSnapshot(db, safeTitle, validateContent(snapshotContent), input.blockIds)
     },
 
     async saveAiInsightSnapshot(input) {
       if (!isAiInsightMethodId(input.methodId)) {
-        throw new Error('未知的 AI 洞察方法。')
+        throw new Error(t('未知的 AI 洞察方法。', 'Unknown AI insight method.'))
       }
 
       const safeTitle = validateContent(input.title)
-      const snapshotContent = buildAiInsightSnapshotContent(safeTitle, input.content)
-      return createSnapshot(db, safeTitle, snapshotContent, input.blockIds)
+      const snapshotContent = buildAiInsightSnapshotContent(safeTitle, input.content, getUiSettings().language)
+      return createSnapshot(db, safeTitle, validateContent(snapshotContent), input.blockIds)
     },
 
     async listUpcomingCalendarEntries(limitDays) {
@@ -2522,9 +2669,12 @@ export function createAppContext(options: AppContextOptions): AppContext {
     },
 
     async exportMarkdown(exportOptions) {
+      const language = getUiSettings().language
       const targetDirectory =
         exportOptions.targetPath ??
-        (options.chooseDirectory ? await options.chooseDirectory('选择 Markdown 导出目录') : null)
+        (options.chooseDirectory ? await options.chooseDirectory(
+          language === 'en' ? 'Choose Markdown export directory' : '选择 Markdown 导出目录',
+        ) : null)
 
       if (!targetDirectory) {
         return null
@@ -2535,11 +2685,12 @@ export function createAppContext(options: AppContextOptions): AppContext {
 
     async exportJson(exportOptions) {
       const defaultPath = join(options.dataDirectory, `changbu-export-${new Date().toISOString().replace(/[:.]/g, '-')}.json`)
+      const language = getUiSettings().language
       const targetFilePath =
         exportOptions.targetPath ??
         (options.chooseSavePath
           ? await options.chooseSavePath({
-              title: '导出 JSON 备份',
+              title: language === 'en' ? 'Export JSON backup' : '导出 JSON 备份',
               defaultPath,
               filters: [{ name: 'JSON', extensions: ['json'] }],
             })
@@ -2561,12 +2712,13 @@ export function createAppContext(options: AppContextOptions): AppContext {
     },
 
     async previewImportMarkdown(filePaths) {
+      const language = getUiSettings().language
       const resolvedFilePaths =
         filePaths && filePaths.length > 0
           ? filePaths
           : options.chooseOpenPaths
             ? await options.chooseOpenPaths({
-                title: '选择 Markdown 文件',
+                title: language === 'en' ? 'Select Markdown files' : '选择 Markdown 文件',
                 filters: [{ name: 'Markdown', extensions: ['md', 'markdown'] }],
                 properties: ['openFile', 'multiSelections'],
               })
@@ -2582,12 +2734,13 @@ export function createAppContext(options: AppContextOptions): AppContext {
     },
 
     async previewImportJson(filePath) {
+      const language = getUiSettings().language
       const resolvedFilePath =
         filePath ??
         (options.chooseOpenPaths
           ? (
               await options.chooseOpenPaths({
-                title: '选择 JSON 备份文件',
+                title: language === 'en' ? 'Select JSON backup file' : '选择 JSON 备份文件',
                 filters: [{ name: 'JSON', extensions: ['json'] }],
                 properties: ['openFile'],
               })
@@ -2607,7 +2760,7 @@ export function createAppContext(options: AppContextOptions): AppContext {
       const job = importJobs.get(importId)
 
       if (!job) {
-        throw new Error('导入预览已失效，请重新选择文件。')
+        throw new Error(t('导入预览已失效，请重新选择文件。', 'Import preview expired. Please choose files again.'))
       }
 
       let result: Awaited<ReturnType<typeof confirmImportJob>>
@@ -2734,13 +2887,16 @@ export function createAppContext(options: AppContextOptions): AppContext {
 
     async rebuildAllVectors() {
       if (!vectorReady || currentVectorDimension === null) {
-        throw new Error('当前向量索引不可用，无法重建。')
+        throw new Error(t('当前向量索引不可用，无法重建。', 'Vector index is unavailable and cannot be rebuilt.'))
       }
 
       const providerState = getVectorProviderState()
 
       if (!providerState) {
-        throw new Error('当前 AI / 向量配置尚未就绪，请先完成 API 测试或改用 mock。')
+        throw new Error(t(
+          '当前 AI / 向量配置尚未就绪，请先完成 API 测试或改用 mock。',
+          'AI/vector configuration is not ready. Run API test first or switch to mock mode.',
+        ))
       }
 
       const queuedBlockCount = countBlocks(db)
@@ -2766,6 +2922,7 @@ export function createAppContext(options: AppContextOptions): AppContext {
 
     async setSetting(key, value) {
       const previousValue = FILE_BACKED_SETTING_KEYS.has(key) ? settingsStore.get(key) : getDbSetting(db, key)
+      const previousAiConfig = key === 'ai_config' ? parseAIConfig(previousValue) : null
 
       if (previousValue !== value) {
         clearDailyReviewCache()
@@ -2781,8 +2938,24 @@ export function createAppContext(options: AppContextOptions): AppContext {
         const savedConfig = getSavedConfig()
         const savedFingerprint = isAIConfigured(savedConfig) ? createConfigFingerprint(savedConfig) : null
         const lastTestResult = getLastAiTestResult()
+        const transportChanged = previousAiConfig ? !hasEquivalentAiTransport(previousAiConfig, savedConfig) : true
+        const multimodalChanged = previousAiConfig
+          ? previousAiConfig.multimodalImageAnalysisEnabled !== savedConfig.multimodalImageAnalysisEnabled
+          : false
 
-        if (!savedFingerprint || lastTestResult?.configFingerprint !== savedFingerprint) {
+        if (
+          savedFingerprint
+          && lastTestResult?.success
+          && multimodalChanged
+          && !transportChanged
+          && !savedConfig.multimodalImageAnalysisEnabled
+        ) {
+          settingsStore.set(AI_LAST_TEST_RESULT_KEY, JSON.stringify({
+            ...lastTestResult,
+            configFingerprint: savedFingerprint,
+            llmMultimodalOk: false,
+          }))
+        } else if (!savedFingerprint || lastTestResult?.configFingerprint !== savedFingerprint) {
           settingsStore.set(AI_LAST_TEST_RESULT_KEY, '')
         }
 
@@ -2790,6 +2963,48 @@ export function createAppContext(options: AppContextOptions): AppContext {
 
         if (!isAIConfigured(savedConfig)) {
           ensureVectorSchemaForCurrentState(true)
+        } else if (
+          transportChanged
+          && savedFingerprint
+          && lastTestResult?.success
+          && lastTestResult.configFingerprint === savedFingerprint
+        ) {
+          ensureVectorSchemaForCurrentState(true)
+        }
+
+        if (multimodalChanged) {
+          const imageBlockIds = listBlockIdsWithMarkdownImages(db)
+
+          if (imageBlockIds.length > 0) {
+            if (!savedConfig.multimodalImageAnalysisEnabled) {
+              const updatedBlocks = clearBlocksImageAnalysisDerivedState(imageBlockIds)
+
+              for (const block of updatedBlocks) {
+                emitBlockChangedWithDerivedInvalidation({
+                  block,
+                  reason: 'enriched',
+                })
+              }
+
+              enqueueBlocksForVectorReindex(updatedBlocks)
+              scheduleCurrentVectorReindex()
+            }
+
+            const canRefreshImmediately =
+              isAIConfigured(savedConfig)
+              && (
+                getExecutionMode() === 'live'
+                || (
+                  !savedConfig.multimodalImageAnalysisEnabled
+                  && !transportChanged
+                  && Boolean(lastTestResult?.success)
+                )
+              )
+
+            if (canRefreshImmediately) {
+              scheduleBlocksForImageAnalysisRefresh(imageBlockIds)
+            }
+          }
         }
       }
 
@@ -2814,17 +3029,23 @@ export function createAppContext(options: AppContextOptions): AppContext {
     },
 
     async testApi(config) {
-      const result = await probeAiConfig(config)
+      const result = await probeAiConfig(config, getUiSettings().language)
       settingsStore.set(AI_LAST_TEST_RESULT_KEY, JSON.stringify(result))
+      const savedFingerprint = getSavedConfigFingerprint()
+      const testedFingerprint = result.configFingerprint ?? createConfigFingerprint(config)
+      const appliesToSavedConfig = Boolean(savedFingerprint) && testedFingerprint === savedFingerprint
 
-      if (vectorReady && result.success && result.embeddingDimension) {
+      if (vectorReady && result.success && result.embeddingDimension && appliesToSavedConfig) {
         const schemaChanged = ensureSchemaForDimension(result.embeddingDimension)
-        const configFingerprint = result.configFingerprint ?? createConfigFingerprint(config)
-        const targetState = createLiveVectorIndexState(configFingerprint)
+        const targetState = createLiveVectorIndexState(testedFingerprint)
         const embeddingProvider = createLiveEmbeddingProvider(config, tokenSink)
         scheduleReindex(embeddingProvider, 'live', targetState, {
           fullRebuild: schemaChanged || !isSameVectorIndexState(currentVectorIndexState, targetState),
         })
+      }
+
+      if (result.success && config.multimodalImageAnalysisEnabled && appliesToSavedConfig) {
+        scheduleBlocksForImageAnalysisRefresh(listBlockIdsWithMarkdownImages(db))
       }
 
       emitMetaChanged({
@@ -2919,7 +3140,7 @@ export function createAppContext(options: AppContextOptions): AppContext {
     },
 
     async getExternalAccessStatus() {
-      return buildExternalAccessStatus(getExternalAccessSettings(), getExternalAccessOptions())
+      return buildExternalAccessStatus(getExternalAccessSettings(), getExternalAccessOptions(), getUiSettings().language)
     },
 
     async enableExternalAccess() {
@@ -2935,7 +3156,7 @@ export function createAppContext(options: AppContextOptions): AppContext {
         reason: 'settings',
       })
 
-      return buildExternalAccessStatus(nextSettings, getExternalAccessOptions())
+      return buildExternalAccessStatus(nextSettings, getExternalAccessOptions(), getUiSettings().language)
     },
 
     async generateExternalAccessBundle() {
@@ -2945,14 +3166,14 @@ export function createAppContext(options: AppContextOptions): AppContext {
         skillTarget: 'claude-code' as const,
       }
 
-      await setupExternalAccessFiles(getExternalAccessOptions())
+      await setupExternalAccessFiles(getExternalAccessOptions(), getUiSettings().language)
       settingsStore.set(EXTERNAL_ACCESS_SETTINGS_KEY, JSON.stringify(nextSettings))
 
       emitMetaChanged({
         reason: 'settings',
       })
 
-      return buildExternalAccessStatus(nextSettings, getExternalAccessOptions())
+      return buildExternalAccessStatus(nextSettings, getExternalAccessOptions(), getUiSettings().language)
     },
 
     async setupExternalAccess() {
@@ -2963,14 +3184,14 @@ export function createAppContext(options: AppContextOptions): AppContext {
         skillTarget: 'claude-code' as const,
       }
 
-      await setupExternalAccessFiles(getExternalAccessOptions())
+      await setupExternalAccessFiles(getExternalAccessOptions(), getUiSettings().language)
       settingsStore.set(EXTERNAL_ACCESS_SETTINGS_KEY, JSON.stringify(enabledSettings))
 
       emitMetaChanged({
         reason: 'settings',
       })
 
-      return buildExternalAccessStatus(enabledSettings, getExternalAccessOptions())
+      return buildExternalAccessStatus(enabledSettings, getExternalAccessOptions(), getUiSettings().language)
     },
 
     async disableExternalAccess() {
@@ -2985,7 +3206,7 @@ export function createAppContext(options: AppContextOptions): AppContext {
         reason: 'settings',
       })
 
-      return buildExternalAccessStatus(nextSettings, getExternalAccessOptions())
+      return buildExternalAccessStatus(nextSettings, getExternalAccessOptions(), getUiSettings().language)
     },
 
     async openExternalAccessDirectory() {
@@ -2993,7 +3214,7 @@ export function createAppContext(options: AppContextOptions): AppContext {
         return
       }
 
-      const status = await buildExternalAccessStatus(getExternalAccessSettings(), getExternalAccessOptions())
+      const status = await buildExternalAccessStatus(getExternalAccessSettings(), getExternalAccessOptions(), getUiSettings().language)
       const openResult = await options.openPath(status.cliDirectory)
 
       if (openResult) {

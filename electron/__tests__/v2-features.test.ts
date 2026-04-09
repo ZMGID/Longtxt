@@ -61,8 +61,15 @@ describe('v2 features', () => {
     const listed = await context.listSnapshots()
     expect(listed[0]?.id).toBe(snapshot.id)
 
+    const updated = await context.updateSnapshot(snapshot.id, {
+      topic: 'RAG 修订总结',
+      content: '# RAG 修订总结\n\n补充了向量检索实验。',
+    })
+    expect(updated.topic).toBe('RAG 修订总结')
+
     const fetched = await context.getSnapshot(snapshot.id)
-    expect(fetched.topic).toBe('RAG 总结')
+    expect(fetched.topic).toBe('RAG 修订总结')
+    expect(fetched.content).toContain('向量检索实验')
 
     await context.removeSnapshot(snapshot.id)
     expect(await context.listSnapshots()).toHaveLength(0)
@@ -124,8 +131,9 @@ describe('v2 features', () => {
 
     expect(exportResult).not.toBeNull()
     expect(exportResult?.count).toBe(1)
-    expect(readFileSync(jsonPath, 'utf8')).toContain('"version": 2')
+    expect(readFileSync(jsonPath, 'utf8')).toContain('"version": 4')
     expect(readFileSync(jsonPath, 'utf8')).toContain('"summary": "保留这条摘要"')
+    expect(readFileSync(jsonPath, 'utf8')).toContain('"imageAnnotations"')
 
     const { context: importContext } = makeContext()
     const preview = await importContext.previewImportJson(jsonPath)
@@ -182,7 +190,7 @@ describe('v2 features', () => {
     })
 
     expect(exportResult).not.toBeNull()
-    expect(readFileSync(jsonPath, 'utf8')).toContain('"version": 3')
+    expect(readFileSync(jsonPath, 'utf8')).toContain('"version": 4')
     expect(readFileSync(jsonPath, 'utf8')).toContain('"settings"')
     expect(readFileSync(jsonPath, 'utf8')).toContain('"ai_config"')
 

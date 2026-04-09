@@ -5,7 +5,7 @@ import { DailyReviewView } from './components/DailyReviewView'
 import { TimelineReviewView } from './components/TimelineReviewView'
 import { ToastProvider } from './components/Toast'
 import { useTimelineReviewWindow } from './hooks/useTimelineReviewWindow'
-import { REVIEW_MODES } from './lib/timelineReview'
+import { useI18n } from './i18n/useI18n'
 
 function resolveInitialReviewMode(): ReviewMode {
   const mode = new URLSearchParams(window.location.search).get('mode')
@@ -46,8 +46,13 @@ export default function ReviewWindowApp() {
 }
 
 function ReviewWindowInner() {
+  const { t } = useI18n()
   const activeMode = resolveInitialReviewMode()
-  const activeModeLabel = REVIEW_MODES.find((mode) => mode.id === activeMode)?.label ?? '回顾'
+  const activeModeLabel = activeMode === 'daily-review'
+    ? t('review.mode.daily')
+    : activeMode === 'ai-insights'
+      ? t('review.mode.aiInsights')
+      : t('review.mode.recentShifts')
 
   return (
     <>
@@ -65,6 +70,8 @@ function ReviewWindowInner() {
 }
 
 function ReviewWindowShell({ title, children }: { title: string; children: React.ReactNode }) {
+  const { t } = useI18n()
+
   return (
     <div className="flex h-screen overflow-hidden bg-stone-100 text-stone-900">
       <main className="relative flex min-w-0 flex-1 overflow-hidden bg-white/[0.94]">
@@ -73,7 +80,7 @@ function ReviewWindowShell({ title, children }: { title: string; children: React
             <h2 className="text-[17px] font-semibold tracking-[0.01em] text-stone-900">{title}</h2>
             <button
               type="button"
-              aria-label="关闭回顾窗口"
+              aria-label={t('review.window.close')}
               data-testid="review-window-close"
               onClick={() => window.close()}
               className="window-no-drag flex h-8 w-8 items-center justify-center rounded-md text-stone-400 transition hover:bg-black/[0.04] hover:text-stone-700"
@@ -95,11 +102,12 @@ function ReviewWindowShell({ title, children }: { title: string; children: React
 }
 
 function ReviewWindowStaticModes({ activeMode }: { activeMode: ReviewMode }) {
+  const { t } = useI18n()
   const anchorDateKey = resolveInitialDateKey()
   const { blocks, entries, loading, error } = useTimelineReviewWindow(anchorDateKey)
 
   if (loading && blocks.length === 0 && entries.length === 0) {
-    return <div className="flex min-h-[320px] flex-1 items-center justify-center text-sm text-stone-400">正在加载回顾内容…</div>
+    return <div className="flex min-h-[320px] flex-1 items-center justify-center text-sm text-stone-400">{t('review.window.loading')}</div>
   }
 
   return (

@@ -36,6 +36,8 @@ import type {
   TokenUsage,
   UISettings,
 } from '../../shared/types'
+import { useI18n } from '../i18n/useI18n'
+import { formatDateByLanguage, formatNumberByLanguage, getLanguageFromUISettings, getLanguageLabel, withRendererLanguage, type AppLanguage } from '../i18n/locale'
 import { ActionButton } from './ui/ActionButton'
 import { useToast } from './toast-context'
 
@@ -88,25 +90,49 @@ type SettingsNavGroup = {
   }>
 }
 
-const SETTINGS_NAV_GROUPS: SettingsNavGroup[] = [
-  {
-    title: '选项',
-    items: [
-      { id: 'about', label: '关于', hint: '运行状态与诊断' },
-      { id: 'general', label: '常用', hint: '日常功能开关' },
-      { id: 'ai', label: '模型与接口', hint: 'LLM / Embedding' },
-      { id: 'external-access', label: '外部接入', hint: 'CLI 与通用接入' },
-      { id: 'files', label: '文件与目录', hint: '打开数据与设置' },
-    ],
-  },
-  {
-    title: '维护',
-    items: [
-      { id: 'backup', label: '备份与恢复', hint: '导出与加载备份' },
-      { id: 'advanced', label: '高级设置', hint: '低频参数调优' },
-    ],
-  },
-]
+function buildSettingsNavGroups(language: AppLanguage): SettingsNavGroup[] {
+  if (language === 'en') {
+    return [
+      {
+        title: 'Options',
+        items: [
+          { id: 'about', label: 'About', hint: 'Runtime status and diagnostics' },
+          { id: 'general', label: 'General', hint: 'Daily feature switches' },
+          { id: 'ai', label: 'Model & API', hint: 'LLM / Embedding' },
+          { id: 'external-access', label: 'External Access', hint: 'CLI and generic integrations' },
+          { id: 'files', label: 'Files', hint: 'Open data and settings folders' },
+        ],
+      },
+      {
+        title: 'Maintenance',
+        items: [
+          { id: 'backup', label: 'Backup', hint: 'Export and import backup' },
+          { id: 'advanced', label: 'Advanced', hint: 'Low-frequency tuning' },
+        ],
+      },
+    ]
+  }
+
+  return [
+    {
+      title: '选项',
+      items: [
+        { id: 'about', label: '关于', hint: '运行状态与诊断' },
+        { id: 'general', label: '常用', hint: '日常功能开关' },
+        { id: 'ai', label: '模型与接口', hint: 'LLM / Embedding' },
+        { id: 'external-access', label: '外部接入', hint: 'CLI 与通用接入' },
+        { id: 'files', label: '文件与目录', hint: '打开数据与设置' },
+      ],
+    },
+    {
+      title: '维护',
+      items: [
+        { id: 'backup', label: '备份与恢复', hint: '导出与加载备份' },
+        { id: 'advanced', label: '高级设置', hint: '低频参数调优' },
+      ],
+    },
+  ]
+}
 
 function SettingField({
   label,
@@ -207,6 +233,39 @@ function SettingSwitch({
   )
 }
 
+function SettingSelect({
+  label,
+  value,
+  options,
+  onChange,
+  testId,
+}: {
+  label: string
+  value: string
+  options: Array<{ value: string; label: string }>
+  onChange: (value: string) => void
+  testId?: string
+}) {
+  return (
+    <label className="block w-full min-w-[180px] space-y-1.5">
+      <span className="sr-only">{label}</span>
+      <select
+        aria-label={label}
+        data-testid={testId}
+        value={value}
+        onChange={(event) => onChange(event.target.value)}
+        className="w-full rounded-md border border-stone-200 bg-white px-3 py-2.5 text-sm text-stone-900 outline-none transition focus:border-violet-400"
+      >
+        {options.map((option) => (
+          <option key={option.value} value={option.value}>
+            {option.label}
+          </option>
+        ))}
+      </select>
+    </label>
+  )
+}
+
 function SettingsRow({
   title,
   description,
@@ -242,17 +301,27 @@ function SettingsGroup({
   )
 }
 
-function formatCompactStat(value: number): string {
-  return new Intl.NumberFormat('zh-CN').format(value)
+function formatCompactStat(value: number, language: AppLanguage): string {
+  return formatNumberByLanguage(value, language)
 }
 
-function formatExternalAccessTime(value: string | null): string {
+function formatExternalAccessTime(value: string | null, language: AppLanguage): string {
   if (!value) {
-    return '尚未生成'
+    return language === 'en' ? 'not generated' : '尚未生成'
   }
 
   const date = new Date(value)
-  return Number.isNaN(date.getTime()) ? value : date.toLocaleString('zh-CN')
+  return Number.isNaN(date.getTime())
+    ? value
+    : formatDateByLanguage(date, {
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+      hour12: false,
+    }, language)
 }
 
 function renderMonospaceValue(value: string): ReactNode {
@@ -272,10 +341,12 @@ function TokenUsagePanel({
   title,
   hint,
   usage,
+  language,
 }: {
   title: string
   hint: string
   usage: TokenUsage | null | undefined
+  language: AppLanguage
 }) {
   const normalizedUsage = normalizeTokenUsage(usage)
   const hasUsage = normalizedUsage.requestCount > 0
@@ -287,24 +358,24 @@ function TokenUsagePanel({
           <div className="text-[13px] font-semibold text-stone-900">{title}</div>
           <div className="mt-0.5 text-[11px] leading-4 text-stone-500">{hint}</div>
         </div>
-        <div className="text-[11px] font-medium text-stone-400">{hasUsage ? `${formatCompactStat(normalizedUsage.requestCount)} 次请求` : '暂无调用'}</div>
+        <div className="text-[11px] font-medium text-stone-400">{hasUsage ? (language === 'en' ? `${formatCompactStat(normalizedUsage.requestCount, language)} requests` : `${formatCompactStat(normalizedUsage.requestCount, language)} 次请求`) : (language === 'en' ? 'No calls yet' : '暂无调用')}</div>
       </div>
       <div className="grid grid-cols-2 gap-px bg-stone-200">
         <div className="bg-[#faf8f4] px-3 py-2.5">
-          <div className="text-[10px] font-semibold uppercase tracking-[0.16em] text-stone-400">请求</div>
-          <div className="mt-1 text-[18px] font-semibold tracking-[-0.02em] text-stone-900">{formatCompactStat(normalizedUsage.requestCount)}</div>
+          <div className="text-[10px] font-semibold uppercase tracking-[0.16em] text-stone-400">{language === 'en' ? 'REQUESTS' : '请求'}</div>
+          <div className="mt-1 text-[18px] font-semibold tracking-[-0.02em] text-stone-900">{formatCompactStat(normalizedUsage.requestCount, language)}</div>
         </div>
         <div className="bg-[#faf8f4] px-3 py-2.5">
           <div className="text-[10px] font-semibold uppercase tracking-[0.16em] text-stone-400">Prompt</div>
-          <div className="mt-1 text-[18px] font-semibold tracking-[-0.02em] text-stone-900">{formatCompactStat(normalizedUsage.promptTokens)}</div>
+          <div className="mt-1 text-[18px] font-semibold tracking-[-0.02em] text-stone-900">{formatCompactStat(normalizedUsage.promptTokens, language)}</div>
         </div>
         <div className="bg-[#faf8f4] px-3 py-2.5">
           <div className="text-[10px] font-semibold uppercase tracking-[0.16em] text-stone-400">Completion</div>
-          <div className="mt-1 text-[18px] font-semibold tracking-[-0.02em] text-stone-900">{formatCompactStat(normalizedUsage.completionTokens)}</div>
+          <div className="mt-1 text-[18px] font-semibold tracking-[-0.02em] text-stone-900">{formatCompactStat(normalizedUsage.completionTokens, language)}</div>
         </div>
         <div className="bg-[#faf8f4] px-3 py-2.5">
           <div className="text-[10px] font-semibold uppercase tracking-[0.16em] text-stone-400">Total</div>
-          <div className="mt-1 text-[18px] font-semibold tracking-[-0.02em] text-stone-900">{formatCompactStat(normalizedUsage.totalTokens)}</div>
+          <div className="mt-1 text-[18px] font-semibold tracking-[-0.02em] text-stone-900">{formatCompactStat(normalizedUsage.totalTokens, language)}</div>
         </div>
       </div>
     </section>
@@ -381,6 +452,10 @@ function NavIcon({ section }: { section: SettingsSectionId }) {
   }
 }
 
+function localize(language: AppLanguage, zh: string, en: string): string {
+  return language === 'en' ? en : zh
+}
+
 function SettingsNavButton({
   section,
   label,
@@ -419,57 +494,61 @@ function SettingsNavButton({
   )
 }
 
-function runtimeAiStatus(meta: AppMeta | null): string {
+function runtimeAiStatus(meta: AppMeta | null, language: AppLanguage): string {
   if (!meta?.aiConfigured) {
-    return '未配置，当前使用 mock'
+    return localize(language, '未配置，当前使用 mock', 'Not configured. Using mock.')
   }
 
   if (meta.activeAiMode === 'live') {
-    return meta.lastAiError ? 'live AI 已启用，但最近运行失败' : 'live AI 已启用'
+    return meta.lastAiError
+      ? localize(language, 'live AI 已启用，但最近运行失败', 'Live AI is enabled, but the latest run failed.')
+      : localize(language, 'live AI 已启用', 'Live AI is enabled.')
   }
 
-  return '配置已保存，但当前仍停留在 mock'
+  return localize(language, '配置已保存，但当前仍停留在 mock', 'Config is saved, but the app is still in mock mode.')
 }
 
-function runtimeVectorStatus(meta: AppMeta | null): string {
+function runtimeVectorStatus(meta: AppMeta | null, language: AppLanguage): string {
   if (!meta?.vectorReady) {
-    return '已降级：搜索仍可用，但仅标签 + FTS，不走向量召回'
+    return localize(language, '已降级：搜索仍可用，但仅标签 + FTS，不走向量召回', 'Degraded: search still works, but only via tags + FTS without vector recall.')
   }
 
   if (!meta.vectorSchemaReady) {
-    return '向量可用，但 Schema 仍在准备'
+    return localize(language, '向量可用，但 Schema 仍在准备', 'Vectors are available, but the schema is still being prepared.')
   }
 
-  return `可用 · ${meta.vectorDimension ?? '?'} 维`
+  return localize(language, `可用 · ${meta.vectorDimension ?? '?'} 维`, `Ready · ${meta.vectorDimension ?? '?'} dim`)
 }
 
-function runtimeQueueStatus(meta: AppMeta | null): string {
+function runtimeQueueStatus(meta: AppMeta | null, language: AppLanguage): string {
   if (!meta) {
-    return '加载中…'
+    return localize(language, '加载中…', 'Loading…')
   }
 
   if (meta.failedVectorCount > 0) {
-    return `失败待重试 · ${meta.failedVectorCount} 个块`
+    return localize(language, `失败待重试 · ${meta.failedVectorCount} 个块`, `Failed and waiting for retry · ${meta.failedVectorCount} blocks`)
   }
 
   if (meta.pendingVectorCount > 0) {
-    return meta.vectorQueueProcessing ? `处理中 · ${meta.pendingVectorCount} 个待补齐` : `积压中 · ${meta.pendingVectorCount} 个待补齐`
+    return meta.vectorQueueProcessing
+      ? localize(language, `处理中 · ${meta.pendingVectorCount} 个待补齐`, `Processing · ${meta.pendingVectorCount} pending`)
+      : localize(language, `积压中 · ${meta.pendingVectorCount} 个待补齐`, `Backlogged · ${meta.pendingVectorCount} pending`)
   }
 
-  return '正常'
+  return localize(language, '正常', 'Normal')
 }
 
-function rebuildAllVectorsDisabledReason(meta: AppMeta | null): string | null {
+function rebuildAllVectorsDisabledReason(meta: AppMeta | null, language: AppLanguage): string | null {
   if (!meta) {
-    return '正在加载当前状态。'
+    return localize(language, '正在加载当前状态。', 'Loading current status.')
   }
 
   if (!meta.vectorReady) {
-    return '当前数据库未启用向量索引。'
+    return localize(language, '当前数据库未启用向量索引。', 'Vector index is not enabled for the current database.')
   }
 
   if (meta.aiConfigured && meta.activeAiMode !== 'live') {
-    return '已配置 AI 但尚未完成测试，请先完成连接测试。'
+    return localize(language, '已配置 AI 但尚未完成测试，请先完成连接测试。', 'AI is configured but not verified yet. Run a connection test first.')
   }
 
   return null
@@ -534,12 +613,41 @@ export function SettingsPanel({
   onRefreshExternalAccess,
   onOpenExternalAccessDirectory,
 }: SettingsPanelProps) {
+  const { language, t } = useI18n()
+  const isEn = language === 'en'
   const { toast } = useToast()
+  const navGroups = useMemo(() => buildSettingsNavGroups(language), [language])
   const advancedOverrideCount = countAdvancedOverrides(docGenerationSettings, blockEnrichSettings, calendarSettings)
+  const multimodalStatusLabel = !config.multimodalImageAnalysisEnabled
+    ? t('settings.ai.multimodalStatusDisabled')
+    : testResult
+      ? testResult.llmMultimodalOk
+        ? t('settings.ai.multimodalStatusPassed')
+        : t('settings.ai.multimodalStatusFailed')
+      : t('settings.ai.multimodalStatusUntested')
   const [activeSection, setActiveSection] = useState<SettingsSectionId>(importPreview ? 'backup' : 'about')
   const [fileActionPending, setFileActionPending] = useState<'data-directory' | 'settings-directory' | null>(null)
 
   const pageTitle = useMemo(() => {
+    if (language === 'en') {
+      switch (activeSection) {
+        case 'about':
+          return { eyebrow: 'About', title: 'App info and runtime status', description: 'Browse current status, latest tests, and diagnostics from one place.' }
+        case 'general':
+          return { eyebrow: 'General', title: 'Common features', description: 'Keep daily switches here and avoid diving into advanced settings.' }
+        case 'ai':
+          return { eyebrow: 'Model & API', title: 'Model and API', description: 'Configure LLM / Embedding, then test manually after saving.' }
+        case 'external-access':
+          return { eyebrow: 'External Access', title: 'External access', description: 'Operate first, check paths second. Generates generic integration bundle by default.' }
+        case 'backup':
+          return { eyebrow: 'Backup', title: 'Backup and restore', description: 'Export full JSON backups, or preview and import past backups.' }
+        case 'files':
+          return { eyebrow: 'Files', title: 'Files and directories', description: 'Open data and settings directories directly for troubleshooting.' }
+        case 'advanced':
+          return { eyebrow: 'Advanced', title: 'Advanced settings', description: 'Low-frequency tuning and maintenance tools live here.' }
+      }
+    }
+
     switch (activeSection) {
       case 'about':
         return { eyebrow: '关于', title: '应用信息与运行状态', description: '像系统设置一样浏览当前状态、最近测试结果和运行诊断。' }
@@ -556,32 +664,32 @@ export function SettingsPanel({
       case 'advanced':
         return { eyebrow: '高级设置', title: '高级设置', description: '低频参数和维护工具都收在这里，只在需要调优或维护时再打开。' }
     }
-  }, [activeSection])
+  }, [activeSection, language])
 
   const headerActions = useMemo(() => {
     switch (activeSection) {
       case 'general':
       case 'advanced':
         return (
-          <ActionButton primary disabled={saving} onClick={() => { void onSave() }}>
-            {saving ? '保存中…' : '保存设置'}
-          </ActionButton>
+            <ActionButton primary disabled={saving} onClick={() => { void onSave() }}>
+            {saving ? t('settings.common.saving') : t('settings.common.save')}
+            </ActionButton>
         )
       case 'ai':
         return (
           <>
             <ActionButton primary disabled={saving} onClick={() => { void onSave() }}>
-              {saving ? '保存中…' : '保存设置'}
+              {saving ? t('settings.common.saving') : t('settings.common.save')}
             </ActionButton>
             <ActionButton disabled={testing} onClick={() => { void onTest() }}>
-              {testing ? '检测中…' : '测试连接'}
+              {testing ? t('settings.common.testing') : t('settings.common.testConnection')}
             </ActionButton>
           </>
         )
       default:
         return null
     }
-  }, [activeSection, onSave, onTest, saving, testing])
+  }, [activeSection, onSave, onTest, saving, t, testing])
 
   async function runFileAction(
     action: 'data-directory' | 'settings-directory',
@@ -605,15 +713,15 @@ export function SettingsPanel({
 
   async function copyExternalAccessCommand(): Promise<void> {
     if (!externalAccessStatus || typeof navigator?.clipboard?.writeText !== 'function') {
-      toast('error', '当前环境不支持剪贴板复制。')
+      toast('error', t('settings.external.copyUnsupported'))
       return
     }
 
     try {
       await navigator.clipboard.writeText(externalAccessStatus.searchCommandExample)
-      toast('success', '已复制示例查询命令。')
+      toast('success', t('settings.external.copyDone'))
     } catch {
-      toast('error', '复制命令失败。')
+      toast('error', t('settings.external.copyFailed'))
     }
   }
 
@@ -624,49 +732,67 @@ export function SettingsPanel({
           <div className="space-y-10">
             <SettingsGroup title="运行与索引">
               <SettingsRow
-                title="应用状态"
-                description="这里集中显示当前 AI / 向量状态、最近测试结果和后台运行情况，不再在数据管理里重复出现。"
+                title={localize(language, '应用状态', 'App status')}
+                description={localize(language, '这里集中显示当前 AI / 向量状态、最近测试结果和后台运行情况，不再在数据管理里重复出现。', 'Current AI / vector status, latest test results, and runtime diagnostics are summarized here instead of being duplicated elsewhere.')}
                 control={
                   <div className="text-right text-sm text-stone-500">
-                    <div className="font-semibold text-stone-900">长布桌面版</div>
-                    <div>数据目录已连接</div>
+                    <div className="font-semibold text-stone-900">{localize(language, '长布桌面版', 'Changbu Desktop')}</div>
+                    <div>{localize(language, '数据目录已连接', 'Data directory connected')}</div>
                   </div>
                 }
               />
-              <SettingsRow title="AI 模式" description={runtimeAiStatus(meta)} />
-              <SettingsRow title="向量状态" description={runtimeVectorStatus(meta)} />
-              <SettingsRow title="队列状态" description={runtimeQueueStatus(meta)} />
-              <SettingsRow title="Base URL" description={meta?.resolvedBaseUrl ?? '尚未解析'} />
+              <SettingsRow title={localize(language, 'AI 模式', 'AI mode')} description={runtimeAiStatus(meta, language)} />
+              <SettingsRow title={localize(language, '向量状态', 'Vector status')} description={runtimeVectorStatus(meta, language)} />
+              <SettingsRow title={localize(language, '队列状态', 'Queue status')} description={runtimeQueueStatus(meta, language)} />
+              <SettingsRow title="Base URL" description={meta?.resolvedBaseUrl ?? localize(language, '尚未解析', 'Not resolved yet')} />
               <SettingsRow
-                title="最近测试"
+                title={localize(language, '最近测试', 'Latest test')}
                 description={
                   meta?.lastAiTestResult
-                    ? `${meta.lastAiTestResult.success ? '测试通过' : '测试失败'} · ${new Date(meta.lastAiTestResult.checkedAt).toLocaleString('zh-CN')}`
-                    : '还没有 API 测试记录。'
+                    ? `${meta.lastAiTestResult.success ? localize(language, '测试通过', 'Passed') : localize(language, '测试失败', 'Failed')} · ${formatDateByLanguage(meta.lastAiTestResult.checkedAt, {
+                      year: 'numeric',
+                      month: '2-digit',
+                      day: '2-digit',
+                      hour: '2-digit',
+                      minute: '2-digit',
+                      second: '2-digit',
+                      hour12: false,
+                    }, language)}`
+                    : localize(language, '还没有 API 测试记录。', 'No API test record yet.')
                 }
               />
-              <SettingsRow title="待处理向量" description={`${meta?.pendingVectorCount ?? 0} 个`} />
-              <SettingsRow title="失败向量" description={`${meta?.failedVectorCount ?? 0} 个`} />
-              {meta?.lastAiError ? <SettingsRow title="最近运行错误" description={meta.lastAiError} /> : null}
+              <SettingsRow title={localize(language, '待处理向量', 'Pending vectors')} description={localize(language, `${meta?.pendingVectorCount ?? 0} 个`, `${meta?.pendingVectorCount ?? 0}`)} />
+              <SettingsRow title={localize(language, '失败向量', 'Failed vectors')} description={localize(language, `${meta?.failedVectorCount ?? 0} 个`, `${meta?.failedVectorCount ?? 0}`)} />
+              {meta?.lastAiError ? <SettingsRow title={localize(language, '最近运行错误', 'Latest runtime error')} description={meta.lastAiError} /> : null}
             </SettingsGroup>
 
-            <SettingsGroup title="Token 使用">
+            <SettingsGroup title={localize(language, 'Token 使用', 'Token usage')}>
               <div className="grid gap-3 lg:grid-cols-2">
-                <TokenUsagePanel title="当前会话" hint="本次启动后的调用统计。" usage={meta?.tokenUsage} />
-                <TokenUsagePanel title="累计总计" hint="跨重启累计保存的总用量。" usage={meta?.lifetimeTokenUsage} />
+                <TokenUsagePanel
+                  title={language === 'en' ? 'Current session' : '当前会话'}
+                  hint={language === 'en' ? 'Usage collected since this app launch.' : '本次启动后的调用统计。'}
+                  usage={meta?.tokenUsage}
+                  language={language}
+                />
+                <TokenUsagePanel
+                  title={language === 'en' ? 'Lifetime total' : '累计总计'}
+                  hint={language === 'en' ? 'Cumulative usage persisted across restarts.' : '跨重启累计保存的总用量。'}
+                  usage={meta?.lifetimeTokenUsage}
+                  language={language}
+                />
               </div>
             </SettingsGroup>
           </div>
         )
       case 'general':
         return (
-          <SettingsGroup title="功能开关">
+          <SettingsGroup title={localize(language, '功能开关', 'Feature switches')}>
             <SettingsRow
-              title="启用 AI 日期建议"
-              description="块 enrich 完成后，若内容里有明确未来日期安排，会在日历里生成 AI 建议；开启自动加入后会直接成为正式安排。"
+              title={localize(language, '启用 AI 日期建议', 'Enable AI date suggestions')}
+              description={localize(language, '块 enrich 完成后，若内容里有明确未来日期安排，会在日历里生成 AI 建议；开启自动加入后会直接成为正式安排。', 'After block enrichment finishes, Changbu can turn clear future plans into calendar suggestions. If auto-add is on, those suggestions become real entries immediately.')}
               control={
                 <SettingSwitch
-                  label="启用 AI 日期建议"
+                  label={localize(language, '启用 AI 日期建议', 'Enable AI date suggestions')}
                   checked={calendarSettings.aiSuggestionsEnabled}
                   onChange={(checked) => {
                     onCalendarSettingsChange({
@@ -678,13 +804,13 @@ export function SettingsPanel({
               }
             />
             <SettingsRow
-              title="AI 建议自动加入日历"
+              title={localize(language, 'AI 建议自动加入日历', 'Auto-add AI suggestions to calendar')}
               description={calendarSettings.aiSuggestionsEnabled
-                ? '识别到明确的未来安排后，直接创建正式日历事项，不再等待手动确认。'
-                : '先启用 AI 日期建议后，才可以打开自动加入。'}
+                ? localize(language, '识别到明确的未来安排后，直接创建正式日历事项，不再等待手动确认。', 'When a future plan is clearly recognized, create a real calendar entry immediately instead of waiting for manual confirmation.')
+                : localize(language, '先启用 AI 日期建议后，才可以打开自动加入。', 'Enable AI date suggestions first before turning on auto-add.')}
               control={
                 <SettingSwitch
-                  label="AI 建议自动加入日历"
+                  label={localize(language, 'AI 建议自动加入日历', 'Auto-add AI suggestions to calendar')}
                   checked={calendarSettings.autoAcceptAiSuggestions}
                   disabled={!calendarSettings.aiSuggestionsEnabled}
                   onChange={(checked) => {
@@ -697,17 +823,35 @@ export function SettingsPanel({
               }
             />
             <SettingsRow
-              title="显示左侧时间线"
-              description="在时间轴页左侧显示极简日期时间线，并随滚动高亮当前所在日期。"
+              title={localize(language, '显示左侧时间线', 'Show left-side mini timeline')}
+              description={localize(language, '在时间轴页左侧显示极简日期时间线，并随滚动高亮当前所在日期。', 'Show a compact date timeline on the left side of Timeline and highlight the current day while scrolling.')}
               control={
                 <SettingSwitch
-                  label="显示左侧时间线"
+                  label={localize(language, '显示左侧时间线', 'Show left-side mini timeline')}
                   checked={uiSettings.showMiniTimeline}
                   onChange={(checked) => {
                     onUISettingsChange({
                       ...uiSettings,
                       showMiniTimeline: checked,
                     })
+                  }}
+                />
+              }
+            />
+            <SettingsRow
+              title={t('settings.general.languageLabel')}
+              description={t('settings.general.languageHint')}
+              control={
+                <SettingSelect
+                  label={t('settings.general.languageLabel')}
+                  value={getLanguageFromUISettings(uiSettings)}
+                  testId={t('settings.language.selectTestId')}
+                  options={[
+                    { value: 'zh', label: getLanguageLabel('zh', language) },
+                    { value: 'en', label: getLanguageLabel('en', language) },
+                  ]}
+                  onChange={(nextLanguage) => {
+                    onUISettingsChange(withRendererLanguage(uiSettings, nextLanguage === 'en' ? 'en' : 'zh') as UISettings)
                   }}
                 />
               }
@@ -720,7 +864,7 @@ export function SettingsPanel({
             <SettingsGroup title="LLM">
               <SettingsRow
                 title="Endpoint"
-                description="用于摘要、文档生成与 AI 写作流程。"
+                description={localize(language, '用于摘要、文档生成与 AI 写作流程。', 'Used for summaries, document generation, and AI writing flows.')}
                 control={
                   <SettingField
                     label="Endpoint"
@@ -732,7 +876,7 @@ export function SettingsPanel({
               />
               <SettingsRow
                 title="API Key"
-                description="保存后会写入本地设置文件。"
+                description={localize(language, '保存后会写入本地设置文件。', 'Saved into the local settings file after you click save.')}
                 control={
                   <SettingField
                     label="API Key"
@@ -745,7 +889,7 @@ export function SettingsPanel({
               />
               <SettingsRow
                 title="Model"
-                description="例如 gpt-4o-mini。"
+                description={localize(language, '例如 gpt-4o-mini。', 'For example, gpt-4o-mini.')}
                 control={
                   <SettingField
                     label="Model"
@@ -755,12 +899,23 @@ export function SettingsPanel({
                   />
                 }
               />
+              <SettingsRow
+                title={t('settings.ai.multimodalLabel')}
+                description={`${t('settings.ai.multimodalHint')} · ${multimodalStatusLabel}`}
+                control={
+                  <SettingSwitch
+                    label={t('settings.ai.multimodalLabel')}
+                    checked={config.multimodalImageAnalysisEnabled}
+                    onChange={(checked) => onChange({ ...config, multimodalImageAnalysisEnabled: checked })}
+                  />
+                }
+              />
             </SettingsGroup>
 
             <SettingsGroup title="Embedding">
               <SettingsRow
                 title="Endpoint"
-                description="用于向量检索、连接图和语义召回。"
+                description={localize(language, '用于向量检索、连接图和语义召回。', 'Used for vector search, graph relationships, and semantic recall.')}
                 control={
                   <SettingField
                     label="Endpoint"
@@ -772,7 +927,7 @@ export function SettingsPanel({
               />
               <SettingsRow
                 title="API Key"
-                description="如需单独的 embedding 提供方，可与 LLM 使用不同密钥。"
+                description={localize(language, '如需单独的 embedding 提供方，可与 LLM 使用不同密钥。', 'If you use a separate embedding provider, it can use a different key from the LLM.')}
                 control={
                   <SettingField
                     label="API Key"
@@ -785,7 +940,7 @@ export function SettingsPanel({
               />
               <SettingsRow
                 title="Model"
-                description="例如 text-embedding-3-small。"
+                description={localize(language, '例如 text-embedding-3-small。', 'For example, text-embedding-3-small.')}
                 control={
                   <SettingField
                     label="Model"
@@ -801,15 +956,15 @@ export function SettingsPanel({
       case 'external-access':
         return (
           <div className="space-y-10">
-            <SettingsGroup title="快速操作">
+            <SettingsGroup title={localize(language, '快速操作', 'Quick actions')}>
               <SettingsRow
-                title="接入开关"
+                title={localize(language, '接入开关', 'Access switch')}
                 description={
                   externalAccessStatus
                     ? externalAccessStatus.enabled
-                      ? '当前已启用。CLI 在执行真实读写前会检查这个状态。'
-                      : '当前未启用。先启用，外部工具才可以真正读写长布内容。'
-                    : '正在读取外部接入状态。'
+                      ? localize(language, '当前已启用。CLI 在执行真实读写前会检查这个状态。', 'Currently enabled. The CLI checks this state before performing real reads or writes.')
+                      : localize(language, '当前未启用。先启用，外部工具才可以真正读写长布内容。', 'Currently disabled. Enable it first so external tools can actually read and write Changbu data.')
+                    : localize(language, '正在读取外部接入状态。', 'Loading external access status.')
                 }
                 control={
                   <>
@@ -821,7 +976,7 @@ export function SettingsPanel({
                       }}
                       testId="settings-enable-external-access"
                     >
-                      {externalAccessBusyAction === 'enable' ? '启用中…' : '启用接入'}
+                      {externalAccessBusyAction === 'enable' ? localize(language, '启用中…', 'Enabling…') : localize(language, '启用接入', 'Enable access')}
                     </ActionButton>
                     <ActionButton
                       disabled={externalAccessBusy || !externalAccessStatus?.enabled}
@@ -830,7 +985,7 @@ export function SettingsPanel({
                       }}
                       testId="settings-disable-external-access"
                     >
-                      {externalAccessBusyAction === 'disable' ? '停用中…' : '停用接入'}
+                      {externalAccessBusyAction === 'disable' ? localize(language, '停用中…', 'Disabling…') : localize(language, '停用接入', 'Disable access')}
                     </ActionButton>
                     <ActionButton
                       disabled={externalAccessBusy}
@@ -839,14 +994,14 @@ export function SettingsPanel({
                       }}
                       testId="settings-refresh-external-access"
                     >
-                      {externalAccessBusyAction === 'refresh' ? '刷新中…' : '刷新状态'}
+                      {externalAccessBusyAction === 'refresh' ? localize(language, '刷新中…', 'Refreshing…') : localize(language, '刷新状态', 'Refresh status')}
                     </ActionButton>
                   </>
                 }
               />
               <SettingsRow
-                title="生成接入包"
-                description="生成物统一放在长布自己的接入目录里。你要给 Claude、Codex 或别的工具用，都从这里拿。"
+                title={localize(language, '生成接入包', 'Generate bundle')}
+                description={localize(language, '生成物统一放在长布自己的接入目录里。你要给 Claude、Codex 或别的工具用，都从这里拿。', 'All generated files live in Changbu’s own external-access directory. Use this bundle for Claude, Codex, or any other tool.')}
                 control={
                   <>
                     <ActionButton
@@ -857,7 +1012,7 @@ export function SettingsPanel({
                       }}
                       testId="settings-generate-external-access"
                     >
-                      {externalAccessBusyAction === 'generate' ? '生成中…' : externalAccessStatus?.generatedAt ? '重新生成接入包' : '生成接入包'}
+                      {externalAccessBusyAction === 'generate' ? localize(language, '生成中…', 'Generating…') : externalAccessStatus?.generatedAt ? localize(language, '重新生成接入包', 'Regenerate bundle') : localize(language, '生成接入包', 'Generate bundle')}
                     </ActionButton>
                     <ActionButton
                       disabled={externalAccessBusy || !externalAccessStatus}
@@ -866,7 +1021,7 @@ export function SettingsPanel({
                       }}
                       testId="settings-open-external-access-directory"
                     >
-                      {externalAccessBusyAction === 'open' ? '打开中…' : '打开接入目录'}
+                      {externalAccessBusyAction === 'open' ? localize(language, '打开中…', 'Opening…') : localize(language, '打开接入目录', 'Open bundle directory')}
                     </ActionButton>
                     <ActionButton
                       disabled={!externalAccessStatus}
@@ -875,81 +1030,81 @@ export function SettingsPanel({
                       }}
                       testId="settings-copy-external-access-command"
                     >
-                      复制示例查询命令
+                      {localize(language, '复制示例查询命令', 'Copy sample search command')}
                     </ActionButton>
                   </>
                 }
               />
               <SettingsRow
-                title="当前结果"
+                title={localize(language, '当前结果', 'Current result')}
                 description={
                   externalAccessStatus
                     ? [
-                        `接入：${externalAccessStatus.enabled ? '已启用' : '未启用'}`,
-                        `CLI：${externalAccessStatus.cliExists ? '已生成' : '未生成'}`,
-                        `总说明：${externalAccessStatus.integrationReadmeExists ? '已生成' : '未生成'}`,
-                        `通用规则：${externalAccessStatus.agentGuideExists ? '已生成' : '未生成'}`,
-                        `适配器：${externalAccessStatus.skillExists ? '已生成' : '未生成'}`,
+                        `${localize(language, '接入', 'Access')}: ${externalAccessStatus.enabled ? localize(language, '已启用', 'enabled') : localize(language, '未启用', 'disabled')}`,
+                        `CLI: ${externalAccessStatus.cliExists ? localize(language, '已生成', 'generated') : localize(language, '未生成', 'missing')}`,
+                        `${localize(language, '总说明', 'README')}: ${externalAccessStatus.integrationReadmeExists ? localize(language, '已生成', 'generated') : localize(language, '未生成', 'missing')}`,
+                        `${localize(language, '通用规则', 'AGENTS')}: ${externalAccessStatus.agentGuideExists ? localize(language, '已生成', 'generated') : localize(language, '未生成', 'missing')}`,
+                        `${localize(language, '适配器', 'Adapters')}: ${externalAccessStatus.skillExists ? localize(language, '已生成', 'generated') : localize(language, '未生成', 'missing')}`,
                       ].join(' · ')
-                    : '正在读取状态。'
+                    : localize(language, '正在读取状态。', 'Loading status.')
                 }
               />
             </SettingsGroup>
 
-            <SettingsGroup title="生成产物">
+            <SettingsGroup title={localize(language, '生成产物', 'Generated files')}>
               <SettingsRow
-                title="接入包目录"
-                description={externalAccessStatus ? renderMonospaceValue(externalAccessStatus.cliDirectory) : '生成后会显示接入包根目录。'}
+                title={localize(language, '接入包目录', 'Bundle directory')}
+                description={externalAccessStatus ? renderMonospaceValue(externalAccessStatus.cliDirectory) : localize(language, '生成后会显示接入包根目录。', 'The bundle root directory appears after generation.')}
               />
               <SettingsRow
-                title="CLI 路径"
-                description={externalAccessStatus ? renderMonospaceValue(externalAccessStatus.cliPath) : '生成后会显示本地 CLI 包装脚本路径。'}
+                title={localize(language, 'CLI 路径', 'CLI path')}
+                description={externalAccessStatus ? renderMonospaceValue(externalAccessStatus.cliPath) : localize(language, '生成后会显示本地 CLI 包装脚本路径。', 'The local CLI wrapper path appears after generation.')}
               />
               <SettingsRow
                 title="README"
-                description={externalAccessStatus ? renderMonospaceValue(externalAccessStatus.integrationReadmePath) : '生成后会显示通用接入说明 README。'}
+                description={externalAccessStatus ? renderMonospaceValue(externalAccessStatus.integrationReadmePath) : localize(language, '生成后会显示通用接入说明 README。', 'The shared integration README appears after generation.')}
               />
               <SettingsRow
                 title="AGENTS"
-                description={externalAccessStatus ? renderMonospaceValue(externalAccessStatus.agentGuidePath) : '生成后会显示可复用的 AGENTS.md 提示文件。'}
+                description={externalAccessStatus ? renderMonospaceValue(externalAccessStatus.agentGuidePath) : localize(language, '生成后会显示可复用的 AGENTS.md 提示文件。', 'A reusable AGENTS.md prompt file appears after generation.')}
               />
               <SettingsRow
-                title="命令说明"
-                description={externalAccessStatus ? renderMonospaceValue(externalAccessStatus.commandsGuidePath) : '生成后会显示 CLI 命令说明。'}
+                title={localize(language, '命令说明', 'Commands guide')}
+                description={externalAccessStatus ? renderMonospaceValue(externalAccessStatus.commandsGuidePath) : localize(language, '生成后会显示 CLI 命令说明。', 'The CLI commands guide appears after generation.')}
               />
               <SettingsRow
-                title="工作流说明"
-                description={externalAccessStatus ? renderMonospaceValue(externalAccessStatus.workflowsGuidePath) : '生成后会显示检索与写入工作流说明。'}
+                title={localize(language, '工作流说明', 'Workflow guide')}
+                description={externalAccessStatus ? renderMonospaceValue(externalAccessStatus.workflowsGuidePath) : localize(language, '生成后会显示检索与写入工作流说明。', 'The search and write workflow guide appears after generation.')}
               />
               <SettingsRow
-                title="示例目录"
-                description={externalAccessStatus ? renderMonospaceValue(externalAccessStatus.examplesDirectory) : '生成后会显示 examples 目录。'}
+                title={localize(language, '示例目录', 'Examples directory')}
+                description={externalAccessStatus ? renderMonospaceValue(externalAccessStatus.examplesDirectory) : localize(language, '生成后会显示 examples 目录。', 'The examples directory appears after generation.')}
               />
               <SettingsRow
-                title="适配器目录"
-                description={externalAccessStatus ? renderMonospaceValue(externalAccessStatus.adaptersDirectory) : '生成后会显示 adapters 目录。'}
+                title={localize(language, '适配器目录', 'Adapters directory')}
+                description={externalAccessStatus ? renderMonospaceValue(externalAccessStatus.adaptersDirectory) : localize(language, '生成后会显示 adapters 目录。', 'The adapters directory appears after generation.')}
               />
               <SettingsRow
-                title="Claude 模板目录"
-                description={externalAccessStatus ? renderMonospaceValue(externalAccessStatus.skillDirectory) : '生成后会显示 Claude 模板目录。'}
+                title={localize(language, 'Claude 模板目录', 'Claude template directory')}
+                description={externalAccessStatus ? renderMonospaceValue(externalAccessStatus.skillDirectory) : localize(language, '生成后会显示 Claude 模板目录。', 'The Claude template directory appears after generation.')}
               />
               <SettingsRow
-                title="可执行文件"
-                description={externalAccessStatus ? renderMonospaceValue(externalAccessStatus.executablePath) : '加载中…'}
+                title={localize(language, '可执行文件', 'Executable')}
+                description={externalAccessStatus ? renderMonospaceValue(externalAccessStatus.executablePath) : localize(language, '加载中…', 'Loading…')}
               />
               <SettingsRow
-                title="最近生成时间"
-                description={formatExternalAccessTime(externalAccessStatus?.generatedAt ?? null)}
+                title={localize(language, '最近生成时间', 'Last generated')}
+                description={formatExternalAccessTime(externalAccessStatus?.generatedAt ?? null, language)}
               />
               <SettingsRow
-                title="自检命令"
-                description={externalAccessStatus ? renderMonospaceValue(externalAccessStatus.doctorCommand) : '生成后会显示 doctor 命令。'}
+                title={localize(language, '自检命令', 'Doctor command')}
+                description={externalAccessStatus ? renderMonospaceValue(externalAccessStatus.doctorCommand) : localize(language, '生成后会显示 doctor 命令。', 'The doctor command appears after generation.')}
               />
             </SettingsGroup>
 
-            <SettingsGroup title="问题与说明">
+            <SettingsGroup title={localize(language, '问题与说明', 'Issues and notes')}>
               <SettingsRow
-                title="当前问题"
+                title={localize(language, '当前问题', 'Current issues')}
                 description={
                   externalAccessStatus
                     ? externalAccessStatus.issues.length > 0
@@ -960,13 +1115,13 @@ export function SettingsPanel({
                           ))}
                         </ul>
                       )
-                      : '没有检测到问题。'
-                    : '正在读取状态。'
+                      : localize(language, '没有检测到问题。', 'No issues detected.')
+                    : localize(language, '正在读取状态。', 'Loading status.')
                 }
               />
               <SettingsRow
-                title="说明"
-                description="这里默认生成的是完整通用接入包：包含 guides、examples 和 adapters。Claude 只是 adapters 里的一个模板，不再自动塞进它自己的目录。外部 CLI 目前支持 search、tag、get、list、create、update、remove、tags、doctor。"
+                title={localize(language, '说明', 'Notes')}
+                description={localize(language, '这里默认生成的是完整通用接入包：包含 guides、examples 和 adapters。Claude 只是 adapters 里的一个模板，不再自动塞进它自己的目录。外部 CLI 目前支持 search、tag、get、list、create、update、remove、tags、doctor。', 'By default this generates a full generic bundle with guides, examples, and adapters. Claude is only one template inside adapters and is no longer copied into its own directory automatically. The external CLI currently supports search, tag, get, list, create, update, remove, tags, and doctor.')}
               />
             </SettingsGroup>
           </div>
@@ -974,22 +1129,22 @@ export function SettingsPanel({
       case 'backup':
         return (
           <div className="space-y-10">
-            <SettingsGroup title="备份">
+            <SettingsGroup title={localize(language, '备份', 'Backups')}>
               <SettingsRow
-                title="创建备份"
-                description="导出当前块数据、附件和设置快照，适合完整迁移、归档和手动留档。"
+                title={localize(language, '创建备份', 'Create backup')}
+                description={localize(language, '导出当前块数据、附件和设置快照，适合完整迁移、归档和手动留档。', 'Export current blocks, attachments, and settings snapshots for migration, archiving, or manual safekeeping.')}
                 control={
                   <ActionButton primary onClick={() => { void onCreateBackup() }} testId="settings-create-backup">
-                    创建备份
+                    {localize(language, '创建备份', 'Create backup')}
                   </ActionButton>
                 }
               />
               <SettingsRow
-                title="加载备份"
-                description="读取 JSON 备份并先展示预览，再决定如何处理冲突。"
+                title={localize(language, '加载备份', 'Load backup')}
+                description={localize(language, '读取 JSON 备份并先展示预览，再决定如何处理冲突。', 'Read a JSON backup, inspect the preview first, then decide how to handle conflicts.')}
                 control={
                   <ActionButton onClick={() => { void onLoadBackupPreview() }} testId="settings-load-backup">
-                    加载备份
+                    {localize(language, '加载备份', 'Load backup')}
                   </ActionButton>
                 }
               />
@@ -997,36 +1152,40 @@ export function SettingsPanel({
 
             {importPreview ? (
               <section className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-4" data-testid="settings-import-preview">
-                <div className="text-sm font-semibold text-amber-900">备份预览</div>
+                <div className="text-sm font-semibold text-amber-900">{localize(language, '备份预览', 'Backup preview')}</div>
                 <div className="mt-1 text-xs leading-5 text-amber-800">
-                  {importPreview.format.toUpperCase()} · {importPreview.totalFiles} 个文件 / {importPreview.totalBlocks} 个块 · 冲突 {importPreview.conflicts}
+                  {isEn
+                    ? `${importPreview.format.toUpperCase()} · ${importPreview.totalFiles} files / ${importPreview.totalBlocks} blocks · ${importPreview.conflicts} conflicts`
+                    : `${importPreview.format.toUpperCase()} · ${importPreview.totalFiles} 个文件 / ${importPreview.totalBlocks} 个块 · 冲突 ${importPreview.conflicts}`}
                 </div>
                 {importPreview.includesSettings ? (
                   <div className="mt-1 text-xs leading-5 text-amber-800">
-                    含设置快照 · {importPreview.settingsEntryCount ?? 0} 项设置会在导入时一并恢复
+                    {isEn
+                      ? `Includes settings snapshot · ${importPreview.settingsEntryCount ?? 0} settings entries will be restored during import`
+                      : `含设置快照 · ${importPreview.settingsEntryCount ?? 0} 项设置会在导入时一并恢复`}
                   </div>
                 ) : null}
                 <div className="mt-3 space-y-1 text-xs text-amber-800">
                   {importPreview.samples.map((sample) => (
-                    <p key={`${sample.filename}-${sample.preview}`}>{sample.filename}：{sample.preview}</p>
+                    <p key={`${sample.filename}-${sample.preview}`}>{sample.filename}{isEn ? ': ' : '：'}{sample.preview}</p>
                   ))}
                 </div>
                 <div className="mt-4 flex flex-wrap gap-2">
                   {importPreview.conflicts > 0 ? (
                     <>
                       <ActionButton onClick={() => { void onConfirmImport('skip_all') }}>
-                        全部跳过冲突
+                        {localize(language, '全部跳过冲突', 'Skip all conflicts')}
                       </ActionButton>
                       <ActionButton primary onClick={() => { void onConfirmImport('overwrite_all') }}>
-                        全部覆盖冲突
+                        {localize(language, '全部覆盖冲突', 'Overwrite all conflicts')}
                       </ActionButton>
                     </>
                   ) : (
                     <ActionButton primary onClick={() => { void onConfirmImport('overwrite_all') }}>
-                      确认导入
+                      {localize(language, '确认导入', 'Confirm import')}
                     </ActionButton>
                   )}
-                  <ActionButton onClick={onDismissImportPreview}>取消</ActionButton>
+                  <ActionButton onClick={onDismissImportPreview}>{localize(language, '取消', 'Cancel')}</ActionButton>
                 </div>
               </section>
             ) : null}
@@ -1034,32 +1193,32 @@ export function SettingsPanel({
         )
       case 'files':
         return (
-          <SettingsGroup title="本地文件">
+          <SettingsGroup title={localize(language, '本地文件', 'Local files')}>
             <SettingsRow
-              title="打开数据目录"
-              description="查看数据库、附件等运行数据。"
+              title={localize(language, '打开数据目录', 'Open data directory')}
+              description={localize(language, '查看数据库、附件等运行数据。', 'Inspect runtime data such as the database and attachments.')}
               control={
                 <ActionButton
                   onClick={() => {
-                    void runFileAction('data-directory', onOpenDataDirectory, '打开数据目录失败。')
+                    void runFileAction('data-directory', onOpenDataDirectory, localize(language, '打开数据目录失败。', 'Failed to open data directory.'))
                   }}
                   disabled={fileActionPending !== null}
                 >
-                  打开数据目录
+                  {localize(language, '打开数据目录', 'Open data directory')}
                 </ActionButton>
               }
             />
             <SettingsRow
-              title="打开设置文件目录"
-              description="查看 changbu-settings.json 等持久化配置文件。"
+              title={localize(language, '打开设置文件目录', 'Open settings directory')}
+              description={localize(language, '查看 changbu-settings.json 等持久化配置文件。', 'Inspect persisted config files such as changbu-settings.json.')}
               control={
                 <ActionButton
                   onClick={() => {
-                    void runFileAction('settings-directory', onOpenSettingsDirectory, '打开设置文件目录失败。')
+                    void runFileAction('settings-directory', onOpenSettingsDirectory, localize(language, '打开设置文件目录失败。', 'Failed to open settings directory.'))
                   }}
                   disabled={fileActionPending !== null}
                 >
-                  打开设置文件目录
+                  {localize(language, '打开设置文件目录', 'Open settings directory')}
                 </ActionButton>
               }
             />
@@ -1068,13 +1227,15 @@ export function SettingsPanel({
       case 'advanced':
         return (
           <div className="space-y-10" data-testid="settings-advanced-panel">
-            <SettingsGroup title="文档生成">
+            <SettingsGroup title={localize(language, '文档生成', 'Document generation')}>
               <SettingsRow
-                title="最大引用块数"
-                description={`默认 ${DEFAULT_DOC_GENERATION_SETTINGS.maxReferenceBlocks}，保存时会自动限制在 ${MIN_DOC_GENERATION_REFERENCE_BLOCKS} 到 ${MAX_DOC_GENERATION_REFERENCE_BLOCKS} 之间。`}
+                title={localize(language, '最大引用块数', 'Max reference blocks')}
+                description={isEn
+                  ? `Default ${DEFAULT_DOC_GENERATION_SETTINGS.maxReferenceBlocks}. Automatically clamped to ${MIN_DOC_GENERATION_REFERENCE_BLOCKS}–${MAX_DOC_GENERATION_REFERENCE_BLOCKS} when saved.`
+                  : `默认 ${DEFAULT_DOC_GENERATION_SETTINGS.maxReferenceBlocks}，保存时会自动限制在 ${MIN_DOC_GENERATION_REFERENCE_BLOCKS} 到 ${MAX_DOC_GENERATION_REFERENCE_BLOCKS} 之间。`}
                 control={
                   <SettingNumberField
-                    label="最大引用块数"
+                    label={localize(language, '最大引用块数', 'Max reference blocks')}
                     value={docGenerationSettings.maxReferenceBlocks}
                     min={MIN_DOC_GENERATION_REFERENCE_BLOCKS}
                     max={MAX_DOC_GENERATION_REFERENCE_BLOCKS}
@@ -1084,16 +1245,16 @@ export function SettingsPanel({
                         maxReferenceBlocks: value,
                       })
                     }}
-                    description={`默认 ${DEFAULT_DOC_GENERATION_SETTINGS.maxReferenceBlocks}`}
+                    description={localize(language, `默认 ${DEFAULT_DOC_GENERATION_SETTINGS.maxReferenceBlocks}`, `Default ${DEFAULT_DOC_GENERATION_SETTINGS.maxReferenceBlocks}`)}
                   />
                 }
               />
               <SettingsRow
-                title="召回候选块数"
-                description="生成前先从搜索结果里取这么多候选块，再筛选引用。"
+                title={localize(language, '召回候选块数', 'Candidate recall limit')}
+                description={localize(language, '生成前先从搜索结果里取这么多候选块，再筛选引用。', 'Pull this many candidate blocks from search before filtering references.')}
                 control={
                   <SettingNumberField
-                    label="召回候选块数"
+                    label={localize(language, '召回候选块数', 'Candidate recall limit')}
                     value={docGenerationSettings.retrievalLimit}
                     min={MIN_DOC_GENERATION_RETRIEVAL_LIMIT}
                     max={MAX_DOC_GENERATION_RETRIEVAL_LIMIT}
@@ -1103,16 +1264,16 @@ export function SettingsPanel({
                         retrievalLimit: value,
                       })
                     }}
-                    description={`默认 ${DEFAULT_DOC_GENERATION_SETTINGS.retrievalLimit}`}
+                    description={localize(language, `默认 ${DEFAULT_DOC_GENERATION_SETTINGS.retrievalLimit}`, `Default ${DEFAULT_DOC_GENERATION_SETTINGS.retrievalLimit}`)}
                   />
                 }
               />
               <SettingsRow
-                title="生成温度"
-                description="越低越稳，越高越发散。建议 0 到 0.4。"
+                title={localize(language, '生成温度', 'Generation temperature')}
+                description={localize(language, '越低越稳，越高越发散。建议 0 到 0.4。', 'Lower is more stable; higher is more divergent. Recommended: 0 to 0.4.')}
                 control={
                   <SettingNumberField
-                    label="生成温度"
+                    label={localize(language, '生成温度', 'Generation temperature')}
                     value={docGenerationSettings.temperature}
                     min={MIN_DOC_GENERATION_TEMPERATURE}
                     max={MAX_DOC_GENERATION_TEMPERATURE}
@@ -1123,16 +1284,16 @@ export function SettingsPanel({
                         temperature: value,
                       })
                     }}
-                    description={`默认 ${DEFAULT_DOC_GENERATION_SETTINGS.temperature}`}
+                    description={localize(language, `默认 ${DEFAULT_DOC_GENERATION_SETTINGS.temperature}`, `Default ${DEFAULT_DOC_GENERATION_SETTINGS.temperature}`)}
                   />
                 }
               />
               <SettingsRow
-                title="模型流式输出"
-                description="开启后，每日回顾和 AI 洞察会边生成边显示；关闭后等待完整结果再展示。"
+                title={localize(language, '模型流式输出', 'Streaming output')}
+                description={localize(language, '开启后，每日回顾和 AI 洞察会边生成边显示；关闭后等待完整结果再展示。', 'When enabled, Daily Review and AI Insights render while generating. When disabled, they wait for the full result.')}
                 control={
                   <SettingSwitch
-                    label="模型流式输出"
+                    label={localize(language, '模型流式输出', 'Streaming output')}
                     checked={docGenerationSettings.streamOutput}
                     onChange={(checked) => {
                       onDocGenerationSettingsChange({
@@ -1144,11 +1305,11 @@ export function SettingsPanel({
                 }
               />
               <SettingsRow
-                title="输出 Token 上限"
-                description="限制单次文档生成的输出长度与成本。"
+                title={localize(language, '输出 Token 上限', 'Max output tokens')}
+                description={localize(language, '限制单次文档生成的输出长度与成本。', 'Cap output length and cost for a single generation run.')}
                 control={
                   <SettingNumberField
-                    label="输出 Token 上限"
+                    label={localize(language, '输出 Token 上限', 'Max output tokens')}
                     value={docGenerationSettings.maxOutputTokens}
                     min={MIN_DOC_GENERATION_MAX_OUTPUT_TOKENS}
                     max={MAX_DOC_GENERATION_MAX_OUTPUT_TOKENS}
@@ -1158,19 +1319,19 @@ export function SettingsPanel({
                         maxOutputTokens: value,
                       })
                     }}
-                    description={`默认 ${DEFAULT_DOC_GENERATION_SETTINGS.maxOutputTokens}`}
+                    description={localize(language, `默认 ${DEFAULT_DOC_GENERATION_SETTINGS.maxOutputTokens}`, `Default ${DEFAULT_DOC_GENERATION_SETTINGS.maxOutputTokens}`)}
                   />
                 }
               />
             </SettingsGroup>
 
-            <SettingsGroup title="块 enrich">
+            <SettingsGroup title={localize(language, '块 enrich', 'Block enrich')}>
               <SettingsRow
-                title="启用 live enrich 队列"
-                description="仅对已启用的 live AI 生效。创建多个块时会先短暂聚合，再合并请求，以减少调用次数和费用。"
+                title={localize(language, '启用 live enrich 队列', 'Enable live enrich queue')}
+                description={localize(language, '仅对已启用的 live AI 生效。创建多个块时会先短暂聚合，再合并请求，以减少调用次数和费用。', 'Only applies when live AI is enabled. Multiple new blocks are briefly batched together to reduce request count and cost.')}
                 control={
                   <SettingSwitch
-                    label="启用 live enrich 队列"
+                    label={localize(language, '启用 live enrich 队列', 'Enable live enrich queue')}
                     checked={blockEnrichSettings.queueEnabled}
                     onChange={(checked) => {
                       onBlockEnrichSettingsChange({
@@ -1182,11 +1343,13 @@ export function SettingsPanel({
                 }
               />
               <SettingsRow
-                title="单次最多合并块数"
-                description={`保存时会自动限制在 ${MIN_BLOCK_ENRICH_BATCH_BLOCKS} 到 ${MAX_BLOCK_ENRICH_BATCH_BLOCKS} 之间。`}
+                title={localize(language, '单次最多合并块数', 'Max blocks per batch')}
+                description={isEn
+                  ? `Automatically clamped to ${MIN_BLOCK_ENRICH_BATCH_BLOCKS}–${MAX_BLOCK_ENRICH_BATCH_BLOCKS} when saved.`
+                  : `保存时会自动限制在 ${MIN_BLOCK_ENRICH_BATCH_BLOCKS} 到 ${MAX_BLOCK_ENRICH_BATCH_BLOCKS} 之间。`}
                 control={
                   <SettingNumberField
-                    label="单次最多合并块数"
+                    label={localize(language, '单次最多合并块数', 'Max blocks per batch')}
                     value={blockEnrichSettings.maxBatchBlocks}
                     min={MIN_BLOCK_ENRICH_BATCH_BLOCKS}
                     max={MAX_BLOCK_ENRICH_BATCH_BLOCKS}
@@ -1196,16 +1359,16 @@ export function SettingsPanel({
                         maxBatchBlocks: value,
                       })
                     }}
-                    description={`默认 ${DEFAULT_BLOCK_ENRICH_SETTINGS.maxBatchBlocks}`}
+                    description={localize(language, `默认 ${DEFAULT_BLOCK_ENRICH_SETTINGS.maxBatchBlocks}`, `Default ${DEFAULT_BLOCK_ENRICH_SETTINGS.maxBatchBlocks}`)}
                   />
                 }
               />
               <SettingsRow
-                title="聚合等待时间"
-                description="达到块数上限前，会最多等待这段时间再一起发送。"
+                title={localize(language, '聚合等待时间', 'Batch wait time')}
+                description={localize(language, '达到块数上限前，会最多等待这段时间再一起发送。', 'Before reaching the block cap, requests wait up to this long before being sent together.')}
                 control={
                   <SettingNumberField
-                    label="聚合等待时间"
+                    label={localize(language, '聚合等待时间', 'Batch wait time')}
                     value={blockEnrichSettings.queueDebounceMs}
                     min={MIN_BLOCK_ENRICH_QUEUE_DEBOUNCE_MS}
                     max={MAX_BLOCK_ENRICH_QUEUE_DEBOUNCE_MS}
@@ -1215,16 +1378,16 @@ export function SettingsPanel({
                         queueDebounceMs: value,
                       })
                     }}
-                    description={`默认 ${DEFAULT_BLOCK_ENRICH_SETTINGS.queueDebounceMs} ms`}
+                    description={localize(language, `默认 ${DEFAULT_BLOCK_ENRICH_SETTINGS.queueDebounceMs} ms`, `Default ${DEFAULT_BLOCK_ENRICH_SETTINGS.queueDebounceMs} ms`)}
                   />
                 }
               />
               <SettingsRow
-                title="预留输出 Token"
-                description="批量请求会先按模型上下文估算，再预留这部分空间给返回结果。"
+                title={localize(language, '预留输出 Token', 'Reserved output tokens')}
+                description={localize(language, '批量请求会先按模型上下文估算，再预留这部分空间给返回结果。', 'Batch requests estimate model context first, then reserve this amount of space for the response.')}
                 control={
                   <SettingNumberField
-                    label="预留输出 Token"
+                    label={localize(language, '预留输出 Token', 'Reserved output tokens')}
                     value={blockEnrichSettings.responseReserveTokens}
                     min={MIN_BLOCK_ENRICH_RESPONSE_RESERVE_TOKENS}
                     max={MAX_BLOCK_ENRICH_RESPONSE_RESERVE_TOKENS}
@@ -1234,19 +1397,19 @@ export function SettingsPanel({
                         responseReserveTokens: value,
                       })
                     }}
-                    description={`默认 ${DEFAULT_BLOCK_ENRICH_SETTINGS.responseReserveTokens}`}
+                    description={localize(language, `默认 ${DEFAULT_BLOCK_ENRICH_SETTINGS.responseReserveTokens}`, `Default ${DEFAULT_BLOCK_ENRICH_SETTINGS.responseReserveTokens}`)}
                   />
                 }
               />
             </SettingsGroup>
 
-            <SettingsGroup title="日历窗口">
+            <SettingsGroup title={localize(language, '日历窗口', 'Calendar window')}>
               <SettingsRow
-                title="每块最多建议条数"
-                description="限制 AI 从单个块里抽取未来安排的数量。"
+                title={localize(language, '每块最多建议条数', 'Max suggestions per block')}
+                description={localize(language, '限制 AI 从单个块里抽取未来安排的数量。', 'Limit how many future plans AI can extract from a single block.')}
                 control={
                   <SettingNumberField
-                    label="每块最多建议条数"
+                    label={localize(language, '每块最多建议条数', 'Max suggestions per block')}
                     value={calendarSettings.maxSuggestionsPerBlock}
                     min={MIN_CALENDAR_MAX_SUGGESTIONS_PER_BLOCK}
                     max={MAX_CALENDAR_MAX_SUGGESTIONS_PER_BLOCK}
@@ -1256,16 +1419,16 @@ export function SettingsPanel({
                         maxSuggestionsPerBlock: value,
                       })
                     }}
-                    description={`默认 ${DEFAULT_CALENDAR_SETTINGS.maxSuggestionsPerBlock}`}
+                    description={localize(language, `默认 ${DEFAULT_CALENDAR_SETTINGS.maxSuggestionsPerBlock}`, `Default ${DEFAULT_CALENDAR_SETTINGS.maxSuggestionsPerBlock}`)}
                   />
                 }
               />
               <SettingsRow
-                title="未来安排窗口"
-                description="控制日历页“未来安排”列表的日期范围。"
+                title={localize(language, '未来安排窗口', 'Upcoming window')}
+                description={localize(language, '控制日历页“未来安排”列表的日期范围。', 'Control the date range shown in Calendar → Upcoming.')}
                 control={
                   <SettingNumberField
-                    label="未来安排窗口"
+                    label={localize(language, '未来安排窗口', 'Upcoming window')}
                     value={calendarSettings.upcomingDays}
                     min={MIN_CALENDAR_UPCOMING_DAYS}
                     max={MAX_CALENDAR_UPCOMING_DAYS}
@@ -1275,66 +1438,66 @@ export function SettingsPanel({
                         upcomingDays: value,
                       })
                     }}
-                    description={`默认 ${DEFAULT_CALENDAR_SETTINGS.upcomingDays} 天`}
+                    description={localize(language, `默认 ${DEFAULT_CALENDAR_SETTINGS.upcomingDays} 天`, `Default ${DEFAULT_CALENDAR_SETTINGS.upcomingDays} days`)}
                   />
                 }
               />
             </SettingsGroup>
 
-            <SettingsGroup title="维护工具">
+            <SettingsGroup title={localize(language, '维护工具', 'Maintenance tools')}>
               <SettingsRow
-                title="清理孤儿附件"
-                description="删除已经不再被任何块引用的附件文件和记录，适合导入覆盖或大量删除内容之后做一次整理。"
+                title={localize(language, '清理孤儿附件', 'Clean orphan attachments')}
+                description={localize(language, '删除已经不再被任何块引用的附件文件和记录，适合导入覆盖或大量删除内容之后做一次整理。', 'Remove attachment files and records that are no longer referenced by any block. Useful after overwrite imports or large deletions.')}
                 control={
                   <ActionButton
                     onClick={() => { void onCleanupOrphanAttachments?.() }}
                     disabled={!onCleanupOrphanAttachments}
                     testId="settings-cleanup-attachments"
                   >
-                    开始清理
+                    {localize(language, '开始清理', 'Start cleanup')}
                   </ActionButton>
                 }
               />
               <SettingsRow
-                title="重试失败向量"
-                description={`${meta?.failedVectorCount ?? 0} 个失败向量可以重新入队，再由后台按当前模式继续处理。`}
+                title={localize(language, '重试失败向量', 'Retry failed vectors')}
+                description={localize(language, `${meta?.failedVectorCount ?? 0} 个失败向量可以重新入队，再由后台按当前模式继续处理。`, `${meta?.failedVectorCount ?? 0} failed vectors can be queued again and processed in the background using the current mode.`)}
                 control={
                   <ActionButton
                     onClick={() => { void onRetryFailedVectors?.() }}
                     disabled={!onRetryFailedVectors || (meta?.failedVectorCount ?? 0) === 0}
                     testId="settings-retry-vectors"
                   >
-                    重试失败向量
+                    {localize(language, '重试失败向量', 'Retry failed vectors')}
                   </ActionButton>
                 }
               />
               <SettingsRow
-                title="重建附件索引"
-                description="重新扫描块里的附件引用，补齐附件关系，并顺带清理扫描过程中发现的孤儿附件。"
+                title={localize(language, '重建附件索引', 'Rebuild attachment index')}
+                description={localize(language, '重新扫描块里的附件引用，补齐附件关系，并顺带清理扫描过程中发现的孤儿附件。', 'Rescan attachment references in blocks, repair attachment links, and clean any orphans found during the scan.')}
                 control={
                   <ActionButton
                     onClick={() => { void onRebuildAttachmentIndex?.() }}
                     disabled={!onRebuildAttachmentIndex}
                     testId="settings-rebuild-attachments"
                   >
-                    重建附件索引
+                    {localize(language, '重建附件索引', 'Rebuild attachment index')}
                   </ActionButton>
                 }
               />
               <SettingsRow
-                title="重建全部向量"
+                title={localize(language, '重建全部向量', 'Rebuild all vectors')}
                 description={
-                  rebuildAllVectorsDisabledReason(meta)
-                    ? `当前不可用：${rebuildAllVectorsDisabledReason(meta)}`
-                    : '把全部块重新排队，按当前 embedding 配置完整重建向量索引。'
+                  rebuildAllVectorsDisabledReason(meta, language)
+                    ? localize(language, `当前不可用：${rebuildAllVectorsDisabledReason(meta, language)}`, `Currently unavailable: ${rebuildAllVectorsDisabledReason(meta, language)}`)
+                    : localize(language, '把全部块重新排队，按当前 embedding 配置完整重建向量索引。', 'Queue every block again and rebuild vector indexes using the current embedding configuration.')
                 }
                 control={
                   <ActionButton
                     onClick={() => { void onRebuildAllVectors?.() }}
-                    disabled={!onRebuildAllVectors || Boolean(rebuildAllVectorsDisabledReason(meta))}
+                    disabled={!onRebuildAllVectors || Boolean(rebuildAllVectorsDisabledReason(meta, language))}
                     testId="settings-rebuild-vectors"
                   >
-                    重建全部向量
+                    {localize(language, '重建全部向量', 'Rebuild all vectors')}
                   </ActionButton>
                 }
               />
@@ -1348,7 +1511,7 @@ export function SettingsPanel({
     <section className="flex h-full min-h-0 min-w-0 border-t border-stone-200 bg-[#f7f5f2] text-stone-900">
       <aside className="w-[250px] shrink-0 border-r border-stone-200 bg-[#f6f4f1] px-4 pb-6 pt-5">
         <div className="space-y-6">
-          {SETTINGS_NAV_GROUPS.map((group) => (
+          {navGroups.map((group) => (
             <div key={group.title}>
               <div className="mb-2 px-2 text-xs font-semibold uppercase tracking-[0.12em] text-stone-400">{group.title}</div>
               <div className="space-y-1">
@@ -1396,7 +1559,9 @@ export function SettingsPanel({
           {testResult ? (
             <div className={`mb-6 rounded-lg border px-4 py-3 text-sm ${testResult.success ? 'border-violet-200 bg-violet-50 text-violet-700' : 'border-amber-200 bg-amber-50 text-amber-700'}`}>
               {testResult.success
-                ? `连接成功：Models ${testResult.modelsOk ? 'OK' : '失败'} / Embedding ${testResult.embeddingOk ? 'OK' : '失败'} / LLM ${testResult.llmOk ? 'OK' : '失败'} / Stream ${testResult.llmStreamingOk ? 'OK' : '失败'}`
+                ? localize(language,
+                  `连接成功：Models ${testResult.modelsOk ? 'OK' : '失败'} / Embedding ${testResult.embeddingOk ? 'OK' : '失败'} / LLM ${testResult.llmOk ? 'OK' : '失败'} / Stream ${testResult.llmStreamingOk ? 'OK' : '失败'} / 多模态 ${config.multimodalImageAnalysisEnabled ? (testResult.llmMultimodalOk ? 'OK' : '失败') : '未启用'}`,
+                  `Connection succeeded: Models ${testResult.modelsOk ? 'OK' : 'Failed'} / Embedding ${testResult.embeddingOk ? 'OK' : 'Failed'} / LLM ${testResult.llmOk ? 'OK' : 'Failed'} / Stream ${testResult.llmStreamingOk ? 'OK' : 'Failed'} / Multimodal ${config.multimodalImageAnalysisEnabled ? (testResult.llmMultimodalOk ? 'OK' : 'Failed') : 'Disabled'}` )
                 : testResult.error}
             </div>
           ) : null}

@@ -114,6 +114,7 @@ const api: ChangbuApi = {
   },
   snapshots: {
     save: (topic, content, blockIds, notebookId) => ipcRenderer.invoke(IPC_CHANNELS.snapshots.save, topic, content, blockIds, notebookId),
+    update: (id, patch) => ipcRenderer.invoke(IPC_CHANNELS.snapshots.update, id, patch),
     list: (query, notebookId) => ipcRenderer.invoke(IPC_CHANNELS.snapshots.list, query, notebookId),
     get: (id) => ipcRenderer.invoke(IPC_CHANNELS.snapshots.get, id),
     remove: (id) => ipcRenderer.invoke(IPC_CHANNELS.snapshots.remove, id),

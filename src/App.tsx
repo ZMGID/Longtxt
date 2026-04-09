@@ -11,6 +11,7 @@ import type {
   ImportPreview,
   RelatedBlockResult,
   SearchResult,
+  SnapshotUpdateInput,
 } from '../shared/types'
 import { expandBlockChangedEvents } from '../shared/eventBatch'
 import { buildSearchPreview } from '../shared/searchPreview'
@@ -34,6 +35,8 @@ import { changbu } from './lib/changbu'
 import { loadDocumentReferences } from './lib/documentReferences'
 import { resolveSelectedGraphBlock } from './lib/graphSelection'
 import { queryKeys } from './lib/queryKeys'
+import { useI18n } from './i18n/useI18n'
+import { getCurrentLanguage } from './i18n/locale'
 
 function formatTodayDateKey(): string {
   const today = new Date()
@@ -108,7 +111,7 @@ async function runSearchAction(
   try {
     handlers.onSuccess(await action())
   } catch (reason) {
-    handlers.onError(reason instanceof Error ? reason.message : '搜索失败。')
+    handlers.onError(reason instanceof Error ? reason.message : (getCurrentLanguage() === 'en' ? 'Search failed.' : '搜索失败。'))
   } finally {
     handlers.onFinally?.()
   }
@@ -151,6 +154,7 @@ export default function App() {
 }
 
 function AppInner() {
+  const { t, uiSettings } = useI18n()
   const { toast } = useToast()
   const queryClient = useQueryClient()
   const {
@@ -204,7 +208,7 @@ function AppInner() {
   const [jumpingToTimelineBlockId, setJumpingToTimelineBlockId] = useState<string | null>(null)
   const [timelineContextBlocks, setTimelineContextBlocks] = useState<Block[]>([])
   const [isWaitingToQuit, setIsWaitingToQuit] = useState(false)
-  const { calendarSettings, uiSettings } = useAppShellSettings()
+  const { calendarSettings } = useAppShellSettings()
   const searchInputRef = useRef<HTMLTextAreaElement | null>(null)
   const [graphTagFilters, setGraphTagFilters] = useState<string[]>([])
   const [selectedGraphBlockId, setSelectedGraphBlockId] = useState<string | null>(null)
@@ -241,11 +245,11 @@ function AppInner() {
     const result = queryClient.getQueryData<AppMeta>(queryKeys.meta())
 
     if (!result) {
-      throw new Error('刷新应用状态失败。')
+      throw new Error(t('settings.controller.refreshMetaFailed'))
     }
 
     return result
-  }, [queryClient])
+  }, [queryClient, t])
 
   const clearScheduledPrefetch = useCallback((view?: AppView): void => {
     if (view) {
@@ -574,7 +578,7 @@ function AppInner() {
           setResults(nextResults)
         },
         onError: (message) => {
-          setSearchError(message === '搜索失败。' ? '按标签浏览失败。' : message)
+          setSearchError(message === t('app.search.error') ? t('app.search.byTagError') : message)
         },
         onFinally: () => {
           setSearching(false)
@@ -624,7 +628,7 @@ function AppInner() {
           setNotebookResults(nextResults)
         },
         onError: (message) => {
-          setSearchError(message === '搜索失败。' ? '按标签浏览失败。' : message)
+          setSearchError(message === t('app.search.error') ? t('app.search.byTagError') : message)
         },
         onFinally: () => {
           setNotebookSearching(false)
@@ -677,7 +681,7 @@ function AppInner() {
         content: '',
         blockIds: [],
         mode: meta?.activeAiMode ?? 'mock',
-        error: reason instanceof Error ? reason.message : '文档生成失败。',
+        error: reason instanceof Error ? reason.message : t('app.doc.generateError'),
       })
       void refreshMeta()
     }
@@ -690,13 +694,13 @@ function AppInner() {
 
       if (!preview) {
         setImportPreview(null)
-        toast('info', '已取消 JSON 导入。')
+        toast('info', t('app.import.json.cancelled'))
         return
       }
 
       setImportPreview(preview)
     } catch (reason) {
-      toast('error', reason instanceof Error ? reason.message : 'JSON 导入预览失败。')
+      toast('error', reason instanceof Error ? reason.message : t('app.import.json.previewFailed'))
     }
   }
 
@@ -708,9 +712,9 @@ function AppInner() {
     try {
       const result = await changbu.imports.confirm(importPreview.importId, strategy)
       setImportPreview(null)
-      toast('success', `导入完成，共导入 ${result.imported} 个块。`)
+      toast('success', t('app.import.done', { count: result.imported }))
     } catch (reason) {
-      toast('error', reason instanceof Error ? reason.message : '导入失败。')
+      toast('error', reason instanceof Error ? reason.message : t('app.import.failed'))
     }
   }
 
@@ -724,7 +728,19 @@ function AppInner() {
     setSelectedSnapshotId(snapshot.id)
     setDocumentDepositAction(null)
     setActiveView('snapshots')
-    toast('success', '文档快照已保存。')
+    toast('success', t('app.snapshot.saved'))
+  }
+
+  async function handleUpdateSnapshot(snapshotId: string, patch: SnapshotUpdateInput): Promise<void> {
+    try {
+      const snapshot = await changbu.snapshots.update(snapshotId, patch)
+      await queryClient.invalidateQueries({ queryKey: queryKeys.snapshotsRoot() })
+      setSelectedSnapshotId(snapshot.id)
+      toast('success', t('app.snapshot.updated'))
+    } catch (reason) {
+      toast('error', reason instanceof Error ? reason.message : t('app.snapshot.updateFailed'))
+      throw reason instanceof Error ? reason : new Error(t('app.snapshot.updateFailed'))
+    }
   }
 
   async function handleDepositDocumentToNewNotebook(): Promise<void> {
@@ -735,14 +751,14 @@ function AppInner() {
     setDocumentDepositAction('create')
 
     try {
-      const notebookTitle = document.topic.trim() || `新笔记本 ${notebooks.length + 1}`
+      const notebookTitle = document.topic.trim() || t('app.notebook.newName', { index: notebooks.length + 1 })
       const notebook = await createNotebook(notebookTitle)
 
       for (const blockId of document.blockIds) {
         await addBlockToNotebook(notebook.id, blockId)
       }
 
-      toast('success', `已新建「${notebook.title}」并收录本次参考块。`)
+      toast('success', t('app.notebook.depositCreated', { title: notebook.title }))
       setActiveView('notebooks')
     } finally {
       setDocumentDepositAction(null)
@@ -761,7 +777,7 @@ function AppInner() {
         await addBlockToNotebook(selectedNotebook.id, blockId)
       }
 
-      toast('success', `本次参考块已加入「${selectedNotebook.title}」。`)
+      toast('success', t('app.notebook.depositAppended', { title: selectedNotebook.title }))
       setActiveView('notebooks')
     } finally {
       setDocumentDepositAction(null)
@@ -770,19 +786,19 @@ function AppInner() {
 
   async function handleAddBlockToNotebook(notebookId: string, blockId: string): Promise<void> {
     const result = await addBlockToNotebook(notebookId, blockId)
-    toast(result.added ? 'success' : 'info', result.added ? `已收录到「${result.notebook.title}」` : `「${result.notebook.title}」里已经有这个块`)
+    toast(result.added ? 'success' : 'info', result.added ? t('app.notebook.addedTo', { title: result.notebook.title }) : t('app.notebook.alreadyIn', { title: result.notebook.title }))
   }
 
   async function handleCreateNotebookWithBlock(blockId: string): Promise<void> {
-    const notebookTitle = `新笔记本 ${notebooks.length + 1}`
+    const notebookTitle = t('app.notebook.newName', { index: notebooks.length + 1 })
     const result = await createNotebookWithBlock(blockId, notebookTitle)
-    toast('success', `已新建「${result.notebook.title}」并收录当前块`)
+    toast('success', t('app.notebook.createdWithBlock', { title: result.notebook.title }))
     setActiveView('notebooks')
   }
 
   async function handleCreateNotebook(): Promise<void> {
-    const notebook = await createNotebook(`新笔记本 ${notebooks.length + 1}`)
-    toast('success', `已创建「${notebook.title}」`)
+    const notebook = await createNotebook(t('app.notebook.newName', { index: notebooks.length + 1 }))
+    toast('success', t('app.notebook.created', { title: notebook.title }))
     setActiveView('notebooks')
   }
 
@@ -792,7 +808,7 @@ function AppInner() {
       const results = await changbu.blocks.findRelated(blockId)
       setRelatedBlocks(results)
     } catch {
-      toast('error', '查找相关块失败。')
+      toast('error', t('app.related.findFailed'))
     } finally {
       setRelatedLoading(false)
     }
@@ -817,7 +833,7 @@ function AppInner() {
         })
 
         if (contextBlocks.length === 0 || !contextBlocks.some((block) => block.id === blockId)) {
-          toast('error', '未能在时间轴中定位该块。')
+          toast('error', t('app.timeline.locateFailed'))
           return false
         }
 
@@ -828,7 +844,7 @@ function AppInner() {
       setFocusedBlockId(blockId)
       return true
     } catch (reason) {
-      toast('error', reason instanceof Error ? reason.message : '跳转到时间轴失败。')
+      toast('error', reason instanceof Error ? reason.message : t('app.timeline.jumpFailed'))
       return false
     } finally {
       setJumpingToTimelineBlockId((current) => (current === blockId ? null : current))
@@ -845,35 +861,35 @@ function AppInner() {
   const displayedSearchResults = showRecentResults ? recentResults : results
   const searchResultsTitle = showRecentResults
     ? recentResults.length > 0
-      ? `最近更新 · ${recentResults.length} 个块`
-      : '最近更新'
+      ? t('app.search.recentTitle', { count: recentResults.length })
+      : t('app.search.recentTitleEmpty')
     : browseTag
-      ? `标签“${browseTag}” · ${results.length} 条结果`
-      : `${results.length} 条检索结果`
+      ? t('app.search.tagTitle', { tag: browseTag, count: results.length })
+      : t('app.search.resultTitle', { count: results.length })
   const searchResultsEmptyHint = showRecentResults
     ? loading
-      ? '正在加载最近的块…'
-      : '还没有块，先在时间轴记录一些内容。'
+      ? t('app.search.recentLoading')
+      : t('app.search.recentEmpty')
     : browseTag
-      ? '这个标签下还没有相关块。'
-      : '没有找到相关块，换个关键词试试。'
+      ? t('app.search.tagEmpty')
+      : t('app.search.empty')
 
   const aiStatusLabel = !meta?.aiConfigured
-    ? '未配置 API，当前使用 mock'
+    ? t('app.aiStatus.mock')
     : meta.activeAiMode === 'live'
       ? meta.lastAiError
-        ? '已启用 live AI，但最近运行失败'
-        : '已启用 live AI'
-      : '已配置 API，但尚未通过测试'
+        ? t('app.aiStatus.liveError')
+        : t('app.aiStatus.liveReady')
+      : t('app.aiStatus.configSaved')
 
   const activeViewTitle = {
-    timeline: '时间轴',
-    calendar: '日历',
-    search: '搜索生成',
-    notebooks: '笔记本',
-    graph: '连接图',
-    snapshots: '文档快照',
-    'data-management': '数据管理',
+    timeline: t('app.sidebar.timeline'),
+    calendar: t('app.sidebar.calendar'),
+    search: t('app.sidebar.search'),
+    notebooks: t('app.sidebar.notebooks'),
+    graph: t('app.sidebar.graph'),
+    snapshots: t('app.sidebar.snapshots'),
+    'data-management': t('app.sidebar.dataManagement'),
   }[activeView]
 
   function renderActiveView(): ReactNode {
@@ -916,7 +932,7 @@ function AppInner() {
               }}
               onOpenReview={(mode, dateKey) => {
                 void changbu.review.openWindow(mode, dateKey).catch((reason) => {
-                  toast('error', reason instanceof Error ? reason.message : '打开回顾窗口失败。')
+                  toast('error', reason instanceof Error ? reason.message : t('app.review.openFailed'))
                 })
               }}
             />
@@ -956,15 +972,15 @@ function AppInner() {
             }}
             onDeleteNotebook={async (notebookId) => {
               await removeNotebook(notebookId)
-              toast('success', '笔记本已删除。')
+              toast('success', t('app.notebook.deleted'))
             }}
             onCreateBlockInNotebook={async (notebookId, content) => {
               await createBlockInNotebook(notebookId, content)
-              toast('success', '新块已加入当前笔记本。')
+              toast('success', t('app.notebook.blockAdded'))
             }}
             onCreateNotebookStructureItem={async (notebookId, type) => {
               await createNotebookStructureItem(notebookId, { type })
-              toast('success', '结构项已加入当前笔记本。')
+              toast('success', t('app.notebook.structureAdded'))
             }}
             onUpdateNotebookStructureItem={async (notebookId, itemId, patch) => {
               await updateNotebookStructureItem(notebookId, itemId, patch)
@@ -977,7 +993,7 @@ function AppInner() {
             }}
             onRemoveNotebookItem={async (notebookId, itemId) => {
               await removeNotebookItem(notebookId, itemId)
-              toast('success', '该块已从笔记本移出。')
+              toast('success', t('app.notebook.blockRemoved'))
             }}
             onReorderNotebookItems={async (notebookId, itemIds) => {
               await reorderItems(notebookId, itemIds)
@@ -1003,7 +1019,7 @@ function AppInner() {
             resultsTitle={searchResultsTitle}
             resultsEmptyHint={searchResultsEmptyHint}
             showResultScore={!showRecentResults}
-            resultMetaLabel={showRecentResults ? '最近更新' : null}
+            resultMetaLabel={showRecentResults ? t('app.search.recentTitleEmpty') : null}
             browseTag={browseTag}
             searchError={searchError}
             searching={searching}
@@ -1121,23 +1137,24 @@ function AppInner() {
               setSnapshotQuery(value)
             }}
             onSelectSnapshot={setSelectedSnapshotId}
+            onUpdateSnapshot={handleUpdateSnapshot}
             onRemoveSnapshot={async (snapshotId) => {
               await changbu.snapshots.remove(snapshotId)
               await queryClient.invalidateQueries({ queryKey: queryKeys.snapshotsRoot() })
-              toast('success', '文档快照已删除。')
+              toast('success', t('app.snapshots.removed'))
             }}
             onExportMarkdown={async (options) => {
               try {
                 const result = await changbu.exports.markdown(options)
 
                 if (!result) {
-                  toast('info', '已取消 Markdown 导出。')
+                  toast('info', t('app.export.markdown.cancelled'))
                   return
                 }
 
-                toast('success', `Markdown 已导出到 ${result.path}，共 ${result.count} 个块。`)
+                toast('success', t('app.export.markdown.done', { path: result.path, count: result.count }))
               } catch (reason) {
-                toast('error', reason instanceof Error ? reason.message : 'Markdown 导出失败。')
+                toast('error', reason instanceof Error ? reason.message : t('app.export.markdown.failed'))
               }
             }}
             onExportJson={async (options) => {
@@ -1145,13 +1162,13 @@ function AppInner() {
                 const result = await changbu.exports.json(options)
 
                 if (!result) {
-                  toast('info', '已取消 JSON 导出。')
+                  toast('info', t('app.export.json.cancelled'))
                   return
                 }
 
-                toast('success', `JSON 备份已导出到 ${result.path}，共 ${result.count} 个块。`)
+                toast('success', t('app.export.json.done', { path: result.path, count: result.count }))
               } catch (reason) {
-                toast('error', reason instanceof Error ? reason.message : 'JSON 导出失败。')
+                toast('error', reason instanceof Error ? reason.message : t('app.export.json.failed'))
               }
             }}
             onPreviewMarkdownImport={async () => {
@@ -1160,13 +1177,13 @@ function AppInner() {
 
                 if (!preview) {
                   setImportPreview(null)
-                  toast('info', '已取消 Markdown 导入。')
+                  toast('info', t('app.import.markdown.cancelled'))
                   return
                 }
 
                 setImportPreview(preview)
               } catch (reason) {
-                toast('error', reason instanceof Error ? reason.message : 'Markdown 导入预览失败。')
+                toast('error', reason instanceof Error ? reason.message : t('app.import.markdown.previewFailed'))
               }
             }}
             onPreviewJsonImport={handlePreviewJsonImport}
@@ -1207,7 +1224,7 @@ function AppInner() {
         <main className="relative flex min-w-0 flex-1 overflow-hidden bg-white/[0.94]">
           {isWaitingToQuit ? (
             <div className="pointer-events-none absolute inset-x-6 top-4 z-20 rounded-2xl border border-amber-200 bg-amber-50/95 px-4 py-3 text-sm text-amber-900 shadow-[0_12px_30px_rgba(120,53,15,0.08)]">
-              正在等待后台 AI / 向量任务完成后退出，请稍候。
+              {t('app.waitingQuit')}
             </div>
           ) : null}
           <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
@@ -1228,19 +1245,19 @@ function AppInner() {
           {relatedBlocks !== null && (
             <aside className="hidden min-h-0 w-72 shrink-0 overflow-y-auto border-l border-stone-200 bg-stone-50/85 p-4 xl:flex xl:w-80 xl:flex-col">
               <div className="mb-3 flex items-center justify-between">
-                <h3 className="text-xs font-medium uppercase tracking-wider text-stone-400">相关块</h3>
+                <h3 className="text-xs font-medium uppercase tracking-wider text-stone-400">{t('app.related.title')}</h3>
                 <button
                   type="button"
                   onClick={() => setRelatedBlocks(null)}
                   className="text-xs text-stone-400 transition hover:text-stone-600"
                 >
-                  关闭
+                  {t('app.common.close')}
                 </button>
               </div>
               {relatedLoading ? (
-                <p className="py-8 text-center text-sm text-stone-400">查找中…</p>
+                <p className="py-8 text-center text-sm text-stone-400">{t('app.related.loading')}</p>
               ) : relatedBlocks.length === 0 ? (
-                <p className="py-8 text-center text-sm text-stone-400">未找到相关块。</p>
+                <p className="py-8 text-center text-sm text-stone-400">{t('app.related.empty')}</p>
               ) : (
                 <div className="space-y-2">
                   {relatedBlocks.map(({ block: related, score }) => (
@@ -1283,6 +1300,8 @@ function applyDocChunk(current: DocumentState, chunk: DocGenerationChunk): Docum
 }
 
 function ViewLoadingMask({ title }: { title: string }) {
+  const { t } = useI18n()
+
   return (
     <div className="flex min-h-0 min-w-0 flex-1 items-center justify-center overflow-hidden">
       <div className="relative flex w-full max-w-2xl flex-col items-center justify-center overflow-hidden rounded-[28px] border border-black/[0.06] bg-[linear-gradient(180deg,rgba(255,255,255,0.96),rgba(246,241,233,0.92))] px-8 py-14 text-center shadow-[0_24px_60px_rgba(28,25,23,0.08)]">
@@ -1290,10 +1309,10 @@ function ViewLoadingMask({ title }: { title: string }) {
         <div className="relative flex h-12 w-12 items-center justify-center rounded-full border border-stone-200 bg-white/90 shadow-sm">
           <div className="h-6 w-6 animate-spin rounded-full border-2 border-stone-200 border-t-stone-700" />
         </div>
-        <p className="relative mt-5 text-sm font-medium tracking-[0.08em] text-stone-500">正在准备 {title}</p>
-        <h3 className="relative mt-2 text-[22px] font-semibold tracking-[-0.02em] text-stone-900">模块加载完成后再一次性呈现</h3>
+        <p className="relative mt-5 text-sm font-medium tracking-[0.08em] text-stone-500">{t('app.view.loadingPreparing', { title })}</p>
+        <h3 className="relative mt-2 text-[22px] font-semibold tracking-[-0.02em] text-stone-900">{t('app.view.loadingTitle')}</h3>
         <p className="relative mt-3 max-w-lg text-sm leading-7 text-stone-500">
-          当前已用遮罩隐藏底层布局，避免切换时出现未完成页面。
+          {t('app.view.loadingHint')}
         </p>
       </div>
     </div>

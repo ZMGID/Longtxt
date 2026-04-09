@@ -29,6 +29,7 @@ export const IPC_CHANNELS = {
   },
   snapshots: {
     save: 'snapshots:save',
+    update: 'snapshots:update',
     list: 'snapshots:list',
     get: 'snapshots:get',
     remove: 'snapshots:remove',

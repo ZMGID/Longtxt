@@ -45,6 +45,7 @@ import type {
   ReviewGenerationStart,
   SearchResult,
   Snapshot,
+  SnapshotUpdateInput,
   TagSuggestion,
   VectorRebuildResult,
 } from '../shared/types'
@@ -53,6 +54,7 @@ export interface QueuedEnrichRequest {
   blockId: string
   content: string
   generation: number
+  hasImages: boolean
 }
 
 export interface VectorIndexState {
@@ -108,6 +110,7 @@ export interface AppContext {
   searchByTag(tagName: string, limit?: number): Promise<SearchResult[]>
   generateDocument(topic: string): Promise<DocGenerationStart>
   saveSnapshot(topic: string, content: string, blockIds: string[], notebookId?: string | null): Promise<Snapshot>
+  updateSnapshot(id: string, patch: SnapshotUpdateInput): Promise<Snapshot>
   listSnapshots(query?: string, notebookId?: string | null): Promise<Snapshot[]>
   getSnapshot(id: string): Promise<Snapshot>
   removeSnapshot(id: string): Promise<void>
