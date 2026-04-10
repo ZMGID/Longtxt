@@ -252,6 +252,23 @@ export function DataManagementView() {
         metricVectorsHint: 'Indexed vectors written',
         metricDates: 'Dates',
         metricDatesHint: 'Dates that still have content',
+        recoveryEyebrow: 'Recovery',
+        recoveryTitle: 'Background processing safety',
+        recoveryHint: 'Pause AI/vector work, clear stuck queues, and review whether startup already recovered oversized blocks.',
+        recoveryPaused: 'Background AI/vector processing is paused. New blocks will be saved locally only.',
+        recoveryActive: 'Background AI/vector processing is active.',
+        recoveryStartupDone: 'Recovered {{count}} oversized pending block(s) during startup and skipped their AI/vector processing.',
+        recoveryPendingBlocks: 'Pending blocks',
+        recoverySkippedBlocks: 'Skipped blocks',
+        recoveryOversizedBlocks: 'Oversized skips',
+        pauseBackground: 'Pause background processing',
+        resumeBackground: 'Resume background processing',
+        pauseDone: 'Background processing paused.',
+        resumeDone: 'Background processing resumed.',
+        clearPendingVectors: 'Clear pending vectors',
+        clearPendingVectorsDone: 'Cleared {{count}} pending vector job(s).',
+        clearFailedVectors: 'Clear failed vectors',
+        clearFailedVectorsDone: 'Cleared {{count}} failed vector record(s).',
         cleanupEyebrow: 'Cleanup',
         cleanupTitle: 'Browse by day and batch delete',
         cleanupHint: 'This now lives in Data instead of Timeline. Pick a date on the left and clean up that day on the right.',
@@ -306,6 +323,23 @@ export function DataManagementView() {
         metricVectorsHint: '已写入向量索引',
         metricDates: '日期',
         metricDatesHint: '当前仍有内容的日期',
+        recoveryEyebrow: '恢复与保护',
+        recoveryTitle: '后台处理安全开关',
+        recoveryHint: '这里可以暂停 AI / 向量后台处理、清空卡住队列，并查看启动时是否已自动恢复超长块。',
+        recoveryPaused: '后台 AI / 向量处理已暂停。新块只会本地保存，不再继续补摘要、标签和向量。',
+        recoveryActive: '后台 AI / 向量处理已开启。',
+        recoveryStartupDone: '本次启动已自动恢复 {{count}} 个超长 pending 块，并跳过它们的 AI / 向量处理。',
+        recoveryPendingBlocks: '待处理块',
+        recoverySkippedBlocks: '已跳过块',
+        recoveryOversizedBlocks: '超长跳过',
+        pauseBackground: '暂停后台处理',
+        resumeBackground: '恢复后台处理',
+        pauseDone: '已暂停后台处理。',
+        resumeDone: '已恢复后台处理。',
+        clearPendingVectors: '清空待处理向量',
+        clearPendingVectorsDone: '已清空 {{count}} 条待处理向量任务。',
+        clearFailedVectors: '清空失败向量记录',
+        clearFailedVectorsDone: '已清空 {{count}} 条失败向量记录。',
         cleanupEyebrow: '内容清理',
         cleanupTitle: '按天浏览并批量删除',
         cleanupHint: '这个功能放在数据管理里，不再放到时间轴。左侧选日期，右侧直接清理当天块内容，适合集中删除没用的话。',
@@ -471,6 +505,67 @@ export function DataManagementView() {
                   <MetricCell label={copy.metricAttachments} value={formatCount(overview.totalAttachmentCount)} hint={copy.metricAttachmentsHint} />
                   <MetricCell label={copy.metricVectors} value={formatCount(overview.totalVectorCount)} hint={copy.metricVectorsHint} />
                   <MetricCell label={copy.metricDates} value={formatCount(cleanupDayCount)} hint={copy.metricDatesHint} />
+                </div>
+              </div>
+
+              <div className="mt-3 border border-stone-200 bg-stone-50/60 px-4 py-4 sm:px-5" data-testid="data-management-recovery">
+                <div className="flex flex-wrap items-start justify-between gap-3">
+                  <div>
+                    <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-stone-400">{copy.recoveryEyebrow}</div>
+                    <div className="mt-0.5 text-[13px] font-semibold text-stone-900">{copy.recoveryTitle}</div>
+                    <p className="mt-1 text-sm leading-6 text-stone-500">{copy.recoveryHint}</p>
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    <FlatButton
+                      disabled={busyAction !== null}
+                      onClick={() => {
+                        void runAction('toggle-background-processing', async () => {
+                          const result = await changbu.data.setBackgroundProcessingPaused(!overview.backgroundProcessingPaused)
+                          toast('success', result.paused ? copy.pauseDone : copy.resumeDone)
+                        })
+                      }}
+                    >
+                      {overview.backgroundProcessingPaused ? copy.resumeBackground : copy.pauseBackground}
+                    </FlatButton>
+                    <FlatButton
+                      disabled={busyAction !== null}
+                      onClick={() => {
+                        void runAction('clear-pending-vectors', async () => {
+                          const count = await changbu.data.clearPendingVectors()
+                          toast('success', copy.clearPendingVectorsDone.replace('{{count}}', formatCount(count)))
+                        })
+                      }}
+                    >
+                      {copy.clearPendingVectors}
+                    </FlatButton>
+                    <FlatButton
+                      disabled={busyAction !== null}
+                      onClick={() => {
+                        void runAction('clear-failed-vectors', async () => {
+                          const count = await changbu.data.clearFailedVectors()
+                          toast('success', copy.clearFailedVectorsDone.replace('{{count}}', formatCount(count)))
+                        })
+                      }}
+                    >
+                      {copy.clearFailedVectors}
+                    </FlatButton>
+                  </div>
+                </div>
+
+                <div className="mt-3 grid grid-cols-1 gap-3 text-sm text-stone-600 lg:grid-cols-[minmax(0,1fr)_280px]">
+                  <div className="rounded-md border border-stone-200 bg-white px-3 py-3 leading-6 text-stone-600">
+                    {overview.backgroundProcessingPaused ? copy.recoveryPaused : copy.recoveryActive}
+                    {(overview.startupRecoveredBlockCount ?? 0) > 0 ? (
+                      <p className="mt-2 text-xs leading-5 text-amber-700">
+                        {copy.recoveryStartupDone.replace('{{count}}', formatCount(overview.startupRecoveredBlockCount))}
+                      </p>
+                    ) : null}
+                  </div>
+                  <div className="grid grid-cols-3 gap-px overflow-hidden border border-stone-200 bg-stone-200">
+                    <MetricCell label={copy.recoveryPendingBlocks} value={formatCount(overview.pendingBlockCount)} hint={copy.metricBlocksHint} />
+                    <MetricCell label={copy.recoverySkippedBlocks} value={formatCount(overview.skippedBlockCount)} hint={copy.recoveryHint} />
+                    <MetricCell label={copy.recoveryOversizedBlocks} value={formatCount(overview.oversizedSkippedBlockCount)} hint={copy.metricVectorsHint} />
+                  </div>
                 </div>
               </div>
             </div>

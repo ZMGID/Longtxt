@@ -70,6 +70,7 @@ function areBlocksEquivalent(left: Block, right: Block): boolean {
     && left.status === right.status
     && left.aiMode === right.aiMode
     && left.errorMessage === right.errorMessage
+    && left.errorCode === right.errorCode
     && compareTags(left.tags, right.tags)
 }
 

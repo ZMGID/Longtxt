@@ -320,7 +320,7 @@ export function BlockCard({
                   >
                     {t('blockCard.edit')}
                   </button>
-                  {onFindRelated && block.status === 'ready' && (
+                  {onFindRelated && (block.status === 'ready' || block.status === 'skipped') && (
                     <button
                       type="button"
                       onClick={() => onFindRelated(block.id)}

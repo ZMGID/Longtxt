@@ -8,6 +8,7 @@ CREATE TABLE IF NOT EXISTS blocks (
   status TEXT NOT NULL DEFAULT 'pending',
   ai_mode TEXT NOT NULL DEFAULT 'mock',
   error_message TEXT,
+  error_code TEXT,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );

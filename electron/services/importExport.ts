@@ -6,6 +6,7 @@ import { v4 as uuid } from 'uuid'
 
 import type {
   AIExecutionMode,
+  BlockProcessingErrorCode,
   BlockImageAnnotation,
   BlockStatus,
   ExportOptions,
@@ -33,6 +34,7 @@ interface ExportBlockRow {
   status: BlockStatus
   ai_mode: AIExecutionMode
   error_message: string | null
+  error_code: BlockProcessingErrorCode | null
 }
 
 interface PreparedImportBlock {
@@ -47,6 +49,7 @@ interface PreparedImportBlock {
   status?: BlockStatus
   aiMode?: AIExecutionMode
   errorMessage?: string | null
+  errorCode?: BlockProcessingErrorCode | null
   tags?: Array<{ name: string; source: 'auto' | 'manual'; kind?: TagKind }>
   attachments?: Array<{ sourceUrl: string; filename: string; mimeType: string | null; altText: string | null; base64: string }>
 }
@@ -68,6 +71,7 @@ interface FinalizedImportBlock {
   status: BlockStatus
   aiMode: AIExecutionMode
   errorMessage: string | null
+  errorCode: BlockProcessingErrorCode | null
   tags: Array<{ name: string; source: 'auto' | 'manual'; kind?: TagKind }>
   existed: boolean
 }
@@ -90,6 +94,7 @@ interface JsonExportBlock {
   status: BlockStatus
   aiMode: AIExecutionMode
   errorMessage: string | null
+  errorCode?: BlockProcessingErrorCode | null
   tags: Array<{ name: string; source: 'auto' | 'manual'; kind: TagKind }>
   attachments: JsonExportAttachment[]
 }
@@ -114,7 +119,7 @@ function normalizeDateBoundary(value: string, boundary: 'start' | 'end'): string
 }
 
 function sanitizeImportedStatus(status?: string): BlockStatus {
-  return status === 'pending' || status === 'ready' || status === 'error' ? status : 'ready'
+  return status === 'pending' || status === 'ready' || status === 'error' || status === 'skipped' ? status : 'ready'
 }
 
 function sanitizeImportedAiMode(aiMode?: string): AIExecutionMode {
@@ -205,7 +210,7 @@ function getBlockRows(db: Database.Database, ids: string[]): ExportBlockRow[] {
     .prepare(
       `
         SELECT id, content, summary, created_at, updated_at, status, ai_mode, error_message
-             , image_annotations
+             , error_code, image_annotations
         FROM blocks
         WHERE id IN (${ids.map(() => '?').join(', ')})
         ORDER BY created_at ASC
@@ -321,6 +326,7 @@ export async function exportJsonBundle(
       status: block.status,
       aiMode: block.ai_mode,
       errorMessage: block.error_message,
+      errorCode: block.error_code,
       tags: getBlockTags(db, block.id),
       attachments,
     })
@@ -451,6 +457,7 @@ export async function previewJsonImport(
     status: sanitizeImportedStatus(block.status),
     aiMode: sanitizeImportedAiMode(block.aiMode),
     errorMessage: typeof block.errorMessage === 'string' ? block.errorMessage : null,
+    errorCode: typeof block.errorCode === 'string' ? block.errorCode : null,
     tags: block.tags,
     attachments: block.attachments,
   }))
@@ -531,6 +538,7 @@ export async function confirmImportJob(
         status: job.format === 'json' ? sanitizeImportedStatus(block.status) : 'ready',
         aiMode: job.format === 'json' ? sanitizeImportedAiMode(block.aiMode) : 'mock',
         errorMessage: job.format === 'json' ? block.errorMessage ?? null : null,
+        errorCode: job.format === 'json' && typeof block.errorCode === 'string' ? block.errorCode : null,
         tags: block.tags ?? [],
         existed,
       })
@@ -558,6 +566,7 @@ export async function confirmImportJob(
               status = ?,
               ai_mode = ?,
               error_message = ?,
+              error_code = ?,
               created_at = ?,
               updated_at = ?
             WHERE id = ?
@@ -570,6 +579,7 @@ export async function confirmImportJob(
           block.status,
           block.aiMode,
           block.errorMessage,
+          block.errorCode,
           block.createdAt,
           block.updatedAt,
           block.id,
@@ -580,8 +590,8 @@ export async function confirmImportJob(
       } else {
         db.prepare(
           `
-            INSERT INTO blocks (id, content, summary, image_annotations, search_text, status, ai_mode, error_message, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO blocks (id, content, summary, image_annotations, search_text, status, ai_mode, error_message, error_code, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
           `,
         ).run(
           block.id,
@@ -592,6 +602,7 @@ export async function confirmImportJob(
           block.status,
           block.aiMode,
           block.errorMessage,
+          block.errorCode,
           block.createdAt,
           block.updatedAt,
         )

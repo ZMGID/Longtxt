@@ -162,6 +162,9 @@ const api: ChangbuApi = {
     cleanupOrphanAttachments: () => ipcRenderer.invoke(IPC_CHANNELS.data.cleanupOrphanAttachments),
     rebuildAttachmentIndex: () => ipcRenderer.invoke(IPC_CHANNELS.data.rebuildAttachmentIndex),
     rebuildAllVectors: () => ipcRenderer.invoke(IPC_CHANNELS.data.rebuildAllVectors),
+    setBackgroundProcessingPaused: (paused) => ipcRenderer.invoke(IPC_CHANNELS.data.setBackgroundProcessingPaused, paused),
+    clearPendingVectors: () => ipcRenderer.invoke(IPC_CHANNELS.data.clearPendingVectors),
+    clearFailedVectors: () => ipcRenderer.invoke(IPC_CHANNELS.data.clearFailedVectors),
   },
   review: {
     openWindow: (mode, dateKey) => ipcRenderer.invoke(IPC_CHANNELS.review.openWindow, mode, dateKey),

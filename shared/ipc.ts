@@ -75,6 +75,9 @@ export const IPC_CHANNELS = {
     cleanupOrphanAttachments: 'data:cleanup-orphan-attachments',
     rebuildAttachmentIndex: 'data:rebuild-attachment-index',
     rebuildAllVectors: 'data:rebuild-all-vectors',
+    setBackgroundProcessingPaused: 'data:set-background-processing-paused',
+    clearPendingVectors: 'data:clear-pending-vectors',
+    clearFailedVectors: 'data:clear-failed-vectors',
   },
   review: {
     openWindow: 'review:open-window',

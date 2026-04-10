@@ -93,6 +93,9 @@ export function createIpcHandlers(context: AppContext, extraHandlers: Record<str
     [IPC_CHANNELS.data.cleanupOrphanAttachments]: () => context.cleanupOrphanAttachments(),
     [IPC_CHANNELS.data.rebuildAttachmentIndex]: () => context.rebuildAttachmentIndex(),
     [IPC_CHANNELS.data.rebuildAllVectors]: () => context.rebuildAllVectors(),
+    [IPC_CHANNELS.data.setBackgroundProcessingPaused]: (_event: unknown, paused: boolean) => context.setBackgroundProcessingPaused(paused),
+    [IPC_CHANNELS.data.clearPendingVectors]: () => context.clearPendingVectors(),
+    [IPC_CHANNELS.data.clearFailedVectors]: () => context.clearFailedVectors(),
     [IPC_CHANNELS.review.generateDaily]: (_event: unknown, dateKey: string, forceRefresh?: boolean) =>
       context.generateDailyReview(dateKey, forceRefresh),
     [IPC_CHANNELS.review.generateInsight]: (_event: unknown, methodId: Parameters<AppContext['generateAiInsight']>[0], dateKey: string, forceRefresh?: boolean) =>

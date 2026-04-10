@@ -14,6 +14,9 @@ const mocks = vi.hoisted(() => ({
   cleanupOrphanAttachments: vi.fn(),
   rebuildAttachmentIndex: vi.fn(),
   rebuildAllVectors: vi.fn(),
+  setBackgroundProcessingPaused: vi.fn(),
+  clearPendingVectors: vi.fn(),
+  clearFailedVectors: vi.fn(),
   removeMany: vi.fn(),
   retryFailed: vi.fn(),
   openDataDirectory: vi.fn(),
@@ -47,6 +50,9 @@ vi.mock('../lib/changbu', () => ({
       cleanupOrphanAttachments: mocks.cleanupOrphanAttachments,
       rebuildAttachmentIndex: mocks.rebuildAttachmentIndex,
       rebuildAllVectors: mocks.rebuildAllVectors,
+      setBackgroundProcessingPaused: mocks.setBackgroundProcessingPaused,
+      clearPendingVectors: mocks.clearPendingVectors,
+      clearFailedVectors: mocks.clearFailedVectors,
     },
     settings: {
       openDataDirectory: mocks.openDataDirectory,
@@ -85,6 +91,12 @@ const baseOverview: DataManagementOverview = {
   failedVectorCount: 2,
   pendingVectorCount: 4,
   vectorQueueProcessing: true,
+  pendingBlockCount: 1,
+  skippedBlockCount: 2,
+  oversizedSkippedBlockCount: 1,
+  backgroundProcessingPaused: false,
+  recoveryModeActive: true,
+  startupRecoveredBlockCount: 1,
   tokenUsage: {
     promptTokens: 120,
     completionTokens: 80,
@@ -172,6 +184,9 @@ beforeEach(() => {
   mocks.cleanupOrphanAttachments.mockReset()
   mocks.rebuildAttachmentIndex.mockReset()
   mocks.rebuildAllVectors.mockReset()
+  mocks.setBackgroundProcessingPaused.mockReset()
+  mocks.clearPendingVectors.mockReset()
+  mocks.clearFailedVectors.mockReset()
   mocks.removeMany.mockReset()
   mocks.retryFailed.mockReset()
   mocks.openDataDirectory.mockReset()
@@ -190,6 +205,9 @@ beforeEach(() => {
     removedOrphanCount: 3,
   })
   mocks.rebuildAllVectors.mockResolvedValue({ queuedBlockCount: 128 })
+  mocks.setBackgroundProcessingPaused.mockResolvedValue({ paused: true })
+  mocks.clearPendingVectors.mockResolvedValue(4)
+  mocks.clearFailedVectors.mockResolvedValue(2)
   mocks.removeMany.mockResolvedValue({ removed: 2, removedIds: ['block-1', 'block-2'] })
   mocks.retryFailed.mockResolvedValue(2)
   mocks.openDataDirectory.mockResolvedValue(undefined)
@@ -215,11 +233,36 @@ describe('DataManagementView', () => {
     expect(screen.getByText('这里只保留数据量、内容清理和备份入口；运行状态统一放到设置页面里。')).toBeInTheDocument()
     expect(screen.getByText('日期')).toBeInTheDocument()
     expect(screen.getByText('当前仍有内容的日期')).toBeInTheDocument()
+    expect(screen.getByTestId('data-management-recovery')).toBeInTheDocument()
+    expect(screen.getByText('后台处理安全开关')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: '导出 Markdown' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: '加载 JSON' })).toBeInTheDocument()
     expect(screen.queryByTestId('data-management-maintenance')).not.toBeInTheDocument()
     expect(screen.getByText('按天浏览并批量删除')).toBeInTheDocument()
     expect(screen.getByTestId('data-management-cleanup-days')).toBeInTheDocument()
+  })
+
+  it('pauses background processing and clears vector queues from recovery panel', async () => {
+    const { toast } = renderView()
+
+    fireEvent.click(screen.getByRole('button', { name: '暂停后台处理' }))
+    await waitFor(() => {
+      expect(mocks.setBackgroundProcessingPaused).toHaveBeenCalledWith(true)
+    })
+
+    fireEvent.click(screen.getByRole('button', { name: '清空待处理向量' }))
+    await waitFor(() => {
+      expect(mocks.clearPendingVectors).toHaveBeenCalledTimes(1)
+    })
+
+    fireEvent.click(screen.getByRole('button', { name: '清空失败向量记录' }))
+    await waitFor(() => {
+      expect(mocks.clearFailedVectors).toHaveBeenCalledTimes(1)
+    })
+
+    expect(toast).toHaveBeenCalledWith('success', '已暂停后台处理。')
+    expect(toast).toHaveBeenCalledWith('success', '已清空 4 条待处理向量任务。')
+    expect(toast).toHaveBeenCalledWith('success', '已清空 2 条失败向量记录。')
   })
 
   it('opens local directories and refreshes overview from the compact header', async () => {

@@ -17,6 +17,10 @@ Electron · React 19 · TypeScript · Vite 8 · Tailwind CSS v4（零配置） �
 ```bash
 pnpm install          # 安装依赖，并重建 better-sqlite3 等 Electron 原生模块
 pnpm dev              # 启动完整开发环境（dev:prepare-bundle + Vite + tsup watch + Electron）
+pnpm dev:renderer     # 仅启动 renderer（Vite，127.0.0.1:5173）
+pnpm dev:electron     # 仅启动 tsup watch，重建 main / preload / worker
+pnpm dev:app          # 仅在 renderer 与 dist-electron 入口齐备后启动 Electron
+pnpm dev:prepare-bundle # 预生成 dev 所需 bundle 文件
 pnpm test             # 在 Electron 进程内运行默认 Vitest 套件
 pnpm test:watch       # 监听模式运行 Vitest
 pnpm test:manual-live # 运行显式标记的 live/manual 测试
@@ -136,7 +140,7 @@ TypeScript 和 Vite 共享以下别名：
 
 - 数据默认放在 Electron `userData/data` 目录下，主库文件是 `changbu.sqlite3`。
 - `shared/config.ts` 维护默认设置、边界值和解析逻辑；改设置项时，通常要同时检查设置页 UI、shared parser/normalizer、主进程读写链路。
-- 并不是所有设置都只存数据库：`electron/settingsFile.ts` 会把一部分关键设置持久化到 `changbu-settings.json`。
+- 并不是所有设置都只存数据库：`electron/settingsFile.ts` 会把一部分关键设置持久化到 `changbu-settings.json`，并通过 lock 文件 + 临时文件 rename 做原子写入。
 - 当前 file-backed 设置至少包括：`ai_config`、最近一次 API 探测结果、token usage totals、block enrich / doc generation / calendar / external access / ui 设置。
 - `src/i18n/` + `shared/config.ts` 共同决定界面语言、窗口标题和本地化格式；设置语言后，主进程会通过 meta 事件刷新窗口标题。
 - `sqlite-vec` 加载失败时应用仍可运行，只是向量检索降级；不要把“向量不可用”当成“应用不可启动”。
@@ -145,6 +149,7 @@ TypeScript 和 Vite 共享以下别名：
 ## 关键约束
 
 - `src/` 中禁止直接使用 Electron API。
+- 渲染层如果报“请通过 Electron 启动应用”，优先检查是不是 preload 未注入（`window.changbu` 缺失），不要先误判成前端业务逻辑错误。
 - 修改 IPC 或 preload 暴露面时，必须完整检查共享类型、channel 常量、主进程 handler、preload 桥接和渲染层封装。
 - `notebook_items` 已取代旧的 `notebook_blocks` 作为 notebook 内容源；涉及 notebook 结构时要保留迁移语义。
 - 涉及 AI 配置门控、向量 schema、附件路径、数据库迁移、设置持久化、外部接入、窗口状态持久化的改动都属于高风险区域，先读完整链路再动手。

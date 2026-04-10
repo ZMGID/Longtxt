@@ -124,7 +124,15 @@ function GraphSelectionDetail({ block, loading, activeTagFilters, onToggleTagFil
         </div>
 
         {block.errorMessage ? (
-          <p className="mt-4 rounded-2xl bg-rose-50 px-4 py-3 text-sm leading-6 text-rose-700">{block.errorMessage}</p>
+          <p
+            className={`mt-4 rounded-2xl px-4 py-3 text-sm leading-6 ${
+              block.status === 'skipped'
+                ? 'bg-slate-100 text-slate-700'
+                : 'bg-rose-50 text-rose-700'
+            }`}
+          >
+            {block.errorMessage}
+          </p>
         ) : null}
       </div>
     </article>

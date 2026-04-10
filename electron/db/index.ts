@@ -331,6 +331,7 @@ export function initializeDatabase(db: Database.Database): DatabaseBootstrapResu
   ensureColumn(db, 'blocks', 'summary', `ALTER TABLE blocks ADD COLUMN summary TEXT;`)
   ensureColumn(db, 'blocks', 'image_annotations', `ALTER TABLE blocks ADD COLUMN image_annotations TEXT;`)
   ensureColumn(db, 'blocks', 'search_text', `ALTER TABLE blocks ADD COLUMN search_text TEXT NOT NULL DEFAULT '';`)
+  ensureColumn(db, 'blocks', 'error_code', `ALTER TABLE blocks ADD COLUMN error_code TEXT;`)
   db.exec(`UPDATE blocks SET search_text = content WHERE search_text IS NULL OR search_text = '';`)
   ensureColumn(db, 'tags', 'normalized_name', `ALTER TABLE tags ADD COLUMN normalized_name TEXT;`)
   ensureColumn(db, 'tags', 'kind', `ALTER TABLE tags ADD COLUMN kind TEXT NOT NULL DEFAULT 'detail';`)

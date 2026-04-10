@@ -3,6 +3,7 @@ import Database from 'better-sqlite3'
 import type {
   AIExecutionMode,
   Block,
+  BlockProcessingErrorCode,
   BlockImageAnnotation,
   BlockListInput,
   BlockListPage,
@@ -19,6 +20,7 @@ interface BlockRow {
   status: BlockStatus
   ai_mode: AIExecutionMode
   error_message: string | null
+  error_code: BlockProcessingErrorCode | null
   created_at: string
   updated_at: string
   tag_id: string | null
@@ -34,6 +36,8 @@ interface UpsertBlockInput {
   summary?: string | null
   status: BlockStatus
   aiMode: AIExecutionMode
+  errorCode?: BlockProcessingErrorCode | null
+  errorMessage?: string | null
   createdAt: string
   updatedAt: string
 }
@@ -43,6 +47,7 @@ interface BlockStateUpdate {
   status: BlockStatus
   aiMode: AIExecutionMode
   updatedAt: string
+  errorCode?: BlockProcessingErrorCode | null
   errorMessage?: string | null
 }
 
@@ -137,6 +142,7 @@ function rowsToBlocks(rows: BlockRow[]): Block[] {
         status: row.status,
         aiMode: row.ai_mode,
         errorMessage: row.error_message,
+        errorCode: row.error_code,
       }
 
     if (!blockMap.has(row.id)) {
@@ -174,6 +180,7 @@ function hydrateBlocks(db: Database.Database, ids: string[]): Block[] {
           b.status,
           b.ai_mode,
           b.error_message,
+          b.error_code,
           b.created_at,
           b.updated_at,
           t.id AS tag_id,
@@ -200,12 +207,26 @@ function hydrateBlocks(db: Database.Database, ids: string[]): Block[] {
 export function createBlockRecord(db: Database.Database, input: UpsertBlockInput): Block {
   db.prepare(
     `
-      INSERT INTO blocks (id, content, summary, image_annotations, search_text, status, ai_mode, created_at, updated_at)
-      VALUES (@id, @content, NULL, NULL, @searchText, @status, @aiMode, @createdAt, @updatedAt)
+      INSERT INTO blocks (
+        id,
+        content,
+        summary,
+        image_annotations,
+        search_text,
+        status,
+        ai_mode,
+        error_message,
+        error_code,
+        created_at,
+        updated_at
+      )
+      VALUES (@id, @content, NULL, NULL, @searchText, @status, @aiMode, @errorMessage, @errorCode, @createdAt, @updatedAt)
     `,
   ).run({
     ...input,
     searchText: buildBlockSearchText(input.content),
+    errorMessage: input.errorMessage ?? null,
+    errorCode: input.errorCode ?? null,
   })
 
   return getBlockById(db, input.id)
@@ -347,6 +368,7 @@ export function updateBlockContent(
         status = @status,
         ai_mode = @aiMode,
         error_message = NULL,
+        error_code = NULL,
         updated_at = @updatedAt
       WHERE id = @id
     `,
@@ -363,11 +385,13 @@ export function updateBlockState(db: Database.Database, input: BlockStateUpdate)
         status = @status,
         ai_mode = @aiMode,
         error_message = @errorMessage,
+        error_code = @errorCode,
         updated_at = @updatedAt
       WHERE id = @id
     `,
   ).run({
     ...input,
+    errorCode: input.errorCode ?? null,
     errorMessage: input.errorMessage ?? null,
   })
 
@@ -382,6 +406,7 @@ export function updateBlockEnrichmentResult(db: Database.Database, input: BlockE
         status = @status,
         ai_mode = @aiMode,
         error_message = NULL,
+        error_code = NULL,
         summary = @summary,
         image_annotations = @imageAnnotations,
         search_text = @searchText,

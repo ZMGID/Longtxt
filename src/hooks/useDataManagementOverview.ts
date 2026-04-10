@@ -51,6 +51,12 @@ export function useDataManagementOverview() {
           pendingVectorCount: meta.pendingVectorCount,
           vectorQueueProcessing: meta.vectorQueueProcessing,
           tokenUsage: meta.tokenUsage,
+          pendingBlockCount: meta.pendingBlockCount,
+          skippedBlockCount: meta.skippedBlockCount,
+          oversizedSkippedBlockCount: meta.oversizedSkippedBlockCount,
+          backgroundProcessingPaused: meta.backgroundProcessingPaused,
+          recoveryModeActive: meta.recoveryModeActive,
+          startupRecoveredBlockCount: meta.startupRecoveredBlockCount,
         }
       }
     },

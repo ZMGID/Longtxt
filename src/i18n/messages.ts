@@ -182,6 +182,7 @@ export const messages = {
   'status.pending': { zh: '处理中', en: 'Processing' },
   'status.ready': { zh: '已就绪', en: 'Ready' },
   'status.error': { zh: '异常', en: 'Error' },
+  'status.skipped': { zh: '已跳过', en: 'Skipped' },
   'addToNotebook.trigger': { zh: '收录到笔记本', en: 'Add to notebook' },
   'addToNotebook.title': { zh: '收录到笔记本', en: 'Add to notebook' },
   'addToNotebook.count': { zh: '{{count}} 个块', en: '{{count}} blocks' },

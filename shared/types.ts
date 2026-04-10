@@ -1,4 +1,6 @@
-export type BlockStatus = 'pending' | 'ready' | 'error'
+export type BlockStatus = 'pending' | 'ready' | 'error' | 'skipped'
+
+export type BlockProcessingErrorCode = 'too_large' | 'timeout' | 'provider_error' | 'cancelled' | 'disabled' | 'interrupted'
 
 export type AIExecutionMode = 'mock' | 'live'
 
@@ -45,6 +47,7 @@ export interface Block {
   status: BlockStatus
   aiMode: AIExecutionMode
   errorMessage?: string | null
+  errorCode?: BlockProcessingErrorCode | null
 }
 
 export interface BlockBatchRemoveResult {
@@ -458,6 +461,12 @@ export interface AppMeta {
   failedVectorCount: number
   pendingVectorCount: number
   vectorQueueProcessing: boolean
+  pendingBlockCount?: number
+  skippedBlockCount?: number
+  oversizedSkippedBlockCount?: number
+  backgroundProcessingPaused?: boolean
+  recoveryModeActive?: boolean
+  startupRecoveredBlockCount?: number
 }
 
 export interface DataManagementOverview {
@@ -479,6 +488,12 @@ export interface DataManagementOverview {
   pendingVectorCount: number
   vectorQueueProcessing: boolean
   tokenUsage: TokenUsage | null
+  pendingBlockCount?: number
+  skippedBlockCount?: number
+  oversizedSkippedBlockCount?: number
+  backgroundProcessingPaused?: boolean
+  recoveryModeActive?: boolean
+  startupRecoveredBlockCount?: number
 }
 
 export interface AttachmentCleanupResult {
@@ -727,6 +742,9 @@ export interface ChangbuApi {
     cleanupOrphanAttachments(): Promise<AttachmentCleanupResult>
     rebuildAttachmentIndex(): Promise<AttachmentIndexRebuildResult>
     rebuildAllVectors(): Promise<VectorRebuildResult>
+    setBackgroundProcessingPaused(paused: boolean): Promise<{ paused: boolean }>
+    clearPendingVectors(): Promise<number>
+    clearFailedVectors(): Promise<number>
   }
   review: {
     openWindow(mode: ReviewMode, dateKey?: string): Promise<void>

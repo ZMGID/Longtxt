@@ -11,6 +11,7 @@ import {
   DOC_GENERATION_SETTINGS_KEY,
   EXTERNAL_ACCESS_SETTINGS_KEY,
   getIntlLocale,
+  MAX_BLOCK_BACKGROUND_PROCESSING_LENGTH,
   UI_SETTINGS_KEY,
   parseBlockEnrichSettings,
   parseCalendarSettings,
@@ -154,6 +155,7 @@ import {
 } from './services/review'
 import { createSettingsFileStore, resolveSettingsFilePath } from './settingsFile'
 import {
+  getBackgroundProcessingDecision,
   buildNotebookWritingGuide,
   createLiveVectorIndexState,
   createMockVectorIndexState,
@@ -172,6 +174,7 @@ import {
   sleep,
   todayDateKey,
   validateContent,
+  validateBlockContent,
 } from './appContext-utils'
 import { startStreamedDocumentGenerationTask } from './appContext-docgen'
 import { createContextEventEmitters, createPendingTaskTracker, createUsageTracker, parseTokenUsage } from './appContext-runtime'
@@ -183,6 +186,7 @@ export type { AppContext, AppContextOptions } from './appContext-types'
 const AI_LAST_TEST_RESULT_KEY = 'ai_last_test_result'
 const TOKEN_USAGE_TOTALS_KEY = 'token_usage_totals'
 const VECTOR_INDEX_STATE_KEY = 'vector_index_state'
+const BACKGROUND_PROCESSING_PAUSED_KEY = 'background_processing_paused'
 const FILE_BACKED_SETTING_KEYS = new Set([
   'ai_config',
   AI_LAST_TEST_RESULT_KEY,
@@ -231,6 +235,9 @@ export function createAppContext(options: AppContextOptions): AppContext {
   let currentVectorDimension = vectorReady ? getVectorSchemaDimension(db) : null
   let vectorSchemaReady = vectorReady ? currentVectorDimension !== null : false
   let currentVectorIndexState = parseVectorIndexState(getDbSetting(db, VECTOR_INDEX_STATE_KEY))
+  let startupRecoveredBlockCount = 0
+  let disposed = false
+  let dbClosed = false
   const importJobs = new Map<string, Awaited<ReturnType<typeof previewMarkdownImport>>['job']>()
   const dailyReviewCache = new Map<string, Awaited<ReturnType<typeof generateDailyReviewContent>>>()
   const aiInsightCache = new Map<string, Awaited<ReturnType<typeof generateAiInsightContent>>>()
@@ -298,7 +305,142 @@ export function createAppContext(options: AppContextOptions): AppContext {
     return getUiSettings().language === 'en' ? en : zh
   }
 
+  function isBackgroundProcessingPaused(): boolean {
+    if (disposed) {
+      return true
+    }
+
+    return getDbSetting(db, BACKGROUND_PROCESSING_PAUSED_KEY) === '1'
+  }
+
+  function countBlocksByStatus(status: Block['status']): number {
+    return (db.prepare(`SELECT COUNT(*) AS total FROM blocks WHERE status = ?`).get(status) as { total: number }).total
+  }
+
+  function countOversizedSkippedBlocks(): number {
+    return (
+      db.prepare(`SELECT COUNT(*) AS total FROM blocks WHERE status = 'skipped' AND error_code = 'too_large'`).get() as { total: number }
+    ).total
+  }
+
+  function getBlockProcessingDecision(content: string) {
+    return getBackgroundProcessingDecision(content, getUiSettings().language, {
+      paused: isBackgroundProcessingPaused(),
+    })
+  }
+
+  function buildInitialBlockState(content: string, aiMode: AIExecutionMode): {
+    status: Block['status']
+    aiMode: AIExecutionMode
+    errorCode: Block['errorCode']
+    errorMessage: Block['errorMessage']
+    shouldProcess: boolean
+  } {
+    const decision = getBlockProcessingDecision(content)
+
+    if (!decision.shouldProcess) {
+      return {
+        status: 'skipped',
+        aiMode,
+        errorCode: decision.errorCode,
+        errorMessage: decision.errorMessage,
+        shouldProcess: false,
+      }
+    }
+
+    return {
+      status: 'pending',
+      aiMode,
+      errorCode: null,
+      errorMessage: null,
+      shouldProcess: true,
+    }
+  }
+
+  function mapRuntimeErrorToBlockErrorCode(error: unknown): Block['errorCode'] {
+    if (!(error instanceof Error)) {
+      return 'provider_error'
+    }
+
+    if (/请求超时|timed out|timeout/i.test(error.message)) {
+      return 'timeout'
+    }
+
+    return 'provider_error'
+  }
+
+  function recoverOversizedPendingBlocksOnStartup(): number {
+    const rows = db.prepare(
+      `
+        SELECT id, ai_mode AS aiMode, updated_at AS updatedAt
+        FROM blocks
+        WHERE status = 'pending'
+          AND LENGTH(content) > ?
+      `,
+    ).all(MAX_BLOCK_BACKGROUND_PROCESSING_LENGTH) as Array<{
+      id: string
+      aiMode: AIExecutionMode
+      updatedAt: string
+    }>
+
+    if (rows.length === 0) {
+      return 0
+    }
+
+    const language = getUiSettings().language
+    const errorMessage = language === 'en'
+      ? `Recovered on startup: content exceeds the ${MAX_BLOCK_BACKGROUND_PROCESSING_LENGTH.toLocaleString('en-US')}-character AI/vector limit and was saved locally only.`
+      : `启动恢复：内容超过 ${MAX_BLOCK_BACKGROUND_PROCESSING_LENGTH.toLocaleString('zh-CN')} 字的 AI / 向量处理上限，已仅做本地保存。`
+
+    const update = db.prepare(
+      `
+        UPDATE blocks
+        SET
+          status = 'skipped',
+          error_message = ?,
+          error_code = 'too_large',
+          updated_at = updated_at
+        WHERE id = ?
+      `,
+    )
+
+    const transaction = db.transaction(() => {
+      for (const row of rows) {
+        update.run(errorMessage, row.id)
+        removePendingBlockVectors(db, [row.id])
+        removeFailedBlockVector(db, row.id)
+      }
+    })
+
+    transaction()
+    return rows.length
+  }
+
+  function resumeBackgroundProcessingBacklog(): void {
+    const pendingBlocks = db.prepare(
+      `
+        SELECT id, content
+        FROM blocks
+        WHERE status = 'pending'
+        ORDER BY updated_at ASC, id ASC
+      `,
+    ).all() as Array<{ id: string; content: string }>
+
+    for (const block of pendingBlocks) {
+      const enrichGeneration = advanceBlockEnrichGeneration(block.id)
+      scheduleEnrich(block.id, block.content, enrichGeneration)
+    }
+
+    if (countPendingBlockVectors(db) > 0) {
+      scheduleCurrentVectorReindex()
+    }
+  }
+
   function scheduleBlocksForImageAnalysisRefresh(blockIds: string[]): void {
+    if (isBackgroundProcessingPaused()) {
+      return
+    }
+
     const dedupedBlockIds = Array.from(new Set(blockIds))
 
     if (dedupedBlockIds.length === 0) {
@@ -985,6 +1127,10 @@ export function createAppContext(options: AppContextOptions): AppContext {
   }
 
   function scheduleCurrentVectorReindex(options: { fullRebuild?: boolean } = {}): void {
+    if (isBackgroundProcessingPaused()) {
+      return
+    }
+
     const providerState = getVectorProviderState()
 
     if (!providerState || !vectorReady || currentVectorDimension === null) {
@@ -1127,6 +1273,10 @@ export function createAppContext(options: AppContextOptions): AppContext {
 
     try {
       while (true) {
+        if (isBackgroundProcessingPaused()) {
+          break
+        }
+
         const jobs = listPendingBlockVectors(db, VECTOR_REINDEX_BATCH_SIZE)
 
         if (jobs.length === 0) {
@@ -1151,11 +1301,47 @@ export function createAppContext(options: AppContextOptions): AppContext {
         }
 
         const searchTextMap = getBlockSearchTextsByIds(db, batch.map((block) => block.id))
-        const embeddings = await embeddingProvider.embed(batch.map((block) => searchTextMap.get(block.id) ?? block.content))
-        const latestJobs = new Map(getPendingBlockVectorsByIds(db, batch.map((block) => block.id)).map((job) => [job.blockId, job]))
+        const oversizedBlocks = batch.filter((block) => {
+          const searchText = searchTextMap.get(block.id) ?? block.content
+          return searchText.length > MAX_BLOCK_BACKGROUND_PROCESSING_LENGTH
+        })
+
+        if (oversizedBlocks.length > 0) {
+          const updatedAt = new Date().toISOString()
+
+          for (const block of oversizedBlocks) {
+            const skippedBlock = updateBlockState(db, {
+              id: block.id,
+              status: 'skipped',
+              aiMode: block.aiMode,
+              updatedAt,
+              errorCode: 'too_large',
+              errorMessage: getBackgroundProcessingDecision(block.content, getUiSettings().language).errorMessage,
+            })
+
+            emitBlockChangedWithDerivedInvalidation({
+              block: skippedBlock,
+              reason: 'enriched',
+            })
+          }
+
+          removePendingBlockVectors(db, oversizedBlocks.map((block) => block.id))
+          emitMetaChanged({
+            reason: 'vector-queue',
+          })
+        }
+
+        const processableBatch = batch.filter((block) => !oversizedBlocks.some((candidate) => candidate.id === block.id))
+
+        if (processableBatch.length === 0) {
+          continue
+        }
+
+        const embeddings = await embeddingProvider.embed(processableBatch.map((block) => searchTextMap.get(block.id) ?? block.content))
+        const latestJobs = new Map(getPendingBlockVectorsByIds(db, processableBatch.map((block) => block.id)).map((job) => [job.blockId, job]))
         const completedIds: string[] = []
 
-        for (const [index, block] of batch.entries()) {
+        for (const [index, block] of processableBatch.entries()) {
           const vector = embeddings[index]
 
           if (!vector) {
@@ -1251,7 +1437,7 @@ export function createAppContext(options: AppContextOptions): AppContext {
 
     const task = trackTask(
       (async () => {
-        while (reindexRequested || reindexNeedsFullRebuild || countPendingBlockVectors(db) > 0) {
+        while (!isBackgroundProcessingPaused() && (reindexRequested || reindexNeedsFullRebuild || countPendingBlockVectors(db) > 0)) {
           const providerState = reindexProviderState ?? { embeddingProvider, mode, indexState }
           const fullRebuild = reindexNeedsFullRebuild
 
@@ -1270,7 +1456,7 @@ export function createAppContext(options: AppContextOptions): AppContext {
         reindexTask = null
         activeReindexState = null
 
-        if (reindexRequested || reindexNeedsFullRebuild || countPendingBlockVectors(db) > 0) {
+        if (!isBackgroundProcessingPaused() && (reindexRequested || reindexNeedsFullRebuild || countPendingBlockVectors(db) > 0)) {
           const providerState = reindexProviderState ?? { embeddingProvider, mode, indexState }
           scheduleReindex(providerState.embeddingProvider, providerState.mode, providerState.indexState)
         }
@@ -1303,6 +1489,10 @@ export function createAppContext(options: AppContextOptions): AppContext {
 
   function ensureVectorSchemaForCurrentState(forceFullRebuild = false): void {
     if (!vectorReady) {
+      return
+    }
+
+    if (isBackgroundProcessingPaused()) {
       return
     }
 
@@ -1377,6 +1567,31 @@ export function createAppContext(options: AppContextOptions): AppContext {
     runtimeSnapshot?: EnrichRuntimeSnapshot,
   ): Promise<boolean> {
     const aiMode = getExecutionMode()
+    const decision = getBlockProcessingDecision(content)
+
+    if (!decision.shouldProcess) {
+      const currentBlock = getFreshBlockForEnrich(blockId, generation)
+
+      if (!currentBlock) {
+        return false
+      }
+
+      const block = updateBlockState(db, {
+        id: blockId,
+        status: 'skipped',
+        aiMode,
+        updatedAt: currentBlock.updatedAt,
+        errorCode: decision.errorCode,
+        errorMessage: decision.errorMessage,
+      })
+
+      emitBlockChangedWithDerivedInvalidation({
+        block,
+        reason: 'enriched',
+      })
+
+      return false
+    }
 
     for (let attempt = 0; attempt <= MAX_ENRICH_RETRIES; attempt += 1) {
       try {
@@ -1397,6 +1612,7 @@ export function createAppContext(options: AppContextOptions): AppContext {
             status: 'pending',
             aiMode,
             updatedAt: currentBlock.updatedAt,
+            errorCode: null,
             errorMessage: error instanceof Error
               ? `${t('自动重试中', 'Auto retrying')}: ${error.message}`
               : t('自动重试中。', 'Auto retrying.'),
@@ -1426,6 +1642,7 @@ export function createAppContext(options: AppContextOptions): AppContext {
           status: 'error',
           aiMode,
           updatedAt: failedBlock.updatedAt,
+          errorCode: mapRuntimeErrorToBlockErrorCode(error),
           errorMessage: error instanceof Error ? error.message : t('后台处理失败。', 'Background processing failed.'),
         })
 
@@ -1559,6 +1776,7 @@ export function createAppContext(options: AppContextOptions): AppContext {
               status: 'pending',
               aiMode: 'live',
               updatedAt: currentBlock.updatedAt,
+              errorCode: null,
               errorMessage: error instanceof Error
                 ? `${t('自动重试中', 'Auto retrying')}: ${error.message}`
                 : t('自动重试中。', 'Auto retrying.'),
@@ -1588,6 +1806,7 @@ export function createAppContext(options: AppContextOptions): AppContext {
             status: 'error',
             aiMode: 'live',
             updatedAt: currentBlock.updatedAt,
+            errorCode: mapRuntimeErrorToBlockErrorCode(error),
             errorMessage: error instanceof Error ? error.message : t('后台处理失败。', 'Background processing failed.'),
           })
 
@@ -1615,6 +1834,11 @@ export function createAppContext(options: AppContextOptions): AppContext {
   function startQueuedEnrichFlush(): void {
     clearQueuedEnrichTimer()
 
+    if (isBackgroundProcessingPaused()) {
+      queuedEnrichRequests = []
+      return
+    }
+
     if (queuedEnrichFlushTask) {
       return
     }
@@ -1632,6 +1856,30 @@ export function createAppContext(options: AppContextOptions): AppContext {
 
   function scheduleEnrich(blockId: string, content: string, generation: number): void {
     const hasImages = hasMarkdownImages(content)
+    const decision = getBlockProcessingDecision(content)
+
+    if (!decision.shouldProcess) {
+      const currentBlock = getFreshBlockForEnrich(blockId, generation)
+
+      if (!currentBlock) {
+        return
+      }
+
+      const block = updateBlockState(db, {
+        id: blockId,
+        status: 'skipped',
+        aiMode: currentBlock.aiMode,
+        updatedAt: currentBlock.updatedAt,
+        errorCode: decision.errorCode,
+        errorMessage: decision.errorMessage,
+      })
+
+      emitBlockChangedWithDerivedInvalidation({
+        block,
+        reason: 'enriched',
+      })
+      return
+    }
 
     if (!shouldUseQueuedEnrich()) {
       void trackTask(runEnrichWithRetry(blockId, content, generation))
@@ -1663,13 +1911,24 @@ export function createAppContext(options: AppContextOptions): AppContext {
     }
   }
 
-  function createBlockWithAttachments(content: string, now: string, aiMode: AIExecutionMode): Block {
+  function createBlockWithAttachments(
+    content: string,
+    now: string,
+    initialState: {
+      status: Block['status']
+      aiMode: AIExecutionMode
+      errorCode: Block['errorCode']
+      errorMessage: Block['errorMessage']
+    },
+  ): Block {
     const transaction = db.transaction(() => {
       const block = createBlockRecord(db, {
         id: uuid(),
         content,
-        status: 'pending',
-        aiMode,
+        status: initialState.status,
+        aiMode: initialState.aiMode,
+        errorCode: initialState.errorCode,
+        errorMessage: initialState.errorMessage,
         createdAt: now,
         updatedAt: now,
       })
@@ -1682,15 +1941,38 @@ export function createAppContext(options: AppContextOptions): AppContext {
     return transaction()
   }
 
-  function updateBlockWithAttachments(id: string, content: string, updatedAt: string, aiMode: AIExecutionMode): Block {
+  function updateBlockWithAttachments(
+    id: string,
+    content: string,
+    updatedAt: string,
+    initialState: {
+      status: Block['status']
+      aiMode: AIExecutionMode
+      errorCode: Block['errorCode']
+      errorMessage: Block['errorMessage']
+    },
+  ): Block {
     const transaction = db.transaction(() => {
-      const block = updateBlockContent(db, {
+      updateBlockContent(db, {
         id,
         content,
-        status: 'pending',
-        aiMode,
+        status: initialState.status,
+        aiMode: initialState.aiMode,
         updatedAt,
       })
+
+      let block = getBlockById(db, id)
+
+      if (initialState.status === 'skipped') {
+        block = updateBlockState(db, {
+          id,
+          status: initialState.status,
+          aiMode: initialState.aiMode,
+          updatedAt,
+          errorCode: initialState.errorCode,
+          errorMessage: initialState.errorMessage,
+        })
+      }
 
       syncBlockAttachmentRecords(db, options.dataDirectory, id, content)
       clearAutoBlockTags(db, id)
@@ -1722,6 +2004,9 @@ export function createAppContext(options: AppContextOptions): AppContext {
         touchedNotebookIds: [],
       }
     }
+
+    const removedIdSet = new Set(uniqueIds)
+    queuedEnrichRequests = queuedEnrichRequests.filter((request) => !removedIdSet.has(request.blockId))
 
     const touchedNotebookIds = new Set<string>()
 
@@ -1785,10 +2070,11 @@ export function createAppContext(options: AppContextOptions): AppContext {
   }
 
   async function createStandaloneBlock(content: string): Promise<Block> {
-    const safeContent = validateContent(content)
+    const safeContent = validateBlockContent(content, getUiSettings().language)
     const now = new Date().toISOString()
     const aiMode = getExecutionMode()
-    const block = createBlockWithAttachments(safeContent, now, aiMode)
+    const initialState = buildInitialBlockState(safeContent, aiMode)
+    const block = createBlockWithAttachments(safeContent, now, initialState)
     const enrichGeneration = advanceBlockEnrichGeneration(block.id)
     clearDailyReviewCache()
 
@@ -1797,13 +2083,16 @@ export function createAppContext(options: AppContextOptions): AppContext {
       reason: 'created',
     })
 
-    scheduleEnrich(block.id, safeContent, enrichGeneration)
-    enqueueBlocksForVectorReindex([block])
-    scheduleCurrentVectorReindex()
+    if (initialState.shouldProcess) {
+      scheduleEnrich(block.id, safeContent, enrichGeneration)
+      enqueueBlocksForVectorReindex([block])
+      scheduleCurrentVectorReindex()
+    }
 
     return block
   }
 
+  startupRecoveredBlockCount = recoverOversizedPendingBlocksOnStartup()
   ensureVectorSchemaForCurrentState()
 
   return {
@@ -1847,11 +2136,12 @@ export function createAppContext(options: AppContextOptions): AppContext {
     },
 
     async updateBlock(id, content) {
-      const safeContent = validateContent(content)
+      const safeContent = validateBlockContent(content, getUiSettings().language)
       const enrichGeneration = advanceBlockEnrichGeneration(id)
       const aiMode = getExecutionMode()
       const updatedAt = new Date().toISOString()
-      const block = updateBlockWithAttachments(id, safeContent, updatedAt, aiMode)
+      const initialState = buildInitialBlockState(safeContent, aiMode)
+      const block = updateBlockWithAttachments(id, safeContent, updatedAt, initialState)
       clearDailyReviewCache()
       emitTouchedNotebooks(touchNotebooksForBlock(db, id, updatedAt), 'updated')
 
@@ -1860,9 +2150,11 @@ export function createAppContext(options: AppContextOptions): AppContext {
         reason: 'updated',
       })
 
-      scheduleEnrich(id, safeContent, enrichGeneration)
-      enqueueBlocksForVectorReindex([block])
-      scheduleCurrentVectorReindex()
+      if (initialState.shouldProcess) {
+        scheduleEnrich(id, safeContent, enrichGeneration)
+        enqueueBlocksForVectorReindex([block])
+        scheduleCurrentVectorReindex()
+      }
       void trackTask(cleanupOrphanAttachmentsService(db, options.dataDirectory))
 
       return getBlockById(db, id)
@@ -2598,17 +2890,20 @@ export function createAppContext(options: AppContextOptions): AppContext {
     },
 
     async createNotebookBlock(notebookId, content) {
-      const safeContent = validateContent(content)
+      const safeContent = validateBlockContent(content, getUiSettings().language)
       const now = new Date().toISOString()
       const aiMode = getExecutionMode()
+      const initialState = buildInitialBlockState(safeContent, aiMode)
       const transaction = db.transaction(() => {
         ensureNotebookExists(db, notebookId)
 
         const block = createBlockRecord(db, {
           id: uuid(),
           content: safeContent,
-          status: 'pending',
-          aiMode,
+          status: initialState.status,
+          aiMode: initialState.aiMode,
+          errorCode: initialState.errorCode,
+          errorMessage: initialState.errorMessage,
           createdAt: now,
           updatedAt: now,
         })
@@ -2632,9 +2927,11 @@ export function createAppContext(options: AppContextOptions): AppContext {
         reason: 'items-changed',
       })
 
-      scheduleEnrich(block.id, safeContent, enrichGeneration)
-      enqueueBlocksForVectorReindex([block])
-      scheduleCurrentVectorReindex()
+      if (initialState.shouldProcess) {
+        scheduleEnrich(block.id, safeContent, enrichGeneration)
+        enqueueBlocksForVectorReindex([block])
+        scheduleCurrentVectorReindex()
+      }
 
       return getNotebookById(db, notebookId)
     },
@@ -2829,6 +3126,7 @@ export function createAppContext(options: AppContextOptions): AppContext {
       const importedBlocks = getBlocksByIds(db, result.importedIds)
       const createdBlocks = getBlocksByIds(db, result.createdIds)
       const updatedBlocks = getBlocksByIds(db, result.updatedIds)
+      const processableImportedBlocks: Block[] = []
       const touchedNotebookIds = new Set<string>()
 
       for (const block of updatedBlocks) {
@@ -2851,12 +3149,35 @@ export function createAppContext(options: AppContextOptions): AppContext {
         })
       }
 
+      for (const block of importedBlocks) {
+        const decision = getBlockProcessingDecision(block.content)
+
+        if (decision.shouldProcess) {
+          processableImportedBlocks.push(block)
+          continue
+        }
+
+        const skippedBlock = updateBlockState(db, {
+          id: block.id,
+          status: 'skipped',
+          aiMode: block.aiMode,
+          updatedAt: block.updatedAt,
+          errorCode: decision.errorCode,
+          errorMessage: decision.errorMessage,
+        })
+
+        emitBlockChangedWithDerivedInvalidation({
+          block: skippedBlock,
+          reason: 'enriched',
+        })
+      }
+
       emitTouchedNotebooks(Array.from(touchedNotebookIds), 'updated')
 
       if (job.format === 'markdown') {
         void trackTask(
           (async () => {
-            for (const block of importedBlocks) {
+            for (const block of processableImportedBlocks) {
               const enrichGeneration = advanceBlockEnrichGeneration(block.id)
               scheduleEnrich(block.id, block.content, enrichGeneration)
             }
@@ -2883,8 +3204,11 @@ export function createAppContext(options: AppContextOptions): AppContext {
         }
       }
 
-      enqueueBlocksForVectorReindex(importedBlocks)
-      scheduleCurrentVectorReindex()
+      enqueueBlocksForVectorReindex(processableImportedBlocks)
+
+      if (processableImportedBlocks.length > 0) {
+        scheduleCurrentVectorReindex()
+      }
 
       void trackTask(cleanupOrphanAttachmentsService(db, options.dataDirectory))
       return result
@@ -2917,6 +3241,12 @@ export function createAppContext(options: AppContextOptions): AppContext {
         pendingVectorCount,
         vectorQueueProcessing: Boolean(reindexTask || activeReindexState) && pendingVectorCount > 0,
         tokenUsage: tokenUsage.requestCount > 0 ? tokenUsage : null,
+        pendingBlockCount: countBlocksByStatus('pending'),
+        skippedBlockCount: countBlocksByStatus('skipped'),
+        oversizedSkippedBlockCount: countOversizedSkippedBlocks(),
+        backgroundProcessingPaused: isBackgroundProcessingPaused(),
+        recoveryModeActive: startupRecoveredBlockCount > 0,
+        startupRecoveredBlockCount,
       }
     },
 
@@ -2969,6 +3299,60 @@ export function createAppContext(options: AppContextOptions): AppContext {
       return {
         queuedBlockCount,
       }
+    },
+
+    async setBackgroundProcessingPaused(paused) {
+      const normalized = paused ? '1' : ''
+
+      if (getDbSetting(db, BACKGROUND_PROCESSING_PAUSED_KEY) !== normalized) {
+        setDbSetting(db, BACKGROUND_PROCESSING_PAUSED_KEY, normalized)
+      }
+
+      if (paused) {
+        clearQueuedEnrichTimer()
+        queuedEnrichRequests = []
+      } else {
+        resumeBackgroundProcessingBacklog()
+      }
+
+      emitMetaChanged({
+        reason: 'settings',
+      })
+      emitMetaChanged({
+        reason: 'data-management',
+      })
+
+      return {
+        paused: isBackgroundProcessingPaused(),
+      }
+    },
+
+    async clearPendingVectors() {
+      const pendingCount = countPendingBlockVectors(db)
+      db.exec(`DELETE FROM pending_block_vectors`)
+
+      emitMetaChanged({
+        reason: 'vector-queue',
+      })
+      emitMetaChanged({
+        reason: 'data-management',
+      })
+
+      return pendingCount
+    },
+
+    async clearFailedVectors() {
+      const failedCount = countFailedBlockVectors(db)
+      clearFailedBlockVectors(db)
+
+      emitMetaChanged({
+        reason: 'vector-failure',
+      })
+      emitMetaChanged({
+        reason: 'data-management',
+      })
+
+      return failedCount
     },
 
     async getSetting(key) {
@@ -3140,6 +3524,12 @@ export function createAppContext(options: AppContextOptions): AppContext {
         failedVectorCount: countFailedBlockVectors(db),
         pendingVectorCount,
         vectorQueueProcessing: Boolean(reindexTask || activeReindexState) && pendingVectorCount > 0,
+        pendingBlockCount: countBlocksByStatus('pending'),
+        skippedBlockCount: countBlocksByStatus('skipped'),
+        oversizedSkippedBlockCount: countOversizedSkippedBlocks(),
+        backgroundProcessingPaused: isBackgroundProcessingPaused(),
+        recoveryModeActive: startupRecoveredBlockCount > 0,
+        startupRecoveredBlockCount,
       }
     },
 
@@ -3278,12 +3668,12 @@ export function createAppContext(options: AppContextOptions): AppContext {
     },
 
     async whenIdle() {
-      if (queuedEnrichRequests.length > 0 || queuedEnrichTimer) {
+      if (!isBackgroundProcessingPaused() && (queuedEnrichRequests.length > 0 || queuedEnrichTimer)) {
         startQueuedEnrichFlush()
       }
 
       while (pendingTasks.size > 0 || queuedEnrichRequests.length > 0 || queuedEnrichFlushTask) {
-        if (!queuedEnrichFlushTask && queuedEnrichRequests.length > 0) {
+        if (!isBackgroundProcessingPaused() && !queuedEnrichFlushTask && queuedEnrichRequests.length > 0) {
           startQueuedEnrichFlush()
         }
 
@@ -3292,8 +3682,25 @@ export function createAppContext(options: AppContextOptions): AppContext {
     },
 
     dispose() {
+      disposed = true
       clearQueuedEnrichTimer()
-      db.close()
+      queuedEnrichRequests = []
+
+      const closeDb = () => {
+        if (dbClosed) {
+          return
+        }
+
+        dbClosed = true
+        db.close()
+      }
+
+      if (pendingTasks.size > 0) {
+        void Promise.allSettled(Array.from(pendingTasks)).finally(closeDb)
+        return
+      }
+
+      closeDb()
     },
   }
 }

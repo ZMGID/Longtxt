@@ -47,6 +47,23 @@ export interface AppContextWorkerClient {
   terminate(): Promise<void>
 }
 
+const WORKER_DISPOSE_TIMEOUT_MS = 1_500
+
+function withTimeout<T>(task: Promise<T>, timeoutMs: number): Promise<T | null> {
+  let timeoutHandle: ReturnType<typeof setTimeout> | null = null
+
+  return Promise.race([
+    task,
+    new Promise<null>((resolve) => {
+      timeoutHandle = setTimeout(() => resolve(null), timeoutMs)
+    }),
+  ]).finally(() => {
+    if (timeoutHandle) {
+      clearTimeout(timeoutHandle)
+    }
+  })
+}
+
 function createHostMethodMap(options: Pick<AppContextOptions, AppContextHostMethod>) {
   return {
     openPath: options.openPath,
@@ -113,7 +130,7 @@ class AppContextWorkerClientImpl implements AppContextWorkerClient {
     this.terminatePromise = (async () => {
       try {
         await this.readyPromise
-        await this.callWorker('dispose', [], { allowAfterTerminate: true })
+        await withTimeout(this.callWorker('dispose', [], { allowAfterTerminate: true }), WORKER_DISPOSE_TIMEOUT_MS)
       } catch {
         // ignore readiness or disposal errors during shutdown
       }

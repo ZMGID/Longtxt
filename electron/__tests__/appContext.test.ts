@@ -7,7 +7,13 @@ import { tmpdir } from 'node:os'
 
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { BLOCK_ENRICH_SETTINGS_KEY, CALENDAR_SETTINGS_KEY, DOC_GENERATION_SETTINGS_KEY } from '../../shared/config'
+import {
+  BLOCK_ENRICH_SETTINGS_KEY,
+  CALENDAR_SETTINGS_KEY,
+  DOC_GENERATION_SETTINGS_KEY,
+  MAX_BLOCK_BACKGROUND_PROCESSING_LENGTH,
+  MAX_BLOCK_CONTENT_LENGTH,
+} from '../../shared/config'
 import type { AIConfig, BlockChangedEvent, DocGenerationChunk, MetaChangedEvent, NotebookChangedEvent, ReviewGenerationChunk } from '../../shared/types'
 import { createAppContext, type AppContext, type AppContextOptions } from '../appContext'
 import { createConfigFingerprint } from '../services/ai'
@@ -2365,5 +2371,97 @@ describe('app context', () => {
     expect(repeatedDay.entries).toHaveLength(1)
 
     global.fetch = originalFetch
+  })
+
+  it('rejects block content that exceeds the hard block size limit', async () => {
+    const context = makeContext()
+    const oversizedContent = '长'.repeat(MAX_BLOCK_CONTENT_LENGTH + 1)
+
+    await expect(context.createBlock(oversizedContent)).rejects.toThrow('单个块最多支持')
+    await expect(context.listBlocks()).resolves.toMatchObject({
+      items: [],
+      hasMore: false,
+      nextCursor: null,
+    })
+  })
+
+  it('saves long blocks locally while skipping AI/vector processing', async () => {
+    const { context, directory } = makeContextWithDirectory()
+    const content = '长'.repeat(MAX_BLOCK_BACKGROUND_PROCESSING_LENGTH + 48)
+
+    const block = await context.createBlock(content)
+
+    expect(block.status).toBe('skipped')
+    expect(block.errorCode).toBe('too_large')
+    expect(block.errorMessage).toContain('AI / 向量处理上限')
+    await context.whenIdle()
+
+    const db = openDb(directory)
+    const pendingVectors = db.prepare(`SELECT COUNT(*) AS total FROM pending_block_vectors WHERE block_id = ?`).get(block.id) as { total: number }
+    db.close()
+
+    expect(pendingVectors.total).toBe(0)
+    await expect(context.getBlock(block.id)).resolves.toMatchObject({
+      id: block.id,
+      status: 'skipped',
+      errorCode: 'too_large',
+    })
+  })
+
+  it('recovers oversized pending blocks on startup before queue replay', async () => {
+    const { context, directory } = makeContextWithDirectory()
+    const oversizedContent = '长'.repeat(MAX_BLOCK_BACKGROUND_PROCESSING_LENGTH + 64)
+    const now = new Date().toISOString()
+
+    const db = openDb(directory)
+    db.prepare(
+      `
+        INSERT INTO blocks (
+          id, content, summary, image_annotations, search_text, status, ai_mode, error_message, error_code, created_at, updated_at
+        )
+        VALUES (?, ?, NULL, NULL, ?, 'pending', 'mock', NULL, NULL, ?, ?)
+      `,
+    ).run('recovery-block', oversizedContent, oversizedContent, now, now)
+    db.prepare(
+      `
+        INSERT INTO pending_block_vectors (block_id, content_updated_at, queued_at)
+        VALUES (?, ?, ?)
+      `,
+    ).run('recovery-block', now, now)
+    db.close()
+
+    context.dispose()
+    createdContexts.pop()
+
+    const reopened = createAppContext({
+      dataDirectory: directory,
+      openPath: async () => '',
+    })
+    createdContexts.push(reopened)
+
+    const recovered = await reopened.getBlock('recovery-block')
+    const meta = await reopened.getMeta()
+    const reopenedDb = openDb(directory)
+    const pendingVectors = reopenedDb.prepare(`SELECT COUNT(*) AS total FROM pending_block_vectors WHERE block_id = ?`).get('recovery-block') as { total: number }
+    reopenedDb.close()
+
+    expect(recovered.status).toBe('skipped')
+    expect(recovered.errorCode).toBe('too_large')
+    expect(meta.recoveryModeActive).toBe(true)
+    expect(meta.startupRecoveredBlockCount).toBe(1)
+    expect(pendingVectors.total).toBe(0)
+  })
+
+  it('can pause background processing and save subsequent blocks as local-only', async () => {
+    const context = makeContext()
+
+    await expect(context.setBackgroundProcessingPaused(true)).resolves.toEqual({ paused: true })
+
+    const created = await context.createBlock('这是一条在暂停后台处理期间创建的记录。')
+    const meta = await context.getMeta()
+
+    expect(created.status).toBe('skipped')
+    expect(created.errorCode).toBe('disabled')
+    expect(meta.backgroundProcessingPaused).toBe(true)
   })
 })

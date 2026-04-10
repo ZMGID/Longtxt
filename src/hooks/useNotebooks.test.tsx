@@ -248,6 +248,9 @@ function createNotebookApiMock() {
         removedOrphanCount: 0,
       }),
       rebuildAllVectors: async () => ({ queuedBlockCount: 1 }),
+      setBackgroundProcessingPaused: async (paused) => ({ paused }),
+      clearPendingVectors: async () => 0,
+      clearFailedVectors: async () => 0,
     },
     review: {
       openWindow: async () => undefined,

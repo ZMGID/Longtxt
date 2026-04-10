@@ -168,7 +168,15 @@ export function TimelineDayCleanupView({
                   <div className="min-w-0 flex-1">
                     <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] uppercase tracking-[0.12em] text-stone-400">
                       <span>{formatClockTime(block.createdAt)}</span>
-                      <span>{block.status === 'ready' ? '已完成' : block.status === 'pending' ? '处理中' : '异常'}</span>
+                      <span>
+                        {block.status === 'ready'
+                          ? '已完成'
+                          : block.status === 'pending'
+                            ? '处理中'
+                            : block.status === 'skipped'
+                              ? '已跳过'
+                              : '异常'}
+                      </span>
                       <span>{block.tags.length} 标签</span>
                     </div>
                     <div className="mt-2 line-clamp-3 text-sm leading-6 text-stone-800">{preview || '（空内容）'}</div>

@@ -158,6 +158,9 @@ export interface AppContext {
   cleanupOrphanAttachments(): Promise<AttachmentCleanupResult>
   rebuildAttachmentIndex(): Promise<AttachmentIndexRebuildResult>
   rebuildAllVectors(): Promise<VectorRebuildResult>
+  setBackgroundProcessingPaused(paused: boolean): Promise<{ paused: boolean }>
+  clearPendingVectors(): Promise<number>
+  clearFailedVectors(): Promise<number>
   getSetting(key: string): Promise<string | null>
   setSetting(key: string, value: string): Promise<void>
   testApi(config: AIConfig): Promise<ApiTestResult>

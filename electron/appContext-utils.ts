@@ -1,13 +1,25 @@
 import type {
   AIConfig,
+  AppLanguage,
   ApiTestResult,
+  BlockProcessingErrorCode,
   CalendarEntryInput,
   CalendarEntryPatch,
   CalendarSuggestionAcceptInput,
   Notebook,
   NotebookItem,
 } from '../shared/types'
+import {
+  MAX_BLOCK_BACKGROUND_PROCESSING_LENGTH,
+  MAX_BLOCK_CONTENT_LENGTH,
+} from '../shared/config'
 import type { VectorIndexState } from './appContext-types'
+
+export interface BlockBackgroundProcessingDecision {
+  shouldProcess: boolean
+  errorCode: BlockProcessingErrorCode | null
+  errorMessage: string | null
+}
 
 export function validateContent(content: string): string {
   const trimmed = content.trim()
@@ -17,6 +29,52 @@ export function validateContent(content: string): string {
   }
 
   return trimmed
+}
+
+export function validateBlockContent(content: string, language: AppLanguage = 'zh'): string {
+  const trimmed = validateContent(content)
+
+  if (trimmed.length > MAX_BLOCK_CONTENT_LENGTH) {
+    throw new Error(
+      language === 'en'
+        ? `A single block can contain up to ${MAX_BLOCK_CONTENT_LENGTH.toLocaleString('en-US')} characters. Split large text into multiple blocks.`
+        : `单个块最多支持 ${MAX_BLOCK_CONTENT_LENGTH.toLocaleString('zh-CN')} 个字符，请拆成多个块再保存。`,
+    )
+  }
+
+  return trimmed
+}
+
+export function getBackgroundProcessingDecision(
+  content: string,
+  language: AppLanguage = 'zh',
+  options: { paused?: boolean } = {},
+): BlockBackgroundProcessingDecision {
+  if (options.paused) {
+    return {
+      shouldProcess: false,
+      errorCode: 'disabled',
+      errorMessage: language === 'en'
+        ? 'Background AI/vector processing is paused. The block was saved locally only.'
+        : '后台 AI / 向量处理已暂停，此块仅做本地保存。',
+    }
+  }
+
+  if (content.length > MAX_BLOCK_BACKGROUND_PROCESSING_LENGTH) {
+    return {
+      shouldProcess: false,
+      errorCode: 'too_large',
+      errorMessage: language === 'en'
+        ? `Content exceeds the ${MAX_BLOCK_BACKGROUND_PROCESSING_LENGTH.toLocaleString('en-US')}-character AI/vector limit and was saved locally only.`
+        : `内容超过 ${MAX_BLOCK_BACKGROUND_PROCESSING_LENGTH.toLocaleString('zh-CN')} 字的 AI / 向量处理上限，已仅做本地保存。`,
+    }
+  }
+
+  return {
+    shouldProcess: true,
+    errorCode: null,
+    errorMessage: null,
+  }
 }
 
 export function normalizeCalendarDate(value: string): string {
