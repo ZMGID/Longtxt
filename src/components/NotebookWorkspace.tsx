@@ -1,21 +1,21 @@
-import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
-import { Virtuoso } from 'react-virtuoso'
+import { useEffect, useMemo, useState } from 'react'
 
 import type {
   Notebook,
-  NotebookItem,
-  NotebookStructureItemType,
   NotebookSummary,
+  NotebookStructureItemInput,
   SearchResult,
   TagSuggestion,
 } from '../../shared/types'
-import { formatTimeLabel } from '../lib/format'
-import { BlockCard } from './BlockCard'
-import { InputBar } from './InputBar'
-import { MarkdownContent } from './MarkdownContent'
-import { SearchResultCard } from './SearchResultCard'
 import { ActionButton } from './ui/ActionButton'
 import { SectionEyebrow } from './ui/SectionEyebrow'
+import { NotebookComposer } from './notebook/NotebookComposer'
+import { NotebookHeader } from './notebook/NotebookHeader'
+import { NotebookItemList } from './notebook/NotebookItemList'
+import { NotebookListPanel } from './notebook/NotebookListPanel'
+import { NotebookSearchPanel } from './notebook/NotebookSearchPanel'
+import type { NotebookLayoutMode, NotebookPanelMode } from './notebook/utils'
+import { resolveLayoutMode } from './notebook/utils'
 
 interface NotebookWorkspaceProps {
   notebooks: NotebookSummary[]
@@ -34,7 +34,7 @@ interface NotebookWorkspaceProps {
   onUpdateNotebookTitle: (id: string, title: string) => Promise<void>
   onDeleteNotebook: (id: string) => Promise<void>
   onCreateBlockInNotebook: (notebookId: string, content: string) => Promise<void>
-  onCreateNotebookStructureItem: (notebookId: string, type: NotebookStructureItemType) => Promise<void>
+  onCreateNotebookStructureItem: (notebookId: string, input: NotebookStructureItemInput) => Promise<void>
   onUpdateNotebookStructureItem: (notebookId: string, itemId: string, patch: { content?: string; checked?: boolean }) => Promise<void>
   onUpdateBlock: (id: string, content: string) => Promise<void>
   onAddTag: (blockId: string, tagName: string) => Promise<void>
@@ -45,46 +45,6 @@ interface NotebookWorkspaceProps {
   onSearchQueryChange: (value: string) => void
   onSearch: () => Promise<void>
   onAddSearchResultToNotebook: (blockId: string) => Promise<void>
-}
-
-type NotebookLayoutMode = 'two-pane' | 'single-pane'
-type NotebookPanelMode = 'docked' | 'inline' | 'collapsed'
-
-const STRUCTURE_ITEM_ACTIONS: Array<{ type: NotebookStructureItemType; label: string }> = [
-  { type: 'heading', label: '新建标题' },
-  { type: 'divider', label: '新建分隔线' },
-  { type: 'note', label: '新建笔记' },
-  { type: 'todo', label: '新建待办' },
-]
-
-const SINGLE_PANE_BREAKPOINT = 1120
-const SEARCH_DOCK_BREAKPOINT = 1480
-
-function resolveLayoutMode(width: number): NotebookLayoutMode {
-  return width < SINGLE_PANE_BREAKPOINT ? 'single-pane' : 'two-pane'
-}
-
-function shouldDockSearch(width: number): boolean {
-  return width >= SEARCH_DOCK_BREAKPOINT
-}
-
-function reorderItemIds(itemIds: string[], activeIndex: number, targetIndex: number): string[] {
-  if (activeIndex === targetIndex || activeIndex < 0 || targetIndex < 0 || activeIndex >= itemIds.length || targetIndex >= itemIds.length) {
-    return itemIds
-  }
-
-  const next = [...itemIds]
-  const [moved] = next.splice(activeIndex, 1)
-  next.splice(targetIndex, 0, moved)
-  return next
-}
-
-function moveItemIds(itemIds: string[], activeId: string, targetId: string): string[] {
-  return reorderItemIds(itemIds, itemIds.indexOf(activeId), itemIds.indexOf(targetId))
-}
-
-function notebookSummaryLabel(notebook: Pick<NotebookSummary, 'itemCount' | 'blockCount' | 'structureCount'>): string {
-  return `${notebook.itemCount} 项 · ${notebook.blockCount} 个引用块 / ${notebook.structureCount} 个结构项`
 }
 
 export function NotebookWorkspace({
@@ -116,27 +76,21 @@ export function NotebookWorkspace({
   onSearch,
   onAddSearchResultToNotebook,
 }: NotebookWorkspaceProps) {
-  const previousLayoutModeRef = useRef<NotebookLayoutMode | null>(null)
-  const [titleDraft, setTitleDraft] = useState('')
-  const [titleSaving, setTitleSaving] = useState(false)
-  const [deleteConfirm, setDeleteConfirm] = useState(false)
-  const [draggedItemId, setDraggedItemId] = useState<string | null>(null)
-  const [dropTargetItemId, setDropTargetItemId] = useState<string | null>(null)
-  const [layoutMode, setLayoutMode] = useState<NotebookLayoutMode>(() =>
-    typeof window === 'undefined' ? 'two-pane' : resolveLayoutMode(window.innerWidth),
-  )
-  const [searchCanDock, setSearchCanDock] = useState(() =>
-    typeof window === 'undefined' ? true : shouldDockSearch(window.innerWidth),
-  )
-  const [notebookListOpen, setNotebookListOpen] = useState(() =>
-    typeof window === 'undefined' ? true : resolveLayoutMode(window.innerWidth) === 'two-pane',
-  )
-  const [searchPanelOpen, setSearchPanelOpen] = useState(false)
-  const [addingBlockIds, setAddingBlockIds] = useState<string[]>([])
-  const [editingStructureItemId, setEditingStructureItemId] = useState<string | null>(null)
-  const [structureDraft, setStructureDraft] = useState('')
-  const [savingStructureItemId, setSavingStructureItemId] = useState<string | null>(null)
-  const [creatingStructureType, setCreatingStructureType] = useState<NotebookStructureItemType | null>(null)
+  const [layoutState, setLayoutState] = useState<{
+    layoutMode: NotebookLayoutMode
+    searchPanelOpen: boolean
+    mobilePanelOpen: boolean
+  }>(() => {
+    const width = typeof window === 'undefined' ? null : window.innerWidth
+    const layoutMode = width === null ? 'two-pane' : resolveLayoutMode(width)
+
+    return {
+      layoutMode,
+      searchPanelOpen: false,
+      mobilePanelOpen: false,
+    }
+  })
+  const { layoutMode, searchPanelOpen, mobilePanelOpen } = layoutState
 
   useEffect(() => {
     if (typeof window === 'undefined') {
@@ -145,8 +99,28 @@ export function NotebookWorkspace({
 
     function syncViewport(): void {
       const width = window.innerWidth
-      setLayoutMode(resolveLayoutMode(width))
-      setSearchCanDock(shouldDockSearch(width))
+      const nextLayoutMode = resolveLayoutMode(width)
+
+      setLayoutState((current) => {
+        let nextSearchPanelOpen = current.searchPanelOpen
+
+        if (nextLayoutMode !== 'two-pane' && current.layoutMode === 'two-pane') {
+          nextSearchPanelOpen = false
+        }
+
+        if (
+          current.layoutMode === nextLayoutMode
+          && current.searchPanelOpen === nextSearchPanelOpen
+        ) {
+          return current
+        }
+
+        return {
+          layoutMode: nextLayoutMode,
+          searchPanelOpen: nextSearchPanelOpen,
+          mobilePanelOpen: false,
+        }
+      })
     }
 
     syncViewport()
@@ -157,608 +131,124 @@ export function NotebookWorkspace({
     }
   }, [])
 
-  useEffect(() => {
-    const previousLayoutMode = previousLayoutModeRef.current
-    previousLayoutModeRef.current = layoutMode
-
-    if (layoutMode === 'two-pane') {
-      setNotebookListOpen(true)
-      return
-    }
-
-    if (previousLayoutMode === 'two-pane') {
-      setNotebookListOpen(false)
-      setSearchPanelOpen(false)
-    }
-  }, [layoutMode])
-
-  useEffect(() => {
-    setTitleDraft(selectedNotebook?.title ?? '')
-    setDeleteConfirm(false)
-    setEditingStructureItemId(null)
-    setStructureDraft('')
-  }, [selectedNotebook?.id, selectedNotebook?.title])
-
   const notebookBlockIds = useMemo(
     () => new Set(selectedNotebook?.items.filter((item) => item.type === 'block').map((item) => item.blockId) ?? []),
     [selectedNotebook?.items],
   )
 
-  const searchPanelMode: NotebookPanelMode = searchPanelOpen
-    ? layoutMode === 'two-pane' && searchCanDock
-      ? 'docked'
-      : 'inline'
+  const searchPanelMode: NotebookPanelMode = (
+    (layoutMode === 'two-pane' && searchPanelOpen)
+    || (layoutMode === 'single-pane' && mobilePanelOpen && searchPanelOpen)
+  )
+    ? 'docked'
     : 'collapsed'
-  const notebookListMode: NotebookPanelMode = layoutMode === 'two-pane' ? 'docked' : notebookListOpen ? 'inline' : 'collapsed'
-
-  async function handleSaveTitle(): Promise<void> {
-    if (!selectedNotebook || titleDraft.trim() === selectedNotebook.title) {
-      return
-    }
-
-    setTitleSaving(true)
-
-    try {
-      await onUpdateNotebookTitle(selectedNotebook.id, titleDraft)
-    } finally {
-      setTitleSaving(false)
-    }
-  }
-
-  async function handleMove(itemId: string, direction: -1 | 1): Promise<void> {
-    if (!selectedNotebook) {
-      return
-    }
-
-    const currentIds = selectedNotebook.items.map((item) => item.id)
-    const currentIndex = currentIds.indexOf(itemId)
-    const nextIds = reorderItemIds(currentIds, currentIndex, currentIndex + direction)
-
-    if (nextIds === currentIds) {
-      return
-    }
-
-    await onReorderNotebookItems(selectedNotebook.id, nextIds)
-  }
-
-  async function handleDrop(targetItemId: string): Promise<void> {
-    if (!selectedNotebook || !draggedItemId) {
-      return
-    }
-
-    const nextIds = moveItemIds(
-      selectedNotebook.items.map((item) => item.id),
-      draggedItemId,
-      targetItemId,
-    )
-
-    setDraggedItemId(null)
-    setDropTargetItemId(null)
-    await onReorderNotebookItems(selectedNotebook.id, nextIds)
-  }
-
-  async function handleAddResult(blockId: string): Promise<void> {
-    if (!selectedNotebook || addingBlockIds.includes(blockId)) {
-      return
-    }
-
-    setAddingBlockIds((current) => [...current, blockId])
-
-    try {
-      await onAddSearchResultToNotebook(blockId)
-    } finally {
-      setAddingBlockIds((current) => current.filter((id) => id !== blockId))
-    }
-  }
-
-  async function handleCreateStructureItem(type: NotebookStructureItemType): Promise<void> {
-    if (!selectedNotebook || creatingStructureType) {
-      return
-    }
-
-    setCreatingStructureType(type)
-
-    try {
-      await onCreateNotebookStructureItem(selectedNotebook.id, type)
-    } finally {
-      setCreatingStructureType(null)
-    }
-  }
-
-  function beginStructureEdit(item: Extract<NotebookItem, { type: 'heading' | 'note' | 'todo' }>): void {
-    setEditingStructureItemId(item.id)
-    setStructureDraft(item.content)
-  }
-
-  function cancelStructureEdit(): void {
-    setEditingStructureItemId(null)
-    setStructureDraft('')
-  }
-
-  async function saveStructureEdit(itemId: string): Promise<void> {
-    if (!selectedNotebook) {
-      return
-    }
-
-    setSavingStructureItemId(itemId)
-
-    try {
-      await onUpdateNotebookStructureItem(selectedNotebook.id, itemId, { content: structureDraft })
-      cancelStructureEdit()
-    } finally {
-      setSavingStructureItemId(null)
-    }
-  }
-
-  async function toggleTodoChecked(item: Extract<NotebookItem, { type: 'todo' }>): Promise<void> {
-    if (!selectedNotebook || savingStructureItemId === item.id) {
-      return
-    }
-
-    setSavingStructureItemId(item.id)
-
-    try {
-      await onUpdateNotebookStructureItem(selectedNotebook.id, item.id, { checked: !item.checked })
-    } finally {
-      setSavingStructureItemId(null)
-    }
-  }
-
-  function handleToggleNotebookList(): void {
-    if (layoutMode === 'two-pane') {
-      return
-    }
-
-    setNotebookListOpen((current) => {
-      const next = !current
-
-      if (next) {
-        setSearchPanelOpen(false)
-      }
-
-      return next
-    })
-  }
+  const notebookListMode: NotebookPanelMode = (
+    (layoutMode === 'two-pane' && !searchPanelOpen)
+    || (layoutMode === 'single-pane' && mobilePanelOpen && !searchPanelOpen)
+  )
+    ? 'docked'
+    : 'collapsed'
 
   function handleToggleSearchPanel(): void {
-    setSearchPanelOpen((current) => {
-      const next = !current
-
-      if (next && layoutMode === 'single-pane') {
-        setNotebookListOpen(false)
+    setLayoutState((current) => {
+      if (current.layoutMode === 'single-pane') {
+        const nextSearchPanelOpen = !current.searchPanelOpen
+        return {
+          ...current,
+          searchPanelOpen: nextSearchPanelOpen,
+          mobilePanelOpen: nextSearchPanelOpen,
+        }
       }
 
-      return next
+      return {
+        ...current,
+        searchPanelOpen: !current.searchPanelOpen,
+      }
     })
   }
 
-  function renderStructureItem(
-    item: Exclude<NotebookItem, { type: 'block' }>,
-    notebookId: string,
-  ): ReactNode {
-    const isEditing = editingStructureItemId === item.id
-    const isSaving = savingStructureItemId === item.id
+  function handleOpenMobileList(): void {
+    setLayoutState((current) => ({
+      ...current,
+      searchPanelOpen: false,
+      mobilePanelOpen: !(current.mobilePanelOpen && !current.searchPanelOpen),
+    }))
+  }
 
-    const removeButton = (
-      <ActionButton
-        title="删除结构项"
-        ariaLabel="删除结构项"
-        onClick={() => {
-          void onRemoveNotebookItem(notebookId, item.id)
-        }}
-        className="px-2.5 py-1.5 text-xs"
-      >
-        删除
-      </ActionButton>
-    )
+  function handleOpenMobileSearch(): void {
+    setLayoutState((current) => ({
+      ...current,
+      searchPanelOpen: true,
+      mobilePanelOpen: !(current.mobilePanelOpen && current.searchPanelOpen),
+    }))
+  }
 
-    if (item.type === 'divider') {
-      return (
-        <div className="py-5 first:pt-0">
-          <div className="flex items-center gap-3">
-            <span className="shrink-0 text-[11px] font-medium uppercase tracking-[0.18em] text-stone-400">分隔线</span>
-            <div className="h-px flex-1 bg-stone-200" />
-            {removeButton}
-          </div>
-        </div>
-      )
+  function handleCloseMobilePanel(): void {
+    setLayoutState((current) => ({
+      ...current,
+      mobilePanelOpen: false,
+      searchPanelOpen: false,
+    }))
+  }
+
+  function handleCloseSearchPanel(): void {
+    setLayoutState((current) => {
+      if (current.layoutMode === 'single-pane') {
+        return {
+          ...current,
+          searchPanelOpen: false,
+          mobilePanelOpen: true,
+        }
+      }
+
+      return {
+        ...current,
+        searchPanelOpen: false,
+      }
+    })
+  }
+
+  function handleSelectNotebook(id: string): void {
+    onSelectNotebook(id)
+
+    if (layoutMode === 'single-pane') {
+      handleCloseMobilePanel()
     }
-
-    const editButton = (
-      <ActionButton
-        onClick={() => beginStructureEdit(item)}
-        className="px-2.5 py-1.5 text-xs"
-      >
-        编辑
-      </ActionButton>
-    )
-
-    if (item.type === 'heading') {
-      return (
-        <div className="py-6 first:pt-0">
-          <div className="flex items-start justify-between gap-3">
-            <div className="min-w-0 flex-1">
-              <SectionEyebrow>Heading</SectionEyebrow>
-              {isEditing ? (
-                <div className="mt-4 space-y-3">
-                  <input
-                    value={structureDraft}
-                    onChange={(event) => setStructureDraft(event.target.value)}
-                    onKeyDown={(event) => {
-                      if (event.key === 'Escape') {
-                        cancelStructureEdit()
-                      }
-                    }}
-                    placeholder="输入章节标题"
-                    className="w-full rounded-lg border border-stone-200 bg-stone-50 px-3 py-2.5 text-lg font-semibold text-stone-900 outline-none transition focus:border-stone-400 focus:bg-white"
-                  />
-                  <div className="flex items-center justify-end gap-2">
-                    <ActionButton onClick={cancelStructureEdit} className="px-2.5 py-1.5 text-xs">取消</ActionButton>
-                    <ActionButton
-                      onClick={() => {
-                        void saveStructureEdit(item.id)
-                      }}
-                      disabled={isSaving}
-                      active
-                      className="px-2.5 py-1.5 text-xs"
-                    >
-                      {isSaving ? '保存中…' : '保存'}
-                    </ActionButton>
-                  </div>
-                </div>
-              ) : (
-                <h3 className="mt-3 break-words text-2xl font-semibold text-stone-900">{item.content.trim() || '未命名标题'}</h3>
-              )}
-            </div>
-            <div className="flex items-center gap-2">
-              {isEditing ? null : editButton}
-              {removeButton}
-            </div>
-          </div>
-        </div>
-      )
-    }
-
-    if (item.type === 'note') {
-      return (
-        <div className="py-5 first:pt-0">
-          <div className="flex items-start justify-between gap-3">
-            <div className="min-w-0 flex-1">
-              <SectionEyebrow>Note</SectionEyebrow>
-              {isEditing ? (
-                <div className="mt-4 space-y-3">
-                  <textarea
-                    value={structureDraft}
-                    onChange={(event) => setStructureDraft(event.target.value)}
-                    onKeyDown={(event) => {
-                      if (event.key === 'Escape') {
-                        cancelStructureEdit()
-                      }
-                    }}
-                    rows={5}
-                    placeholder="输入整理说明或写作备注"
-                    className="w-full resize-y rounded-lg border border-stone-200 bg-stone-50 px-3 py-2.5 text-sm leading-7 text-stone-900 outline-none transition focus:border-stone-400 focus:bg-white"
-                  />
-                  <div className="flex items-center justify-end gap-2">
-                    <ActionButton onClick={cancelStructureEdit} className="px-2.5 py-1.5 text-xs">取消</ActionButton>
-                    <ActionButton
-                      onClick={() => {
-                        void saveStructureEdit(item.id)
-                      }}
-                      disabled={isSaving}
-                      active
-                      className="px-2.5 py-1.5 text-xs"
-                    >
-                      {isSaving ? '保存中…' : '保存'}
-                    </ActionButton>
-                  </div>
-                </div>
-              ) : item.content.trim() ? (
-                <div className="mt-3 min-w-0 break-words text-sm leading-7 text-stone-700">
-                  <MarkdownContent content={item.content} />
-                </div>
-              ) : (
-                <p className="mt-3 text-sm leading-7 text-stone-400">这条笔记还是空的，点击“编辑”补充整理说明。</p>
-              )}
-            </div>
-            <div className="flex items-center gap-2">
-              {isEditing ? null : editButton}
-              {removeButton}
-            </div>
-          </div>
-        </div>
-      )
-    }
-
-    return (
-      <div className="py-5 first:pt-0">
-        <div className="flex items-start justify-between gap-3">
-          <div className="min-w-0 flex-1">
-            <SectionEyebrow>Todo</SectionEyebrow>
-            {isEditing ? (
-              <div className="mt-4 space-y-3">
-                <textarea
-                  value={structureDraft}
-                  onChange={(event) => setStructureDraft(event.target.value)}
-                  onKeyDown={(event) => {
-                    if (event.key === 'Escape') {
-                      cancelStructureEdit()
-                    }
-                  }}
-                  rows={3}
-                  placeholder="输入待办内容"
-                  className="w-full resize-y rounded-lg border border-stone-200 bg-stone-50 px-3 py-2.5 text-sm leading-7 text-stone-900 outline-none transition focus:border-stone-400 focus:bg-white"
-                />
-                <div className="flex items-center justify-end gap-2">
-                  <ActionButton onClick={cancelStructureEdit} className="px-2.5 py-1.5 text-xs">取消</ActionButton>
-                  <ActionButton
-                    onClick={() => {
-                      void saveStructureEdit(item.id)
-                    }}
-                    disabled={isSaving}
-                    active
-                    className="px-2.5 py-1.5 text-xs"
-                  >
-                    {isSaving ? '保存中…' : '保存'}
-                  </ActionButton>
-                </div>
-              </div>
-            ) : (
-              <label className="mt-3 flex items-start gap-3">
-                <input
-                  type="checkbox"
-                  checked={item.checked}
-                  onChange={() => {
-                    void toggleTodoChecked(item)
-                  }}
-                  className="mt-1 h-4 w-4 rounded border-stone-300 text-stone-900"
-                />
-                <span className={`min-w-0 text-sm leading-7 ${item.checked ? 'text-stone-400 line-through' : 'text-stone-700'}`}>
-                  {item.content.trim() || '待补充待办内容'}
-                </span>
-              </label>
-            )}
-          </div>
-          <div className="flex items-center gap-2">
-            {isEditing ? null : editButton}
-            {removeButton}
-          </div>
-        </div>
-      </div>
-    )
   }
 
   const notebookListPanel = (
-    <section className="flex min-h-0 flex-1 flex-col">
-      <div className="flex items-end justify-between gap-3">
-        <div>
-          <SectionEyebrow>Notebook List</SectionEyebrow>
-          <h3 className="mt-3 text-lg font-semibold text-stone-900">{notebooks.length} 个笔记本</h3>
-          <p className="mt-2 text-sm leading-6 text-stone-500">左侧只保留切换与概览，让整理正文始终是主角。</p>
-        </div>
-        <ActionButton
-          onClick={() => {
-            void onCreateNotebook()
-          }}
-          active
-          className="px-3 py-2 text-xs"
-        >
-          新建
-        </ActionButton>
-      </div>
-
-      <div className="mt-5 min-h-0 overflow-y-auto pr-1">
-        {loading ? (
-          <p className="text-sm text-stone-400">加载笔记本中…</p>
-        ) : notebooks.length > 0 ? (
-          <div className="divide-y divide-stone-200 border-t border-stone-200">
-            {notebooks.map((notebook) => {
-              const active = notebook.id === selectedNotebookId
-
-              return (
-                <button
-                  key={notebook.id}
-                  type="button"
-                  onClick={() => onSelectNotebook(notebook.id)}
-                  className={`flex w-full items-start justify-between gap-3 border-l-2 px-3 py-3 text-left transition ${
-                    active
-                      ? 'border-stone-900 bg-stone-50/70 text-stone-900'
-                      : 'border-transparent text-stone-500 hover:border-stone-200 hover:bg-stone-50/60 hover:text-stone-800'
-                  }`}
-                >
-                  <div className="min-w-0">
-                    <div className="truncate text-sm font-medium">{notebook.title}</div>
-                    <div className="mt-1 text-xs text-stone-400">{notebookSummaryLabel(notebook)}</div>
-                  </div>
-                  <div className="shrink-0 pt-0.5 text-[11px] text-stone-400">{formatTimeLabel(notebook.updatedAt)}</div>
-                </button>
-              )
-            })}
-          </div>
-        ) : (
-          <p className="text-sm leading-6 text-stone-500">先创建一个笔记本，再把时间线里的块或结构项整理到这里。</p>
-        )}
-      </div>
-    </section>
+    <NotebookListPanel
+      key={selectedNotebookId ?? 'notebook-list-empty'}
+      notebooks={notebooks}
+      selectedNotebookId={selectedNotebookId}
+      selectedNotebook={selectedNotebook}
+      loading={loading}
+      searchPanelOpen={searchPanelOpen}
+      onSelectNotebook={handleSelectNotebook}
+      onCreateNotebook={onCreateNotebook}
+      onDeleteNotebook={onDeleteNotebook}
+      onToggleSearchPanel={handleToggleSearchPanel}
+    />
   )
 
   const searchPanel = (
-    <section className="flex min-h-0 flex-1 flex-col">
-      <div>
-        <SectionEyebrow>Search</SectionEyebrow>
-        <h3 className="mt-3 text-lg font-semibold text-stone-900">检索补料</h3>
-        <p className="mt-2 text-sm leading-6 text-stone-500">只在需要时展开，用来补充相关块，不再常驻挤压正文。</p>
-      </div>
-
-      <div className="mt-5 flex flex-col gap-2 sm:flex-row">
-        <input
-          value={searchQuery}
-          onChange={(event) => onSearchQueryChange(event.target.value)}
-          onKeyDown={(event) => {
-            if (event.key === 'Enter') {
-              event.preventDefault()
-              void onSearch()
-            }
-          }}
-          placeholder="搜索相关块或点击标签继续收窄"
-          className="min-w-0 flex-1 rounded-lg border border-stone-200 bg-stone-50 px-3 py-2.5 text-sm leading-6 text-stone-900 outline-none transition focus:border-stone-400 focus:bg-white"
-        />
-        <ActionButton
-          onClick={() => {
-            void onSearch()
-          }}
-          disabled={!selectedNotebook || !searchQuery.trim()}
-          active
-          className="px-4 py-2.5 text-xs"
-        >
-          {searching ? '搜索中…' : '搜索'}
-        </ActionButton>
-      </div>
-
-      {searchError ? (
-        <div className="mt-4 border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">{searchError}</div>
-      ) : null}
-
-      <div className="mt-5 min-h-0 flex-1 pr-1">
-        {!selectedNotebook ? (
-          <p className="text-sm leading-6 text-stone-500">先选择一个笔记本，再从这里搜索并加入相关引用块。</p>
-        ) : searchResults.length > 0 ? (
-          <Virtuoso
-            style={{ height: searchPanelMode === 'docked' ? '100%' : 'min(60vh, 720px)' }}
-            data={searchResults}
-            computeItemKey={(_, result) => result.block.id}
-            itemContent={(index, result) => {
-              const added = notebookBlockIds.has(result.block.id)
-              const submitting = addingBlockIds.includes(result.block.id)
-
-              return (
-                <div className={index === searchResults.length - 1 ? '' : 'pb-3'}>
-                  <SearchResultCard
-                    result={result}
-                    query={searchQuery}
-                    onTagClick={onTagClick}
-                    footer={(
-                      <div className="flex justify-end">
-                        <ActionButton
-                          disabled={added || submitting}
-                          active={!added}
-                          onClick={() => {
-                            void handleAddResult(result.block.id)
-                          }}
-                          className={`px-3 py-1.5 text-xs ${added ? 'border-stone-200 bg-stone-100 text-stone-400 hover:bg-stone-100' : ''}`}
-                        >
-                          {added ? '已加入当前笔记本' : submitting ? '加入中…' : '加入当前笔记本'}
-                        </ActionButton>
-                      </div>
-                    )}
-                  />
-                </div>
-              )
-            }}
-          />
-        ) : (
-          <p className="text-sm leading-6 text-stone-500">
-            {searchQuery.trim()
-              ? '还没有检索结果，换个关键词试试。'
-              : '输入关键词开始检索，或从结果标签继续二次搜索。'}
-          </p>
-        )}
-      </div>
-    </section>
+    <NotebookSearchPanel
+      selectedNotebook={selectedNotebook}
+      searchPanelMode={searchPanelMode}
+      searching={searching}
+      searchQuery={searchQuery}
+      searchResults={searchResults}
+      searchError={searchError}
+      notebookBlockIds={notebookBlockIds}
+      onSearchQueryChange={onSearchQueryChange}
+      onSearch={onSearch}
+      onClose={handleCloseSearchPanel}
+      onTagClick={onTagClick}
+      onAddSearchResultToNotebook={onAddSearchResultToNotebook}
+    />
   )
 
-  const workspaceHeader = selectedNotebook ? (
-    <section className="border-b border-stone-200 pb-6">
-      <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
-        <div className="min-w-0 flex-1">
-          <SectionEyebrow>Notebook</SectionEyebrow>
-          <div className="mt-3 flex items-center gap-3">
-            <input
-              value={titleDraft}
-              onChange={(event) => setTitleDraft(event.target.value)}
-              onBlur={() => {
-                void handleSaveTitle()
-              }}
-              onKeyDown={(event) => {
-                if (event.key === 'Enter') {
-                  event.preventDefault()
-                  void handleSaveTitle()
-                }
-              }}
-              className="w-full min-w-0 border-none bg-transparent p-0 text-3xl font-semibold text-stone-900 outline-none"
-            />
-            {titleSaving ? <span className="shrink-0 text-xs text-stone-400">保存中…</span> : null}
-          </div>
-          <p className="mt-3 text-sm leading-6 text-stone-500">
-            {selectedNotebook.itemCount} 项内容
-            <span className="mx-2 text-stone-300">·</span>
-            {selectedNotebook.blockCount} 个引用块
-            <span className="mx-2 text-stone-300">·</span>
-            {selectedNotebook.structureCount} 个结构项
-            <span className="mx-2 text-stone-300">·</span>
-            最近整理 {formatTimeLabel(selectedNotebook.updatedAt)}
-          </p>
-        </div>
-
-        <div className="flex flex-wrap items-center gap-2">
-          {layoutMode === 'two-pane' ? (
-            <ActionButton
-              onClick={handleToggleSearchPanel}
-              testId="notebook-search-toggle"
-              className="px-3 py-2 text-xs"
-            >
-              {searchPanelOpen ? '收起检索栏' : '展开检索栏'}
-            </ActionButton>
-          ) : null}
-          <ActionButton
-            danger={deleteConfirm}
-            onClick={() => {
-              if (deleteConfirm) {
-                void onDeleteNotebook(selectedNotebook.id)
-              } else {
-                setDeleteConfirm(true)
-              }
-            }}
-          >
-            {deleteConfirm ? '确认删除?' : '删除笔记本'}
-          </ActionButton>
-        </div>
-      </div>
-    </section>
-  ) : null
-
-  const workspaceComposer = selectedNotebook ? (
-    <section className="border-b border-stone-200 py-6">
-      <div>
-        <SectionEyebrow>Compose</SectionEyebrow>
-        <p className="mt-3 text-sm leading-6 text-stone-500">围绕当前笔记本补块、补标题、补注释，保持整理流连续。</p>
-      </div>
-      <div className="mt-5">
-        <InputBar
-          embedded
-          onSubmit={(content) => onCreateBlockInNotebook(selectedNotebook.id, content)}
-          placeholder="在当前笔记本中新建引用块，适合边整理边补充。"
-          submitLabel="新建引用块"
-        />
-      </div>
-      <div className="mt-4 flex flex-wrap gap-2">
-        {STRUCTURE_ITEM_ACTIONS.map((action) => (
-          <ActionButton
-            key={action.type}
-            disabled={creatingStructureType !== null}
-            onClick={() => {
-              void handleCreateStructureItem(action.type)
-            }}
-            className="px-3 py-2 text-xs"
-          >
-            {creatingStructureType === action.type ? `${action.label}中…` : action.label}
-          </ActionButton>
-        ))}
-      </div>
-    </section>
-  ) : null
-
-  const workspaceBody = !selectedNotebook ? (
+  const emptyState = (
     <section className="py-10">
       <SectionEyebrow>Notebook</SectionEyebrow>
       <h2 className="mt-3 max-w-2xl text-2xl font-semibold text-stone-900">把引用块和结构化整理放进同一条内容流，专注沉淀与写作。</h2>
@@ -775,179 +265,35 @@ export function NotebookWorkspace({
         创建笔记本
       </ActionButton>
     </section>
-  ) : (
-    <section className="min-h-0 flex-1 overflow-hidden pr-1">
-      {loadingNotebook ? (
-        <div className="py-10 text-sm text-stone-400">加载笔记本内容中…</div>
-      ) : selectedNotebook.items.length > 0 ? (
-        <Virtuoso
-          style={{ height: '100%' }}
-          data={selectedNotebook.items}
-          computeItemKey={(_, item) => item.id}
-          itemContent={(index, item) => {
-            const isDropTarget = item.id === dropTargetItemId && draggedItemId !== item.id
-
-            return (
-              <div
-                onDragOver={(event) => {
-                  event.preventDefault()
-                  if (draggedItemId && draggedItemId !== item.id) {
-                    setDropTargetItemId(item.id)
-                  }
-                }}
-                onDrop={(event) => {
-                  event.preventDefault()
-                  void handleDrop(item.id)
-                }}
-                className={`grid gap-4 py-5 transition md:grid-cols-[46px_minmax(0,1fr)] ${index > 0 ? 'border-t border-stone-200' : ''} ${isDropTarget ? 'bg-stone-50/80' : ''}`}
-              >
-                <div className="flex flex-row items-start gap-2 md:flex-col md:items-center md:gap-1.5 md:pt-1">
-                  <span className="text-[11px] font-medium tabular-nums text-stone-400">{String(index + 1).padStart(2, '0')}</span>
-                  <button
-                    type="button"
-                    draggable
-                    onDragStart={(event) => {
-                      setDraggedItemId(item.id)
-                      event.dataTransfer.effectAllowed = 'move'
-                      event.dataTransfer.setData('text/plain', item.id)
-                    }}
-                    onDragEnd={() => {
-                      setDraggedItemId(null)
-                      setDropTargetItemId(null)
-                    }}
-                    aria-label="拖动排序"
-                    className="flex h-7 w-7 items-center justify-center rounded-full border border-stone-200 bg-white text-stone-400 transition hover:border-stone-300 hover:text-stone-700"
-                  >
-                    <DragIcon />
-                  </button>
-                  <div className="flex items-center gap-1 md:flex-col">
-                    <button
-                      type="button"
-                      disabled={index === 0}
-                      onClick={() => {
-                        void handleMove(item.id, -1)
-                      }}
-                      className="flex h-6 w-6 items-center justify-center rounded-full text-stone-400 transition hover:bg-stone-50 hover:text-stone-700 disabled:opacity-30"
-                      aria-label="上移"
-                    >
-                      <ChevronUpIcon />
-                    </button>
-                    <button
-                      type="button"
-                      disabled={index === selectedNotebook.items.length - 1}
-                      onClick={() => {
-                        void handleMove(item.id, 1)
-                      }}
-                      className="flex h-6 w-6 items-center justify-center rounded-full text-stone-400 transition hover:bg-stone-50 hover:text-stone-700 disabled:opacity-30"
-                      aria-label="下移"
-                    >
-                      <ChevronDownIcon />
-                    </button>
-                  </div>
-                </div>
-
-                <div className="min-w-0">
-                  {item.type === 'block'
-                    ? (
-                        <BlockCard
-                          block={item.block}
-                          renderContentAsPlainText
-                          headerActions={(
-                            <ActionButton
-                              title="移出笔记本"
-                              ariaLabel="移出笔记本"
-                              onClick={() => {
-                                void onRemoveNotebookItem(selectedNotebook.id, item.id)
-                              }}
-                              className="px-2.5 py-1.5 text-xs"
-                            >
-                              删除
-                            </ActionButton>
-                          )}
-                          tagSuggestions={tagSuggestions}
-                          onSave={onUpdateBlock}
-                          onAddTag={onAddTag}
-                          onRemoveTag={onRemoveTag}
-                          onTagClick={onTagClick}
-                        />
-                      )
-                    : renderStructureItem(item, selectedNotebook.id)}
-                </div>
-              </div>
-            )
-          }}
-        />
-      ) : (
-        <div className="py-10 text-sm leading-6 text-stone-500">
-          这个笔记本还是空的。你可以先展开检索补料加入相关块，也可以直接在这里新建引用块、标题、笔记和待办。
-        </div>
-      )}
-    </section>
   )
 
-  const workspaceMain = (
-    <section className="flex min-h-0 min-w-0 flex-1 flex-col">
-      {layoutMode === 'single-pane' ? (
-        <div className="mb-6 flex flex-wrap items-center justify-between gap-3 border-b border-stone-200 pb-4">
-          <div>
-            <SectionEyebrow>Workspace</SectionEyebrow>
-            <p className="mt-2 text-sm leading-6 text-stone-500">小窗口下优先保留正文，笔记本列表和检索补料按需展开。</p>
-          </div>
-          <div className="flex flex-wrap gap-2">
-            <ActionButton
-              onClick={handleToggleNotebookList}
-              testId="notebook-list-toggle"
-              className="px-3 py-2 text-xs"
-            >
-              {notebookListOpen ? '收起笔记本' : '展开笔记本'}
-            </ActionButton>
-            <ActionButton
-              onClick={handleToggleSearchPanel}
-              testId="notebook-search-toggle"
-              className="px-3 py-2 text-xs"
-            >
-              {searchPanelOpen ? '收起检索栏' : '展开检索栏'}
-            </ActionButton>
-          </div>
-        </div>
-      ) : null}
-
-      {layoutMode === 'single-pane' && notebookListOpen ? (
-        <aside data-testid="notebook-list-panel" className="mb-6 border-b border-stone-200 pb-6">
-          {notebookListPanel}
-        </aside>
-      ) : null}
-
-      {error ? (
-        <div className="mb-6 border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">{error}</div>
-      ) : null}
-
-      {searchPanelMode === 'inline' ? (
-        <aside data-testid="notebook-search-panel" className="mb-6 flex min-h-0 flex-col border-b border-stone-200 pb-6">
-          {searchPanel}
-        </aside>
-      ) : null}
-
-      {searchPanelMode === 'docked' ? (
-        <div className="grid min-h-0 min-w-0 flex-1 gap-8 xl:grid-cols-[minmax(0,1fr)_19rem] 2xl:grid-cols-[minmax(0,1fr)_21rem]">
-          <div className="flex min-h-0 min-w-0 flex-col">
-            {workspaceHeader}
-            {workspaceComposer}
-            {workspaceBody}
-          </div>
-          <aside data-testid="notebook-search-panel" className="flex min-h-0 min-w-0 flex-col border-l border-stone-200 pl-6">
-            {searchPanel}
-          </aside>
-        </div>
-      ) : (
-        <div className="flex min-h-0 min-w-0 flex-1 flex-col">
-          {workspaceHeader}
-          {workspaceComposer}
-          {workspaceBody}
-        </div>
-      )}
-    </section>
-  )
+  const notebookBody = selectedNotebook ? (
+    <>
+      <NotebookHeader
+        selectedNotebook={selectedNotebook}
+        onUpdateNotebookTitle={onUpdateNotebookTitle}
+        showDeleteButton={layoutMode === 'single-pane'}
+        onDeleteNotebook={onDeleteNotebook}
+      />
+      <NotebookComposer
+        notebookId={selectedNotebook.id}
+        onCreateBlockInNotebook={onCreateBlockInNotebook}
+        onCreateNotebookStructureItem={onCreateNotebookStructureItem}
+      />
+      <NotebookItemList
+        selectedNotebook={selectedNotebook}
+        loadingNotebook={loadingNotebook}
+        tagSuggestions={tagSuggestions}
+        onUpdateBlock={onUpdateBlock}
+        onAddTag={onAddTag}
+        onRemoveTag={onRemoveTag}
+        onTagClick={onTagClick}
+        onRemoveNotebookItem={onRemoveNotebookItem}
+        onReorderNotebookItems={onReorderNotebookItems}
+        onUpdateNotebookStructureItem={onUpdateNotebookStructureItem}
+      />
+    </>
+  ) : emptyState
 
   return (
     <div
@@ -956,40 +302,63 @@ export function NotebookWorkspace({
       data-list-mode={notebookListMode}
       data-search-mode={searchPanelMode}
       className={layoutMode === 'two-pane'
-        ? 'grid min-h-0 min-w-0 flex-1 gap-10 overflow-hidden xl:grid-cols-[15rem_minmax(0,1fr)] 2xl:grid-cols-[16rem_minmax(0,1fr)]'
-        : 'min-h-0 min-w-0 flex-1'}
+        ? 'grid h-full min-h-0 min-w-0 flex-1 overflow-hidden grid-cols-[16.5rem_minmax(0,1fr)] xl:grid-cols-[18.5rem_minmax(0,1fr)] 2xl:grid-cols-[20rem_minmax(0,1fr)] gap-5'
+        : 'h-full min-h-0 min-w-0 flex-1 overflow-hidden'}
     >
       {layoutMode === 'two-pane' ? (
-        <aside data-testid="notebook-list-panel" className="flex min-h-0 min-w-0 flex-col border-r border-stone-200 pr-6">
-          {notebookListPanel}
+        <aside
+          data-testid={searchPanelOpen ? 'notebook-search-panel' : 'notebook-list-panel'}
+          className="flex h-full min-h-0 min-w-0 flex-col overflow-hidden border-r border-stone-200 pr-3"
+        >
+          {searchPanelOpen ? searchPanel : notebookListPanel}
         </aside>
       ) : null}
 
-      {workspaceMain}
+      <section className="relative flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
+        {layoutMode === 'single-pane' ? (
+          <div data-testid="notebook-mobile-toolbar" className="mb-2 flex shrink-0 items-center gap-2 border-b border-stone-200 pb-2">
+            <ActionButton
+              onClick={handleOpenMobileList}
+              active={mobilePanelOpen && !searchPanelOpen}
+              className="px-3 py-2 text-xs"
+            >
+              笔记本
+            </ActionButton>
+            <ActionButton
+              onClick={handleOpenMobileSearch}
+              active={mobilePanelOpen && searchPanelOpen}
+              className="px-3 py-2 text-xs"
+            >
+              检索
+            </ActionButton>
+          </div>
+        ) : null}
+
+        {error ? (
+          <div className="mb-2 shrink-0 border border-rose-200 bg-rose-50 px-4 py-2 text-sm text-rose-700">{error}</div>
+        ) : null}
+
+        <div className="flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
+          {notebookBody}
+        </div>
+
+        {layoutMode === 'single-pane' && mobilePanelOpen ? (
+          <div data-testid="notebook-mobile-panel" className="absolute inset-x-0 bottom-0 top-[3.25rem] z-20 min-h-0">
+            <button
+              type="button"
+              aria-label="关闭面板"
+              onClick={handleCloseMobilePanel}
+              className="absolute inset-0 bg-stone-950/10 backdrop-blur-[1px]"
+            />
+            <aside
+              data-testid={searchPanelOpen ? 'notebook-search-panel' : 'notebook-list-panel'}
+              className="absolute inset-y-0 left-0 flex w-[min(22rem,calc(100%-1rem))] min-w-0 flex-col overflow-hidden border-r border-stone-200 bg-[#faf9f7] p-3 shadow-[0_12px_40px_rgba(28,25,23,0.12)]"
+            >
+              {searchPanelOpen ? searchPanel : notebookListPanel}
+            </aside>
+          </div>
+        ) : null}
+      </section>
     </div>
-  )
-}
-
-function DragIcon() {
-  return (
-    <svg viewBox="0 0 24 24" aria-hidden="true" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="1.7">
-      <path strokeLinecap="round" d="M8 6.5h.01M8 12h.01M8 17.5h.01M16 6.5h.01M16 12h.01M16 17.5h.01" />
-    </svg>
-  )
-}
-
-function ChevronUpIcon() {
-  return (
-    <svg viewBox="0 0 20 20" aria-hidden="true" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="1.8">
-      <path d="M5 12.5 10 7.5l5 5" strokeLinecap="round" strokeLinejoin="round" />
-    </svg>
-  )
-}
-
-function ChevronDownIcon() {
-  return (
-    <svg viewBox="0 0 20 20" aria-hidden="true" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="1.8">
-      <path d="m5 7.5 5 5 5-5" strokeLinecap="round" strokeLinejoin="round" />
-    </svg>
   )
 }

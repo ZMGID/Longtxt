@@ -1,6 +1,6 @@
 import type { CSSProperties, ReactNode } from 'react'
 import { forwardRef } from 'react'
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 
 import type { SearchResult } from '../../shared/types'
@@ -13,9 +13,9 @@ vi.mock('react-virtuoso', async () => {
     style?: CSSProperties
   }
 
-  const MockVirtuoso = forwardRef<HTMLDivElement, MockVirtuosoProps<unknown>>(function MockVirtuoso(props, _ref) {
+  const MockVirtuoso = forwardRef<HTMLDivElement, MockVirtuosoProps<unknown>>(function MockVirtuoso(props, ref) {
     return (
-      <div data-testid="mock-virtuoso" style={props.style}>
+      <div ref={ref} data-testid="mock-virtuoso" style={props.style}>
         {props.data.map((item, index) => props.itemContent(index, item))}
       </div>
     )
@@ -54,6 +54,16 @@ const notebooks = [
     structureCount: 0,
   },
 ]
+
+const secondNotebookSummary = {
+  id: 'notebook-2',
+  title: '发布计划',
+  createdAt: '2026-03-30T09:00:00.000Z',
+  updatedAt: '2026-03-30T10:00:00.000Z',
+  itemCount: 1,
+  blockCount: 0,
+  structureCount: 1,
+}
 
 const selectedNotebook = {
   id: 'notebook-1',
@@ -97,6 +107,26 @@ const selectedNotebook = {
       updatedAt: '2026-03-31T09:20:00.000Z',
       content: '补一条待办',
       checked: false,
+    },
+  ],
+}
+
+const secondSelectedNotebook = {
+  id: 'notebook-2',
+  title: '发布计划',
+  createdAt: '2026-03-30T09:00:00.000Z',
+  updatedAt: '2026-03-30T10:00:00.000Z',
+  itemCount: 1,
+  blockCount: 0,
+  structureCount: 1,
+  items: [
+    {
+      id: 'item-4',
+      type: 'note' as const,
+      sortOrder: 0,
+      createdAt: '2026-03-30T09:10:00.000Z',
+      updatedAt: '2026-03-30T09:10:00.000Z',
+      content: '新的整理备注',
     },
   ],
 }
@@ -152,7 +182,17 @@ function setWindowSize(width: number, height = 900): void {
   })
 }
 
-function renderWorkspace({ width = 1600, openSearch = false }: { width?: number; openSearch?: boolean } = {}) {
+function renderWorkspace(
+  {
+    width = 1600,
+    openSearch = false,
+    overrides = {},
+  }: {
+    width?: number
+    openSearch?: boolean
+    overrides?: Record<string, unknown>
+  } = {},
+) {
   setWindowSize(width)
 
   const props = {
@@ -183,15 +223,16 @@ function renderWorkspace({ width = 1600, openSearch = false }: { width?: number;
     onSearchQueryChange: vi.fn(),
     onSearch: vi.fn(async () => {}),
     onAddSearchResultToNotebook: vi.fn(async () => {}),
+    ...overrides,
   }
 
-  render(<NotebookWorkspace {...props} />)
+  const renderResult = render(<NotebookWorkspace {...props} />)
 
   if (openSearch) {
     fireEvent.click(screen.getByTestId('notebook-search-toggle'))
   }
 
-  return props
+  return { props, ...renderResult }
 }
 
 describe('NotebookWorkspace', () => {
@@ -209,21 +250,53 @@ describe('NotebookWorkspace', () => {
     expect(screen.queryByText('生成文档')).not.toBeInTheDocument()
     expect(screen.queryByText('引用审核')).not.toBeInTheDocument()
     expect(screen.queryByText('快照历史')).not.toBeInTheDocument()
+    expect(screen.queryByText('Notebook List')).not.toBeInTheDocument()
+    expect(screen.queryByText('当前笔记本')).not.toBeInTheDocument()
   })
 
-  it('opens the search panel on demand and shows retrieval sources', async () => {
+  it('moves search, create, and delete actions into the notebook list on large screens', async () => {
+    renderWorkspace({ width: 1600 })
+
+    await waitFor(() => {
+      expect(screen.getByTestId('notebook-layout')).toHaveAttribute('data-layout', 'two-pane')
+    })
+
+    const listPanel = screen.getByTestId('notebook-list-panel')
+    expect(within(listPanel).getByRole('button', { name: '检索块' })).toBeInTheDocument()
+    expect(within(listPanel).getByRole('button', { name: '新建笔记本' })).toBeInTheDocument()
+    expect(within(listPanel).getByRole('button', { name: '删除笔记本' })).toBeInTheDocument()
+    expect(within(listPanel).queryByText('Notebook List')).not.toBeInTheDocument()
+    expect(within(listPanel).queryByText('当前笔记本')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: '删除' })).not.toBeInTheDocument()
+  })
+
+  it('switches the left sidebar into search mode on demand and shows retrieval sources', async () => {
     renderWorkspace({ width: 1600, openSearch: true })
 
     await waitFor(() => {
       expect(screen.getByTestId('notebook-layout')).toHaveAttribute('data-search-mode', 'docked')
     })
+    expect(screen.getByTestId('notebook-layout')).toHaveAttribute('data-list-mode', 'collapsed')
+    expect(screen.queryByTestId('notebook-list-panel')).not.toBeInTheDocument()
+    expect(screen.getByTestId('notebook-search-panel')).toBeInTheDocument()
     expect(screen.getAllByTestId('mock-virtuoso').length).toBeGreaterThan(0)
-    expect(screen.getByText('检索补料')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '返回笔记本' })).toBeInTheDocument()
     expect(screen.getByText('全文命中')).toBeInTheDocument()
     expect(screen.getByText('向量命中')).toBeInTheDocument()
   })
 
-  it('collapses auxiliary panels in single-pane mode and reveals them through toggles', async () => {
+  it('keeps the notebook layout in two panes for medium desktop widths', async () => {
+    renderWorkspace({ width: 1000 })
+
+    await waitFor(() => {
+      expect(screen.getByTestId('notebook-layout')).toHaveAttribute('data-layout', 'two-pane')
+    })
+    expect(screen.getByTestId('notebook-layout')).toHaveAttribute('data-list-mode', 'docked')
+    expect(screen.queryByText('展开笔记本')).not.toBeInTheDocument()
+    expect(screen.queryByText('展开检索栏')).not.toBeInTheDocument()
+  })
+
+  it('keeps auxiliary toggle buttons hidden in single-pane mode', async () => {
     renderWorkspace({ width: 900 })
 
     await waitFor(() => {
@@ -231,56 +304,141 @@ describe('NotebookWorkspace', () => {
     })
     expect(screen.getByTestId('notebook-layout')).toHaveAttribute('data-list-mode', 'collapsed')
     expect(screen.getByTestId('notebook-layout')).toHaveAttribute('data-search-mode', 'collapsed')
+    expect(screen.getByTestId('notebook-mobile-toolbar')).toBeInTheDocument()
     expect(screen.queryByTestId('notebook-list-panel')).not.toBeInTheDocument()
     expect(screen.queryByTestId('notebook-search-panel')).not.toBeInTheDocument()
+    expect(screen.queryByText('展开笔记本')).not.toBeInTheDocument()
+    expect(screen.queryByText('展开检索栏')).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '删除' })).toBeInTheDocument()
+  })
 
-    fireEvent.click(screen.getByTestId('notebook-list-toggle'))
+  it('restores notebook list and search access in single-pane mode', async () => {
+    const view = renderWorkspace({ width: 900 })
+
     await waitFor(() => {
-      expect(screen.getByTestId('notebook-layout')).toHaveAttribute('data-list-mode', 'inline')
+      expect(screen.getByTestId('notebook-layout')).toHaveAttribute('data-layout', 'single-pane')
     })
+
+    fireEvent.click(screen.getByRole('button', { name: '笔记本' }))
+    expect(screen.getByTestId('notebook-mobile-panel')).toBeInTheDocument()
     expect(screen.getByTestId('notebook-list-panel')).toBeInTheDocument()
 
-    fireEvent.click(screen.getByTestId('notebook-search-toggle'))
+    fireEvent.click(within(screen.getByTestId('notebook-list-panel')).getByRole('button', { name: /产品整理/ }))
+    expect(view.props.onSelectNotebook).toHaveBeenCalledWith('notebook-1')
     await waitFor(() => {
-      expect(screen.getByTestId('notebook-layout')).toHaveAttribute('data-search-mode', 'inline')
+      expect(screen.queryByTestId('notebook-mobile-panel')).not.toBeInTheDocument()
     })
-    expect(screen.queryByTestId('notebook-list-panel')).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: '检索' }))
     expect(screen.getByTestId('notebook-search-panel')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: '返回笔记本' }))
+    expect(screen.getByTestId('notebook-list-panel')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: '检索' }))
+    fireEvent.click(screen.getByRole('button', { name: '加入当前笔记本' }))
+    await waitFor(() => {
+      expect(view.props.onAddSearchResultToNotebook).toHaveBeenCalledWith('block-2')
+    })
+  })
+
+  it('resets notebook deletion confirmation after switching away and back', async () => {
+    const view = renderWorkspace({
+      width: 1600,
+      overrides: {
+        notebooks: [notebooks[0], secondNotebookSummary],
+      },
+    })
+
+    fireEvent.click(screen.getByRole('button', { name: '删除笔记本' }))
+    expect(screen.getByRole('button', { name: '确认删除?' })).toBeInTheDocument()
+
+    view.rerender(
+      <NotebookWorkspace
+        {...view.props}
+        notebooks={[notebooks[0], secondNotebookSummary]}
+        selectedNotebookId="notebook-2"
+        selectedNotebook={secondSelectedNotebook}
+      />,
+    )
+
+    view.rerender(
+      <NotebookWorkspace
+        {...view.props}
+        notebooks={[notebooks[0], secondNotebookSummary]}
+        selectedNotebookId="notebook-1"
+        selectedNotebook={selectedNotebook}
+      />,
+    )
+
+    expect(screen.getByRole('button', { name: '删除笔记本' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: '确认删除?' })).not.toBeInTheDocument()
   })
 
   it('marks existing notebook blocks and adds new search results to the current notebook', async () => {
-    const props = renderWorkspace({ width: 1600, openSearch: true })
+    const view = renderWorkspace({ width: 1600, openSearch: true })
 
     expect(screen.getByRole('button', { name: '已加入当前笔记本' })).toBeDisabled()
 
     fireEvent.click(screen.getByRole('button', { name: '加入当前笔记本' }))
 
     await waitFor(() => {
-      expect(props.onAddSearchResultToNotebook).toHaveBeenCalledWith('block-2')
+      expect(view.props.onAddSearchResultToNotebook).toHaveBeenCalledWith('block-2')
     })
   })
 
-  it('shows structured notebook items and lets users create more structure items', async () => {
-    const props = renderWorkspace({ width: 1600 })
+  it('shows structured notebook items and restores structure creation behind a compact toggle', async () => {
+    const view = renderWorkspace({ width: 1600 })
 
     expect(screen.getByText('整理标题')).toBeInTheDocument()
     expect(screen.getByText('补一条待办')).toBeInTheDocument()
-    expect(screen.getByText((content) => content.includes('3 项内容'))).toBeInTheDocument()
-    expect(screen.getByText((content) => content.includes('1 个引用块'))).toBeInTheDocument()
-    expect(screen.getByText((content) => content.includes('2 个结构项'))).toBeInTheDocument()
+    expect(screen.getAllByText((content) => content.includes('3 项内容')).length).toBeGreaterThan(0)
+    expect(screen.getAllByText((content) => content.includes('1 个引用块')).length).toBeGreaterThan(0)
+    expect(screen.getAllByText((content) => content.includes('2 个结构项')).length).toBeGreaterThan(0)
+    expect(screen.queryByRole('button', { name: '标题' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: '分隔' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: '笔记' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: '待办' })).not.toBeInTheDocument()
 
-    fireEvent.click(screen.getByRole('button', { name: '新建标题' }))
+    fireEvent.click(screen.getByRole('button', { name: '结构项' }))
+    fireEvent.click(screen.getByRole('button', { name: '标题' }))
 
     await waitFor(() => {
-      expect(props.onCreateNotebookStructureItem).toHaveBeenCalledWith('notebook-1', 'heading')
+      expect(view.props.onCreateNotebookStructureItem).toHaveBeenCalledWith('notebook-1', { type: 'heading' })
     })
   })
 
+  it('renders notebook items in reverse order and keeps the body scrollable', () => {
+    renderWorkspace({ width: 1600 })
+
+    const todo = screen.getByText('补一条待办')
+    const heading = screen.getByText('整理标题')
+    const block = screen.getByText('已经收录的引用块')
+    const scrollContainer = screen.getByTestId('notebook-items-scroll')
+    const rowNumbers = screen.getAllByText(/^(03|02|01)$/).map((node) => node.textContent)
+
+    expect(todo.compareDocumentPosition(heading) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(heading.compareDocumentPosition(block) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(rowNumbers.slice(0, 3)).toEqual(['03', '02', '01'])
+    expect(scrollContainer.className).toContain('overflow-y-auto')
+    expect(scrollContainer.className).toContain('h-full')
+  })
+
+  it('keeps item controls in a compact side column on small widths', async () => {
+    renderWorkspace({ width: 900 })
+
+    await waitFor(() => {
+      expect(screen.getByTestId('notebook-layout')).toHaveAttribute('data-layout', 'single-pane')
+    })
+
+    const firstRow = screen.getByTestId('notebook-item-row-item-3')
+    expect(firstRow.className).toContain('grid-cols-[30px_minmax(0,1fr)]')
+    expect(firstRow.className).toContain('gap-2.5')
+  })
+
   it('uses tag click for secondary search from the notebook search panel', () => {
-    const props = renderWorkspace({ width: 1600, openSearch: true })
+    const view = renderWorkspace({ width: 1600, openSearch: true })
 
     fireEvent.click(screen.getByRole('button', { name: '需求' }))
 
-    expect(props.onTagClick).toHaveBeenCalledWith('需求')
+    expect(view.props.onTagClick).toHaveBeenCalledWith('需求')
   })
 })

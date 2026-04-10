@@ -14,6 +14,7 @@ describe('InputBar', () => {
     render(<InputBar embedded onSubmit={vi.fn(async () => {})} />)
 
     expect(screen.getByText('继续往下写 · Enter 创建块 · Shift+Enter 换行 · 长内容可在输入区内滚动')).toBeInTheDocument()
+    expect(screen.getByText('继续往下写 · Enter 创建块 · Shift+Enter 换行 · 长内容可在输入区内滚动').closest('div')).toHaveClass('w-full')
     expect(screen.getByTestId('markdown-live-preview')).toHaveAttribute(
       'data-class-name',
       expect.stringContaining('[&_.cm-scroller]:overflow-auto'),

@@ -978,9 +978,9 @@ function AppInner() {
               await createBlockInNotebook(notebookId, content)
               toast('success', t('app.notebook.blockAdded'))
             }}
-            onCreateNotebookStructureItem={async (notebookId, type) => {
-              await createNotebookStructureItem(notebookId, { type })
-              toast('success', t('app.notebook.structureAdded'))
+            onCreateNotebookStructureItem={async (notebookId, input) => {
+              await createNotebookStructureItem(notebookId, input)
+              toast('success', t('app.notebook.blockAdded'))
             }}
             onUpdateNotebookStructureItem={async (notebookId, itemId, patch) => {
               await updateNotebookStructureItem(notebookId, itemId, patch)

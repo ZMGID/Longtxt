@@ -65,7 +65,7 @@ export function InputBar({
 
   if (embedded) {
     return (
-      <div className="rounded-lg border border-stone-200 bg-white p-3">
+      <div className="w-full min-w-0 rounded-lg border border-stone-200 bg-white p-3">
         <p className="mb-2 text-xs text-stone-500">{t('inputBar.embeddedHint')}</p>
         <MarkdownLivePreview
           value={value}

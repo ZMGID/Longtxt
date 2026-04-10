@@ -12,6 +12,7 @@ interface BlockCardProps {
   block: Block
   editable?: boolean
   compact?: boolean
+  dense?: boolean
   renderContentAsPlainText?: boolean
   contentOverride?: ReactNode
   metaBadges?: ReactNode
@@ -50,6 +51,7 @@ export function BlockCard({
   block,
   editable = true,
   compact = false,
+  dense = false,
   renderContentAsPlainText = false,
   contentOverride,
   metaBadges,
@@ -97,6 +99,21 @@ export function BlockCard({
   const isCollapsed = canToggleCollapse && !isExpanded && !isEditing
   const shouldRenderPlainText = renderContentAsPlainText && !contentOverride && !isEditing && !showRenderedContent
   const canToggleRenderedContent = renderContentAsPlainText && !contentOverride && !isEditing && !showRenderedContent
+  const articleClassName = dense
+    ? 'rounded-lg border border-black/[0.06] bg-white/70 px-2.5 py-1.5 transition-all duration-200 hover:border-black/[0.12] hover:shadow-sm'
+    : 'rounded-lg border border-black/[0.06] bg-white/70 px-3 py-2 transition-all duration-200 hover:border-black/[0.12] hover:shadow-sm'
+  const contentMarginTopClassName = dense ? 'mt-1.5' : 'mt-2'
+  const afterContentMarginTopClassName = dense ? 'mt-1.5' : 'mt-2'
+  const footerMarginTopClassName = dense ? 'mt-2' : 'mt-3'
+  const tagSectionClassName = dense
+    ? 'mt-1 flex flex-wrap items-center justify-between gap-1'
+    : 'mt-1.5 flex flex-wrap items-center justify-between gap-1'
+  const metaRowClassName = dense
+    ? 'flex flex-wrap items-center gap-1.5 text-[11px] text-stone-500'
+    : 'flex flex-wrap items-center gap-2 text-xs text-stone-500'
+  const tagChipClassName = dense
+    ? 'inline-flex items-center gap-1 rounded border border-stone-200 bg-stone-50 px-2 py-0.5 text-[11px] font-medium text-stone-600'
+    : 'inline-flex items-center gap-1.5 rounded border border-stone-200 bg-stone-50 px-2.5 py-1 text-xs font-medium text-stone-600'
 
   async function handleSave(): Promise<void> {
     if (!onSave) return
@@ -123,10 +140,10 @@ export function BlockCard({
   }
 
   return (
-    <article className="rounded-lg border border-black/[0.06] bg-white/70 px-3 py-2 transition-all duration-200 hover:border-black/[0.12] hover:shadow-sm">
+    <article className={articleClassName}>
       {/* 元信息行 */}
       <div className="flex items-start justify-between gap-3">
-        <div className="flex flex-wrap items-center gap-2 text-xs text-stone-500">
+        <div className={metaRowClassName}>
           <StatusPill status={block.status} />
           <span>{formatTimeLabel(block.updatedAt)}</span>
           <span className="rounded border border-stone-200 bg-stone-50 px-2 py-0.5 text-[11px] font-medium text-stone-500">
@@ -143,7 +160,7 @@ export function BlockCard({
       </div>
 
       {/* 正文 */}
-      <div className="mt-2">
+      <div className={contentMarginTopClassName}>
         {isEditing ? (
           <MarkdownLivePreview
             value={draft}
@@ -176,7 +193,7 @@ export function BlockCard({
       </div>
 
       {(canToggleCollapse || canToggleRenderedContent) && !isEditing ? (
-        <div className="mt-2 flex flex-wrap items-center gap-2">
+        <div className={`${afterContentMarginTopClassName} flex flex-wrap items-center gap-2`}>
           {canToggleCollapse ? (
             <button
               type="button"
@@ -200,12 +217,12 @@ export function BlockCard({
 
       {/* 标签 + 操作栏 */}
       {!compact && (
-        <div className="mt-1.5 flex flex-wrap items-center justify-between gap-1">
+        <div className={tagSectionClassName}>
           <div className="flex flex-wrap items-center gap-1">
             {block.tags.map((tag) => (
               <span
                 key={tag.id}
-                className="inline-flex items-center gap-1.5 rounded border border-stone-200 bg-stone-50 px-2.5 py-1 text-xs font-medium text-stone-600"
+                className={tagChipClassName}
               >
                 <button
                   type="button"
@@ -265,7 +282,7 @@ export function BlockCard({
                 <button
                   type="button"
                   onClick={() => setIsAddingTag(true)}
-                  className="rounded border border-dashed border-stone-300 px-2.5 py-1 text-xs text-stone-400 transition hover:border-stone-400 hover:text-stone-600"
+                  className={`rounded border border-dashed border-stone-300 text-stone-400 transition hover:border-stone-400 hover:text-stone-600 ${dense ? 'px-2 py-0.5 text-[11px]' : 'px-2.5 py-1 text-xs'}`}
                 >
                   {t('blockCard.addTag')}
                 </button>
@@ -275,7 +292,7 @@ export function BlockCard({
 
           {/* 操作按钮 */}
           {editable && (
-            <div className="flex items-center gap-2">
+            <div className={`flex items-center ${dense ? 'gap-1.5' : 'gap-2'}`}>
               {isEditing ? (
                 <>
                   <button
@@ -337,7 +354,7 @@ export function BlockCard({
         </div>
       )}
 
-      {footer ? <div className="mt-3">{footer}</div> : null}
+      {footer ? <div className={footerMarginTopClassName}>{footer}</div> : null}
     </article>
   )
 }
