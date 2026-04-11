@@ -7,6 +7,7 @@ interface TransferItemLike {
 interface TransferPayloadLike {
   items?: Iterable<TransferItemLike | null | undefined> | ArrayLike<TransferItemLike | null | undefined> | null
   files?: Iterable<File | null | undefined> | ArrayLike<File | null | undefined> | null
+  types?: Iterable<string | null | undefined> | ArrayLike<string | null | undefined> | null
 }
 
 const IMAGE_FILE_EXTENSION_PATTERN = /\.(png|jpe?g|webp|gif|svg|bmp|ico|avif|heic|heif)$/i
@@ -35,4 +36,22 @@ export function extractImageFiles(payload?: TransferPayloadLike | null): File[] 
   }
 
   return toArray(payload?.files).filter(isImageFile)
+}
+
+export function hasPotentialImageTransfer(payload?: TransferPayloadLike | null): boolean {
+  if (extractImageFiles(payload).length > 0) {
+    return true
+  }
+
+  const hasImageishFileItem = toArray(payload?.items)
+    .filter((item): item is TransferItemLike => Boolean(item))
+    .some((item) => item.kind === 'file' && (!item.type || item.type.startsWith('image/')))
+
+  if (hasImageishFileItem) {
+    return true
+  }
+
+  return toArray(payload?.types)
+    .filter((item): item is string => typeof item === 'string')
+    .some((type) => type === 'Files')
 }

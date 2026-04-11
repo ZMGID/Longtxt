@@ -470,7 +470,7 @@ function AppInner() {
     )
   }
 
-  async function handleBrowseTag(tagName: string): Promise<void> {
+  const handleBrowseTag = useCallback(async (tagName: string): Promise<void> => {
     await runSearchAction(
       () => changbu.search.byTag(tagName, 50),
       {
@@ -493,7 +493,7 @@ function AppInner() {
         },
       },
     )
-  }
+  }, [t])
 
   async function handleNotebookSearch(query = searchQuery): Promise<void> {
     const nextQuery = query.trim()
@@ -692,25 +692,13 @@ function AppInner() {
     }
   }
 
-  async function handleAddBlockToNotebook(notebookId: string, blockId: string): Promise<void> {
-    const result = await addBlockToNotebook(notebookId, blockId)
-    toast(result.added ? 'success' : 'info', result.added ? t('app.notebook.addedTo', { title: result.notebook.title }) : t('app.notebook.alreadyIn', { title: result.notebook.title }))
-  }
-
-  async function handleCreateNotebookWithBlock(blockId: string): Promise<void> {
-    const notebookTitle = t('app.notebook.newName', { index: notebooks.length + 1 })
-    const result = await createNotebookWithBlock(blockId, notebookTitle)
-    toast('success', t('app.notebook.createdWithBlock', { title: result.notebook.title }))
-    setActiveView('notebooks')
-  }
-
-  async function handleCreateNotebook(): Promise<void> {
+  const handleCreateNotebook = useCallback(async (): Promise<void> => {
     const notebook = await createNotebook(t('app.notebook.newName', { index: notebooks.length + 1 }))
     toast('success', t('app.notebook.created', { title: notebook.title }))
     setActiveView('notebooks')
-  }
+  }, [createNotebook, notebooks.length, t, toast])
 
-  async function handleFindRelated(blockId: string): Promise<void> {
+  const handleFindRelated = useCallback(async (blockId: string): Promise<void> => {
     setRelatedLoading(true)
     try {
       const results = await changbu.blocks.findRelated(blockId)
@@ -720,9 +708,9 @@ function AppInner() {
     } finally {
       setRelatedLoading(false)
     }
-  }
+  }, [t, toast])
 
-  async function handleJumpToTimeline(blockId: string): Promise<boolean> {
+  const handleJumpToTimeline = useCallback(async (blockId: string): Promise<boolean> => {
     if (jumpingToTimelineBlockId) {
       return false
     }
@@ -757,14 +745,46 @@ function AppInner() {
     } finally {
       setJumpingToTimelineBlockId((current) => (current === blockId ? null : current))
     }
-  }
+  }, [blocks, jumpingToTimelineBlockId, t, toast])
+
+  const handleAddBlockToNotebook = useCallback(async (notebookId: string, blockId: string): Promise<void> => {
+    const result = await addBlockToNotebook(notebookId, blockId)
+    toast(result.added ? 'success' : 'info', result.added ? t('app.notebook.addedTo', { title: result.notebook.title }) : t('app.notebook.alreadyIn', { title: result.notebook.title }))
+  }, [addBlockToNotebook, t, toast])
+
+  const handleCreateNotebookWithBlock = useCallback(async (blockId: string): Promise<void> => {
+    const notebookTitle = t('app.notebook.newName', { index: notebooks.length + 1 })
+    const result = await createNotebookWithBlock(blockId, notebookTitle)
+    toast('success', t('app.notebook.createdWithBlock', { title: result.notebook.title }))
+    setActiveView('notebooks')
+  }, [createNotebookWithBlock, notebooks.length, t, toast])
+
+  const timelineComposer = useMemo(() => <InputBar onSubmit={createBlock} embedded />, [createBlock])
+  const handleTimelineTagClick = useCallback((tagName: string): void => {
+    void handleBrowseTag(tagName)
+  }, [handleBrowseTag])
+  const handleTimelineFindRelated = useCallback((blockId: string): void => {
+    void handleFindRelated(blockId)
+  }, [handleFindRelated])
+  const handleTimelineFocusedBlockHandled = useCallback((): void => {
+    setFocusedBlockId(null)
+  }, [])
+  const handleTimelineOpenCalendarDate = useCallback((dateKey: string): void => {
+    setCalendarSelectedDateOverride(dateKey)
+    setActiveView('calendar')
+  }, [])
+  const handleTimelineOpenReview = useCallback((mode: Parameters<typeof changbu.review.openWindow>[0], dateKey: string): void => {
+    void changbu.review.openWindow(mode, dateKey).catch((reason) => {
+      toast('error', reason instanceof Error ? reason.message : t('app.review.openFailed'))
+    })
+  }, [t, toast])
 
   const selectedGraphBlock = resolveSelectedGraphBlock(blocks, selectedGraphBlockId, selectedGraphBlockFallback)
-  const recentResults: SearchResult[] = blocks.slice(0, 5).map((block) => ({
+  const recentResults = useMemo<SearchResult[]>(() => blocks.slice(0, 5).map((block) => ({
     block,
     score: 0,
     matchSource: [],
-  }))
+  })), [blocks])
   const showRecentResults = !hasSearched && !browseTag
   const displayedSearchResults = showRecentResults ? recentResults : results
   const searchResultsTitle = showRecentResults
@@ -799,6 +819,9 @@ function AppInner() {
     snapshots: t('app.sidebar.snapshots'),
     'data-management': t('app.sidebar.dataManagement'),
   }[activeView]
+  const mainContentClassName = activeView === 'timeline'
+    ? 'flex min-h-0 min-w-0 flex-1 pb-2 pt-1 pl-3 pr-2 lg:pt-1.5 lg:pl-4 lg:pr-3'
+    : 'flex min-h-0 min-w-0 flex-1 px-4 pb-2.5 pt-1.5 lg:px-6 lg:pt-2'
 
   function renderActiveView(): ReactNode {
     switch (activeView) {
@@ -815,34 +838,23 @@ function AppInner() {
               loadingMore={loadingMore}
               hasMore={hasMore}
               showMiniTimeline={uiSettings.showMiniTimeline}
-              composer={<InputBar onSubmit={createBlock} embedded />}
+              composer={timelineComposer}
               notebooks={notebooks}
               tagSuggestions={tags}
               onSave={updateBlock}
               onDelete={removeBlock}
               onAddTag={addTag}
               onRemoveTag={removeTag}
-              onTagClick={(tagName) => {
-                void handleBrowseTag(tagName)
-              }}
+              onTagClick={handleTimelineTagClick}
               onLoadMore={loadMore}
               onAddToNotebook={handleAddBlockToNotebook}
               onCreateNotebookWithBlock={handleCreateNotebookWithBlock}
-              onFindRelated={(blockId) => { void handleFindRelated(blockId) }}
+              onFindRelated={handleTimelineFindRelated}
               focusedBlockId={focusedBlockId}
-              onFocusedBlockHandled={() => {
-                setFocusedBlockId(null)
-              }}
+              onFocusedBlockHandled={handleTimelineFocusedBlockHandled}
               upcomingDays={calendarSettings.upcomingDays}
-              onOpenCalendarDate={(dateKey) => {
-                setCalendarSelectedDateOverride(dateKey)
-                setActiveView('calendar')
-              }}
-              onOpenReview={(mode, dateKey) => {
-                void changbu.review.openWindow(mode, dateKey).catch((reason) => {
-                  toast('error', reason instanceof Error ? reason.message : t('app.review.openFailed'))
-                })
-              }}
+              onOpenCalendarDate={handleTimelineOpenCalendarDate}
+              onOpenReview={handleTimelineOpenReview}
             />
           </div>
         )
@@ -1141,7 +1153,7 @@ function AppInner() {
               <h2 className="text-[17px] font-semibold tracking-[0.01em] text-stone-900">{activeViewTitle}</h2>
             </div>
 
-            <div className="flex min-h-0 min-w-0 flex-1 px-4 pb-2.5 pt-1.5 lg:px-6 lg:pt-2">
+            <div className={mainContentClassName}>
               <Suspense fallback={<ViewLoadingMask title={activeViewTitle} />}>
                 <div key={activeView} className="flex min-h-0 min-w-0 flex-1 animate-[fadeIn_200ms_ease-out] overflow-hidden">
                   {renderActiveView()}

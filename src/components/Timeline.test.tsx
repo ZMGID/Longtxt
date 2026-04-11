@@ -8,6 +8,7 @@ import { I18nContext, type I18nContextValue } from '../i18n/context'
 import { Timeline } from './Timeline'
 
 const scrollToIndexMock = vi.fn()
+const computeItemKeyMock = vi.fn()
 
 vi.mock('react-virtuoso', async () => {
   type MockVirtuosoProps = ComponentProps<typeof Timeline>['blocks'] extends Block[]
@@ -18,11 +19,12 @@ vi.mock('react-virtuoso', async () => {
           Footer?: () => ReactNode
         }
         rangeChanged?: (range: { startIndex: number; endIndex: number }) => void
+        computeItemKey?: (index: number, item: Block) => string
       }
     : never
 
   const MockVirtuoso = forwardRef<VirtuosoHandle, MockVirtuosoProps>(function MockVirtuoso(props, _ref) {
-    const { data, itemContent, components, rangeChanged } = props
+    const { data, itemContent, components, rangeChanged, computeItemKey } = props
     const Footer = components?.Footer
 
     useImperativeHandle(_ref, () => ({ scrollToIndex: scrollToIndexMock }) as unknown as VirtuosoHandle)
@@ -35,7 +37,10 @@ vi.mock('react-virtuoso', async () => {
     return (
       <div data-testid="mock-virtuoso">
         {data.map((item, index) => (
-          <Fragment key={item.id}>{itemContent(index, item)}</Fragment>
+          <Fragment key={computeItemKey ? computeItemKey(index, item) : item.id}>
+            {computeItemKey ? computeItemKeyMock(computeItemKey(index, item)) : null}
+            {itemContent(index, item)}
+          </Fragment>
         ))}
         {Footer ? <Footer /> : null}
       </div>
@@ -111,6 +116,7 @@ afterEach(() => {
     value: 1024,
   })
   vi.clearAllMocks()
+  computeItemKeyMock.mockClear()
 })
 
 describe('Timeline', () => {
@@ -232,5 +238,12 @@ describe('Timeline', () => {
     )
 
     expect(screen.getAllByTitle(/blocks$/).length).toBeGreaterThan(0)
+  })
+
+  it('passes stable block ids to virtuoso as item keys', () => {
+    renderTimeline(true)
+
+    expect(computeItemKeyMock).toHaveBeenCalledWith('block-1')
+    expect(computeItemKeyMock).toHaveBeenCalledWith('block-2')
   })
 })

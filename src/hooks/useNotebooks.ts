@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useCallback, useMemo, useState } from 'react'
 
 import { QueryClient, useQuery, useQueryClient } from '@tanstack/react-query'
 
@@ -110,42 +110,42 @@ export function useNotebooks() {
   )
   const loadingNotebook = Boolean(selectedNotebookId) && selectedNotebookQuery.isFetching && selectedNotebook?.id !== selectedNotebookId
 
-  function selectNotebook(id: string): void {
+  const selectNotebook = useCallback((id: string): void => {
     setPreferredNotebookId(id)
-  }
+  }, [])
 
-  async function createNotebook(title?: string): Promise<Notebook> {
+  const createNotebook = useCallback(async (title?: string): Promise<Notebook> => {
     const notebook = await changbu.notebooks.create(title)
 
     setPreferredNotebookId(notebook.id)
 
     return patchNotebookCaches(queryClient, notebook)
-  }
+  }, [queryClient])
 
-  async function updateNotebook(id: string, title: string): Promise<Notebook> {
+  const updateNotebook = useCallback(async (id: string, title: string): Promise<Notebook> => {
     const notebook = await changbu.notebooks.update(id, title)
 
     return patchNotebookCaches(queryClient, notebook)
-  }
+  }, [queryClient])
 
-  async function removeNotebook(id: string): Promise<void> {
+  const removeNotebook = useCallback(async (id: string): Promise<void> => {
     await changbu.notebooks.remove(id)
     const nextNotebooks = removeNotebookFromCaches(queryClient, id)
     const nextSelectedNotebookId = selectedNotebookId === id ? nextNotebooks[0]?.id ?? null : selectedNotebookId
 
     setPreferredNotebookId(nextSelectedNotebookId)
-  }
+  }, [queryClient, selectedNotebookId])
 
-  async function addBlockToNotebook(notebookId: string, blockId: string): Promise<NotebookMutationResult> {
+  const addBlockToNotebook = useCallback(async (notebookId: string, blockId: string): Promise<NotebookMutationResult> => {
     const result = await changbu.notebooks.addBlock(notebookId, blockId)
 
     return {
       ...result,
       notebook: patchNotebookCaches(queryClient, result.notebook),
     }
-  }
+  }, [queryClient])
 
-  async function createNotebookWithBlock(blockId: string, title?: string): Promise<NotebookMutationResult> {
+  const createNotebookWithBlock = useCallback(async (blockId: string, title?: string): Promise<NotebookMutationResult> => {
     const notebook = await changbu.notebooks.create(title)
     setPreferredNotebookId(notebook.id)
     patchNotebookCaches(queryClient, notebook)
@@ -156,41 +156,41 @@ export function useNotebooks() {
       ...result,
       notebook: patchNotebookCaches(queryClient, result.notebook),
     }
-  }
+  }, [queryClient])
 
-  async function removeNotebookItem(notebookId: string, itemId: string): Promise<Notebook> {
+  const removeNotebookItem = useCallback(async (notebookId: string, itemId: string): Promise<Notebook> => {
     const notebook = await changbu.notebooks.removeItem(notebookId, itemId)
 
     return patchNotebookCaches(queryClient, notebook)
-  }
+  }, [queryClient])
 
-  async function reorderItems(notebookId: string, itemIds: string[]): Promise<Notebook> {
+  const reorderItems = useCallback(async (notebookId: string, itemIds: string[]): Promise<Notebook> => {
     const notebook = await changbu.notebooks.reorderItems(notebookId, itemIds)
 
     return patchNotebookCaches(queryClient, notebook)
-  }
+  }, [queryClient])
 
-  async function createBlockInNotebook(notebookId: string, content: string): Promise<Notebook> {
+  const createBlockInNotebook = useCallback(async (notebookId: string, content: string): Promise<Notebook> => {
     const notebook = await changbu.notebooks.createBlock(notebookId, content)
 
     return patchNotebookCaches(queryClient, notebook)
-  }
+  }, [queryClient])
 
-  async function createNotebookStructureItem(notebookId: string, input: NotebookStructureItemInput): Promise<Notebook> {
+  const createNotebookStructureItem = useCallback(async (notebookId: string, input: NotebookStructureItemInput): Promise<Notebook> => {
     const notebook = await changbu.notebooks.createStructureItem(notebookId, input)
 
     return patchNotebookCaches(queryClient, notebook)
-  }
+  }, [queryClient])
 
-  async function updateNotebookStructureItem(
+  const updateNotebookStructureItem = useCallback(async (
     notebookId: string,
     itemId: string,
     patch: NotebookStructureItemPatch,
-  ): Promise<Notebook> {
+  ): Promise<Notebook> => {
     const notebook = await changbu.notebooks.updateStructureItem(notebookId, itemId, patch)
 
     return patchNotebookCaches(queryClient, notebook)
-  }
+  }, [queryClient])
 
   return {
     notebooks,

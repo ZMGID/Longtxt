@@ -1,5 +1,4 @@
-import type { ReactNode } from 'react'
-import { useEffect, useRef, useState } from 'react'
+import { memo, useEffect, useRef, useState, type ReactNode } from 'react'
 
 import type { Block, NotebookSummary, TagSuggestion } from '../../shared/types'
 import type { BlockListChangeHint } from '../lib/blockListCache'
@@ -50,7 +49,7 @@ function resolveInitialDateKey(blocks: Block[]): string {
   return blocks[0] ? formatLocalDateKey(blocks[0].createdAt) : todayDateKey()
 }
 
-export function TimelineWorkspace({
+export const TimelineWorkspace = memo(function TimelineWorkspace({
   blocks,
   loading,
   loadingMore,
@@ -119,7 +118,7 @@ export function TimelineWorkspace({
   }, [])
 
   return (
-    <div className="flex min-h-0 min-w-0 flex-1 gap-5 overflow-hidden">
+    <div className="flex min-h-0 min-w-0 flex-1 gap-3 overflow-hidden">
       <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
         <Timeline
           blocks={blocks}
@@ -166,4 +165,4 @@ export function TimelineWorkspace({
       ) : null}
     </div>
   )
-}
+})

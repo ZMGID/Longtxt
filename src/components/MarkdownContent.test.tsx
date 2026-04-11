@@ -15,6 +15,7 @@ describe('MarkdownContent', () => {
     expect(screen.getByText('第一段')).toBeInTheDocument()
     expect(screen.getByText('第二段')).toBeInTheDocument()
     expect(screen.getByAltText('示意图')).toHaveAttribute('src', 'https://example.com/image.png')
+    expect(screen.getByAltText('示意图').className).toContain('w-auto')
     expect(container.querySelectorAll('li')).toHaveLength(2)
   })
 
@@ -25,5 +26,12 @@ describe('MarkdownContent', () => {
       'src',
       `${ATTACHMENT_PROTOCOL}://asset?url=${encodeURIComponent('file:///tmp/local-image.png')}`,
     )
+  })
+
+  it('applies width directives from image title tokens', () => {
+    render(<MarkdownContent content={`![截图](https://example.com/image.png "封面 | w=520")`} />)
+
+    expect(screen.getByAltText('截图').closest('figure')).toHaveStyle({ width: '520px' })
+    expect(screen.queryByText('截图')).not.toBeInTheDocument()
   })
 })

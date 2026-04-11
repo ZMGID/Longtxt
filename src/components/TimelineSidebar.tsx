@@ -166,9 +166,9 @@ export function TimelineSidebar({
     <aside
       ref={asideRef}
       data-testid="timeline-sidebar"
-      className="flex min-h-0 w-[320px] shrink-0 flex-col overflow-hidden border-l border-stone-200 bg-white/[0.94]"
+      className="flex min-h-0 w-[300px] shrink-0 flex-col overflow-hidden border-l border-stone-200 bg-white/[0.94]"
     >
-      <div className="grid h-full min-h-0 grid-rows-[auto_auto_minmax(0,1fr)] px-5 pb-4 pt-3">
+      <div className="grid h-full min-h-0 grid-rows-[auto_auto_minmax(0,1fr)] px-4 pb-3 pt-3">
         <section className="border-b border-stone-200 pb-3">
           <div className="flex items-center justify-between gap-3">
             <div>

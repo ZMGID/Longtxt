@@ -144,14 +144,16 @@ export function SnapshotsView({
   const { language, t } = useI18n()
   const { toast } = useToast()
   const [isCompactLayout, setIsCompactLayout] = useState(getIsCompactLayout)
-  const [compactPane, setCompactPane] = useState<'list' | 'detail'>(() => (getIsCompactLayout() ? 'detail' : 'list'))
+  const [compactPane, setCompactPane] = useState<'list' | 'detail'>(() => (
+    getIsCompactLayout() && selectedSnapshotId ? 'detail' : 'list'
+  ))
   const [toolsExpanded, setToolsExpanded] = useState(Boolean(importPreview))
   const [isEditing, setIsEditing] = useState(false)
   const [topicDraft, setTopicDraft] = useState('')
   const [contentDraft, setContentDraft] = useState('')
   const [isSavingEdit, setIsSavingEdit] = useState(false)
   const previousSelectedSnapshotIdRef = useRef<string | null>(null)
-  const previousCompactSnapshotIdRef = useRef<string | null>(null)
+  const previousCompactLayoutRef = useRef(isCompactLayout)
 
   const selectedSnapshot = useMemo(
     () => snapshots.find((snapshot) => snapshot.id === selectedSnapshotId) ?? snapshots[0] ?? null,
@@ -169,6 +171,19 @@ export function SnapshotsView({
     window.addEventListener('resize', handleResize)
     return () => window.removeEventListener('resize', handleResize)
   }, [])
+
+  useEffect(() => {
+    if (previousCompactLayoutRef.current === isCompactLayout) {
+      return
+    }
+
+    const enteredCompactLayout = !previousCompactLayoutRef.current && isCompactLayout
+    previousCompactLayoutRef.current = isCompactLayout
+
+    if (enteredCompactLayout) {
+      setCompactPane(selectedSnapshotId ? 'detail' : 'list')
+    }
+  }, [isCompactLayout, selectedSnapshotId])
 
   useEffect(() => {
     if (!importPreview) {
@@ -205,25 +220,6 @@ export function SnapshotsView({
     setTopicDraft(selectedSnapshotTopic)
     setContentDraft(selectedSnapshotContent)
   }, [isEditing, selectedSnapshotContent, selectedSnapshotKey, selectedSnapshotTopic])
-
-  useEffect(() => {
-    if (!isCompactLayout) {
-      return
-    }
-
-    if (!selectedSnapshotKey) {
-      setCompactPane('list')
-      previousCompactSnapshotIdRef.current = null
-      return
-    }
-
-    if (previousCompactSnapshotIdRef.current === selectedSnapshotKey) {
-      return
-    }
-
-    previousCompactSnapshotIdRef.current = selectedSnapshotKey
-    setCompactPane('detail')
-  }, [isCompactLayout, selectedSnapshotKey])
 
   async function handleCopySelectedSnapshot() {
     if (!selectedSnapshot) {

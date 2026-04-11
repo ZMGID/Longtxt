@@ -1808,6 +1808,8 @@ describe('app context', () => {
     const context = makeContext()
     const snapshot = await context.saveSnapshot('有效主题', '# 有效主题\n\n有效正文。', [])
 
+    await expect(context.saveSnapshot('   ', '# 有效主题\n\n有效正文。', [])).rejects.toThrow('内容不能为空。')
+
     await expect(context.updateSnapshot(snapshot.id, {
       topic: '   ',
       content: '# 有效主题\n\n有效正文。',
@@ -1817,6 +1819,8 @@ describe('app context', () => {
       topic: '有效主题',
       content: '# 有效主题\n\n有效正文。',
     })).rejects.toThrow('快照不存在。')
+
+    await expect(context.getSnapshot('missing-snapshot')).rejects.toThrow('快照不存在。')
   })
 
   it('generates daily review from day blocks and calendar entries', async () => {

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { extractImageFiles } from './imageTransfer'
+import { extractImageFiles, hasPotentialImageTransfer } from './imageTransfer'
 
 describe('extractImageFiles', () => {
   it('extracts image files from transfer items', () => {
@@ -46,5 +46,12 @@ describe('extractImageFiles', () => {
     })
 
     expect(files).toEqual([])
+  })
+
+  it('treats a Files drag payload as a possible image transfer before files are exposed', () => {
+    expect(hasPotentialImageTransfer({
+      items: [{ kind: 'file', type: '', getAsFile: () => null }],
+      types: ['Files'],
+    })).toBe(true)
   })
 })

@@ -1,5 +1,4 @@
-import type { ReactNode } from 'react'
-import { useEffect, useRef, useState } from 'react'
+import { memo, useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import { Virtuoso, type VirtuosoHandle } from 'react-virtuoso'
 
 import type { Block, NotebookSummary, TagSuggestion } from '../../shared/types'
@@ -38,7 +37,86 @@ interface TimelineProps {
 
 const MINI_TIMELINE_COLLAPSE_BREAKPOINT = 700
 
-export function Timeline({
+interface TimelineBlockRowProps {
+  block: Block
+  groupLabel: ReturnType<typeof buildMiniTimelineDerivedState>['groups'][number] | undefined
+  notebooks: NotebookSummary[]
+  tagSuggestions: TagSuggestion[]
+  onSave: (id: string, content: string) => Promise<void>
+  onDelete: (id: string) => Promise<void>
+  onAddTag: (blockId: string, tagName: string) => Promise<void>
+  onRemoveTag: (blockId: string, tagId: string) => Promise<void>
+  onTagClick: (tagName: string) => void
+  onAddToNotebook?: (notebookId: string, blockId: string) => Promise<void>
+  onCreateNotebookWithBlock?: (blockId: string) => Promise<void>
+  onFindRelated?: (blockId: string) => void
+  t: ReturnType<typeof useI18n>['t']
+}
+
+const TimelineBlockRow = memo(function TimelineBlockRow({
+  block,
+  groupLabel,
+  notebooks,
+  tagSuggestions,
+  onSave,
+  onDelete,
+  onAddTag,
+  onRemoveTag,
+  onTagClick,
+  onAddToNotebook,
+  onCreateNotebookWithBlock,
+  onFindRelated,
+  t,
+}: TimelineBlockRowProps) {
+  return (
+    <div className="pb-2">
+      {groupLabel ? (
+        <div className="mb-2 border-b border-stone-200 pb-2 pt-1">
+          <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-stone-400">{t('timeline.date')}</div>
+          <div className="mt-1 text-sm font-semibold text-stone-900">
+            {formatDateKeyLabel(groupLabel.key, { weekday: true })}
+          </div>
+        </div>
+      ) : null}
+      <BlockCard
+        block={block}
+        headerActions={
+          onAddToNotebook && onCreateNotebookWithBlock ? (
+            <AddToNotebookMenu
+              blockId={block.id}
+              notebooks={notebooks}
+              onAddToNotebook={onAddToNotebook}
+              onCreateNotebookWithBlock={onCreateNotebookWithBlock}
+            />
+          ) : null
+        }
+        tagSuggestions={tagSuggestions}
+        onSave={onSave}
+        onDelete={onDelete}
+        onAddTag={onAddTag}
+        onRemoveTag={onRemoveTag}
+        onTagClick={onTagClick}
+        onFindRelated={onFindRelated}
+      />
+    </div>
+  )
+}, (prevProps, nextProps) => (
+  prevProps.block === nextProps.block
+  && prevProps.groupLabel === nextProps.groupLabel
+  && prevProps.notebooks === nextProps.notebooks
+  && prevProps.tagSuggestions === nextProps.tagSuggestions
+  && prevProps.onSave === nextProps.onSave
+  && prevProps.onDelete === nextProps.onDelete
+  && prevProps.onAddTag === nextProps.onAddTag
+  && prevProps.onRemoveTag === nextProps.onRemoveTag
+  && prevProps.onTagClick === nextProps.onTagClick
+  && prevProps.onAddToNotebook === nextProps.onAddToNotebook
+  && prevProps.onCreateNotebookWithBlock === nextProps.onCreateNotebookWithBlock
+  && prevProps.onFindRelated === nextProps.onFindRelated
+  && prevProps.t === nextProps.t
+))
+
+export const Timeline = memo(function Timeline({
   blocks,
   loading,
   loadingMore,
@@ -67,7 +145,7 @@ export function Timeline({
   const previousBlocksRef = useRef<Block[] | null>(null)
   const previousMiniTimelineLanguageRef = useRef(language)
   const miniTimelineStateRef = useRef(buildMiniTimelineDerivedState(blocks, language))
-  const [topVisibleIndex, setTopVisibleIndex] = useState(0)
+  const topVisibleIndexRef = useRef(0)
   const [allowMiniTimeline, setAllowMiniTimeline] = useState(() =>
     typeof window === 'undefined' ? true : window.innerWidth >= MINI_TIMELINE_COLLAPSE_BREAKPOINT,
   )
@@ -86,11 +164,26 @@ export function Timeline({
   }
 
   const miniTimelineState = miniTimelineStateRef.current
-  const boundedTopVisibleIndex = Math.min(topVisibleIndex, Math.max(0, blocks.length - 1))
   const miniTimelineGroups = miniTimelineState.groups
   const shouldShowMiniTimeline = showMiniTimeline && allowMiniTimeline
-  const activeMiniTimelineGroupKey = getActiveMiniTimelineGroupKey(miniTimelineGroups, boundedTopVisibleIndex)
   const miniTimelineGroupByStartIndex = miniTimelineState.groupByStartIndex
+  const [activeMiniTimelineGroupKey, setActiveMiniTimelineGroupKey] = useState(() => (
+    getActiveMiniTimelineGroupKey(miniTimelineGroups, 0)
+  ))
+  const activeMiniTimelineGroupKeyRef = useRef(activeMiniTimelineGroupKey)
+
+  const syncActiveMiniTimelineGroup = useCallback((startIndex: number): void => {
+    const boundedStartIndex = Math.min(startIndex, Math.max(0, blocks.length - 1))
+    topVisibleIndexRef.current = boundedStartIndex
+    const nextGroupKey = getActiveMiniTimelineGroupKey(miniTimelineGroups, boundedStartIndex)
+
+    if (nextGroupKey === activeMiniTimelineGroupKeyRef.current) {
+      return
+    }
+
+    activeMiniTimelineGroupKeyRef.current = nextGroupKey
+    setActiveMiniTimelineGroupKey(nextGroupKey)
+  }, [blocks.length, miniTimelineGroups])
 
   useEffect(() => {
     if (typeof window === 'undefined') {
@@ -106,6 +199,10 @@ export function Timeline({
       window.removeEventListener('resize', handleResize)
     }
   }, [])
+
+  useEffect(() => {
+    syncActiveMiniTimelineGroup(topVisibleIndexRef.current)
+  }, [miniTimelineGroupByStartIndex, syncActiveMiniTimelineGroup])
 
   useEffect(() => {
     if (!focusedBlockId) {
@@ -214,41 +311,26 @@ export function Timeline({
           ref={virtuosoRef}
           style={{ flex: 1, minHeight: 0 }}
           data={blocks}
+          computeItemKey={(_index, block) => block.id}
           rangeChanged={(range) => {
-            setTopVisibleIndex(range.startIndex)
+            syncActiveMiniTimelineGroup(range.startIndex)
           }}
           itemContent={(index, block) => (
-            <div className="pb-2">
-              {miniTimelineGroupByStartIndex.get(index) ? (
-                <div className="mb-2 border-b border-stone-200 pb-2 pt-1">
-                  <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-stone-400">{t('timeline.date')}</div>
-                  <div className="mt-1 text-sm font-semibold text-stone-900">
-                    {formatDateKeyLabel(miniTimelineGroupByStartIndex.get(index)!.key, { weekday: true })}
-                  </div>
-                </div>
-              ) : null}
-              <BlockCard
-                key={block.id}
-                block={block}
-                headerActions={
-                  onAddToNotebook && onCreateNotebookWithBlock ? (
-                    <AddToNotebookMenu
-                      blockId={block.id}
-                      notebooks={notebooks}
-                      onAddToNotebook={onAddToNotebook}
-                      onCreateNotebookWithBlock={onCreateNotebookWithBlock}
-                    />
-                  ) : null
-                }
-                tagSuggestions={tagSuggestions}
-                onSave={onSave}
-                onDelete={onDelete}
-                onAddTag={onAddTag}
-                onRemoveTag={onRemoveTag}
-                onTagClick={onTagClick}
-                onFindRelated={onFindRelated}
-              />
-            </div>
+            <TimelineBlockRow
+              block={block}
+              groupLabel={miniTimelineGroupByStartIndex.get(index)}
+              notebooks={notebooks}
+              tagSuggestions={tagSuggestions}
+              onSave={onSave}
+              onDelete={onDelete}
+              onAddTag={onAddTag}
+              onRemoveTag={onRemoveTag}
+              onTagClick={onTagClick}
+              onAddToNotebook={onAddToNotebook}
+              onCreateNotebookWithBlock={onCreateNotebookWithBlock}
+              onFindRelated={onFindRelated}
+              t={t}
+            />
           )}
           components={{
             Footer: () =>
@@ -271,4 +353,4 @@ export function Timeline({
       </div>
     </div>
   )
-}
+})

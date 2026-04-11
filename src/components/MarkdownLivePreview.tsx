@@ -1,4 +1,4 @@
-import { useMemo, useRef } from 'react'
+import { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react'
 import CodeMirror from '@uiw/react-codemirror'
 import { markdown, markdownLanguage } from '@codemirror/lang-markdown'
 import {
@@ -15,14 +15,25 @@ import {
 import {
   type Extension,
   type Range as CMRange,
+  StateEffect,
   StateField,
 } from '@codemirror/state'
 import { syntaxTree } from '@codemirror/language'
 
-import { changbu } from '../lib/changbu'
 import { toRenderableAttachmentUrl } from '../lib/attachmentUrl'
-import { extractImageFiles } from '../lib/imageTransfer'
-import { parseMarkdownImage } from '../lib/markdownImage'
+import { extractImageFiles, hasPotentialImageTransfer } from '../lib/imageTransfer'
+import {
+  buildMarkdownImageSnippet,
+  saveMarkdownImageFiles,
+} from '../lib/markdownImageUpload'
+import {
+  MARKDOWN_IMAGE_PRESET_WIDTHS,
+  normalizeMarkdownImageWidth,
+  parseMarkdownImage,
+  type MarkdownImageDisplay,
+  resolveMarkdownImageDisplayFromWidth,
+  setMarkdownImageDisplay,
+} from '../lib/markdownImage'
 
 /* ------------------------------------------------------------------ */
 /*  Props                                                              */
@@ -34,27 +45,270 @@ interface MarkdownLivePreviewProps {
   onKeyDown?: (event: KeyboardEvent) => void
   placeholder?: string
   className?: string
+  dropTarget?: 'self' | 'none'
+}
+
+export type MarkdownFormatAction = 'heading' | 'bold' | 'italic' | 'codeBlock' | 'bulletList' | 'orderedList'
+
+export interface MarkdownLivePreviewHandle {
+  insertImageFiles: (imageFiles: File[], dropPoint?: { clientX: number; clientY: number }) => void
+  applyMarkdownFormat: (action: MarkdownFormatAction) => void
+}
+
+interface ImageSourceRange {
+  from: number
+  to: number
+}
+
+interface ImageFeedback {
+  kind: 'error' | 'info'
+  text: string
+}
+
+interface ImageContextMenuItem {
+  label: string
+  onSelect: () => void | Promise<void>
+  danger?: boolean
+}
+
+type ReportImageFeedback = (feedback: ImageFeedback | null) => void
+
+interface MarkdownEditOperation {
+  from: number
+  to: number
+  insert: string
+  selection: {
+    anchor: number
+    head: number
+  }
 }
 
 /* ------------------------------------------------------------------ */
 /*  工具函数                                                           */
 /* ------------------------------------------------------------------ */
 
-function readFileAsDataUrl(file: File): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader()
-    reader.onload = () => {
-      if (typeof reader.result === 'string') {
-        resolve(reader.result)
-        return
-      }
-      reject(new Error('图片读取失败。'))
+function toErrorMessage(error: unknown, fallback: string): string {
+  return error instanceof Error ? error.message : fallback
+}
+
+function isSameImageRange(left: ImageSourceRange | null, right: ImageSourceRange | null): boolean {
+  return left?.from === right?.from && left?.to === right?.to
+}
+
+function resolveEditorAvailableWidth(view: EditorView): number {
+  return Math.max(120, view.scrollDOM.clientWidth - 24)
+}
+
+function buildWrappedSelectionEdit(
+  view: EditorView,
+  prefix: string,
+  suffix: string,
+  placeholder: string,
+): MarkdownEditOperation {
+  const selection = view.state.selection.main
+  const selectedText = view.state.doc.sliceString(selection.from, selection.to)
+  const content = selectedText || placeholder
+  const insert = `${prefix}${content}${suffix}`
+  const contentStart = selection.from + prefix.length
+
+  return {
+    from: selection.from,
+    to: selection.to,
+    insert,
+    selection: {
+      anchor: contentStart,
+      head: contentStart + content.length,
+    },
+  }
+}
+
+function buildCodeBlockEdit(view: EditorView): MarkdownEditOperation {
+  const selection = view.state.selection.main
+  const selectedText = view.state.doc.sliceString(selection.from, selection.to)
+  const content = selectedText || '代码'
+  const insert = `\`\`\`\n${content}\n\`\`\``
+  const contentStart = selection.from + 4
+
+  return {
+    from: selection.from,
+    to: selection.to,
+    insert,
+    selection: {
+      anchor: contentStart,
+      head: contentStart + content.length,
+    },
+  }
+}
+
+function buildPrefixedLinesEdit(
+  view: EditorView,
+  formatter: (lineText: string, index: number) => { text: string; cursorOffset?: number },
+): MarkdownEditOperation {
+  const selection = view.state.selection.main
+  const startLine = view.state.doc.lineAt(selection.from)
+  const endPos = selection.empty ? selection.to : Math.max(selection.to - 1, selection.from)
+  const endLine = view.state.doc.lineAt(endPos)
+  const lines: string[] = []
+  let cursorOffset = 0
+
+  for (let lineNumber = startLine.number; lineNumber <= endLine.number; lineNumber += 1) {
+    const line = view.state.doc.line(lineNumber)
+    const formatted = formatter(line.text, lineNumber - startLine.number)
+    if (selection.empty && lineNumber === startLine.number) {
+      cursorOffset = formatted.cursorOffset ?? 0
     }
-    reader.onerror = () => {
-      reject(reader.error ?? new Error('图片读取失败。'))
+    lines.push(formatted.text)
+  }
+
+  const insert = lines.join('\n')
+
+  return {
+    from: startLine.from,
+    to: endLine.to,
+    insert,
+    selection: selection.empty
+      ? {
+          anchor: startLine.from + cursorOffset,
+          head: startLine.from + cursorOffset,
+        }
+      : {
+          anchor: startLine.from,
+          head: startLine.from + insert.length,
+        },
+  }
+}
+
+function buildMarkdownFormatEdit(view: EditorView, action: MarkdownFormatAction): MarkdownEditOperation {
+  switch (action) {
+    case 'heading':
+      return buildPrefixedLinesEdit(view, (lineText) => {
+        const text = `# ${lineText}`
+        return {
+          text,
+          cursorOffset: lineText ? 2 + lineText.length : 2,
+        }
+      })
+    case 'bold':
+      return buildWrappedSelectionEdit(view, '**', '**', '加粗文本')
+    case 'italic':
+      return buildWrappedSelectionEdit(view, '*', '*', '斜体文本')
+    case 'codeBlock':
+      return buildCodeBlockEdit(view)
+    case 'bulletList':
+      return buildPrefixedLinesEdit(view, (lineText) => ({
+        text: `- ${lineText}`,
+        cursorOffset: lineText ? 2 + lineText.length : 2,
+      }))
+    case 'orderedList':
+      return buildPrefixedLinesEdit(view, (lineText, index) => {
+        const prefix = `${index + 1}. `
+        return {
+          text: `${prefix}${lineText}`,
+          cursorOffset: lineText ? prefix.length + lineText.length : prefix.length,
+        }
+      })
+  }
+}
+
+let activeImageContextMenu: HTMLDivElement | null = null
+let clearActiveImageContextMenuListeners: (() => void) | null = null
+
+function closeActiveImageContextMenu(): void {
+  clearActiveImageContextMenuListeners?.()
+  clearActiveImageContextMenuListeners = null
+  activeImageContextMenu?.remove()
+  activeImageContextMenu = null
+}
+
+function openImageContextMenu(x: number, y: number, items: ImageContextMenuItem[]): void {
+  closeActiveImageContextMenu()
+
+  const menu = document.createElement('div')
+  menu.setAttribute('role', 'menu')
+  Object.assign(menu.style, {
+    position: 'fixed',
+    left: '0',
+    top: '0',
+    minWidth: '168px',
+    padding: '6px',
+    borderRadius: '12px',
+    border: '1px solid rgba(231, 229, 228, 0.96)',
+    backgroundColor: 'rgba(255, 255, 255, 0.98)',
+    boxShadow: '0 18px 38px rgba(28, 25, 23, 0.16)',
+    backdropFilter: 'blur(12px)',
+    zIndex: '9999',
+  } satisfies Partial<CSSStyleDeclaration>)
+
+  for (const item of items) {
+    const button = document.createElement('button')
+    button.type = 'button'
+    button.setAttribute('role', 'menuitem')
+    button.textContent = item.label
+    Object.assign(button.style, {
+      display: 'block',
+      width: '100%',
+      border: 'none',
+      borderRadius: '8px',
+      padding: '8px 10px',
+      backgroundColor: 'transparent',
+      color: item.danger ? '#b91c1c' : '#1c1917',
+      fontSize: '12px',
+      lineHeight: '1.2',
+      textAlign: 'left',
+      cursor: 'pointer',
+    } satisfies Partial<CSSStyleDeclaration>)
+
+    button.addEventListener('mouseenter', () => {
+      button.style.backgroundColor = item.danger ? 'rgba(254, 226, 226, 0.7)' : '#f5f5f4'
+    })
+    button.addEventListener('mouseleave', () => {
+      button.style.backgroundColor = 'transparent'
+    })
+    button.addEventListener('click', async (event) => {
+      event.preventDefault()
+      event.stopPropagation()
+      closeActiveImageContextMenu()
+      await item.onSelect()
+    })
+
+    menu.appendChild(button)
+  }
+
+  document.body.appendChild(menu)
+
+  const rect = menu.getBoundingClientRect()
+  const boundedX = Math.max(8, Math.min(x, window.innerWidth - rect.width - 8))
+  const boundedY = Math.max(8, Math.min(y, window.innerHeight - rect.height - 8))
+  menu.style.left = `${boundedX}px`
+  menu.style.top = `${boundedY}px`
+
+  const handlePointerDown = (event: PointerEvent) => {
+    if (event.target instanceof Node && menu.contains(event.target)) {
+      return
     }
-    reader.readAsDataURL(file)
-  })
+    closeActiveImageContextMenu()
+  }
+
+  const handleEscape = (event: KeyboardEvent) => {
+    if (event.key === 'Escape') {
+      closeActiveImageContextMenu()
+    }
+  }
+
+  const cleanup = () => {
+    window.removeEventListener('pointerdown', handlePointerDown, true)
+    window.removeEventListener('resize', closeActiveImageContextMenu)
+    window.removeEventListener('blur', closeActiveImageContextMenu)
+    document.removeEventListener('keydown', handleEscape, true)
+  }
+
+  clearActiveImageContextMenuListeners = cleanup
+  activeImageContextMenu = menu
+
+  window.addEventListener('pointerdown', handlePointerDown, true)
+  window.addEventListener('resize', closeActiveImageContextMenu)
+  window.addEventListener('blur', closeActiveImageContextMenu)
+  document.addEventListener('keydown', handleEscape, true)
 }
 
 /* ------------------------------------------------------------------ */
@@ -68,6 +322,72 @@ const cursorLineField = StateField.define<number>({
   update(value, tr) {
     if (!tr.selection) return value
     return tr.state.doc.lineAt(tr.state.selection.main.head).number
+  },
+})
+
+const revealImageSourceEffect = StateEffect.define<ImageSourceRange | null>()
+const selectImageEffect = StateEffect.define<ImageSourceRange | null>()
+
+const imageSourceField = StateField.define<ImageSourceRange | null>({
+  create() {
+    return null
+  },
+  update(value, tr) {
+    let nextValue = value
+
+    if (nextValue) {
+      nextValue = {
+        from: tr.changes.mapPos(nextValue.from),
+        to: tr.changes.mapPos(nextValue.to, 1),
+      }
+
+      if (nextValue.from >= nextValue.to) {
+        nextValue = null
+      }
+    }
+
+    for (const effect of tr.effects) {
+      if (effect.is(revealImageSourceEffect)) {
+        nextValue = effect.value
+      }
+    }
+
+    if (!nextValue) {
+      return null
+    }
+
+    const selection = tr.state.selection.main
+    const isInsideSourceRange = selection.from >= nextValue.from && selection.to <= nextValue.to
+
+    return isInsideSourceRange ? nextValue : null
+  },
+})
+
+const selectedImageField = StateField.define<ImageSourceRange | null>({
+  create() {
+    return null
+  },
+  update(value, tr) {
+    let nextValue = value
+
+    if (nextValue) {
+      nextValue = {
+        from: tr.changes.mapPos(nextValue.from),
+        to: tr.changes.mapPos(nextValue.to, 1),
+      }
+
+      if (nextValue.from >= nextValue.to) {
+        nextValue = null
+      }
+    }
+
+    for (const effect of tr.effects) {
+      if (effect.is(selectImageEffect)) {
+        nextValue = effect.value
+      }
+    }
+
+    return nextValue
   },
 })
 
@@ -113,7 +433,6 @@ const livePreviewTheme = CMEditorView.theme({
     fontStyle: 'italic',
     lineHeight: '1.55',
   },
-  /* 行内样式 */
   '.cm-strong': {
     fontWeight: '700',
   },
@@ -132,33 +451,51 @@ const livePreviewTheme = CMEditorView.theme({
     textDecoration: 'underline',
   },
   '.cm-image-widget': {
+    position: 'relative',
     display: 'inline-flex',
     flexDirection: 'column',
-    width: '100%',
     maxWidth: '100%',
-    margin: '10px 0',
+    margin: '10px 0 18px',
+    verticalAlign: 'top',
+    boxSizing: 'border-box',
+  },
+  '.cm-image-widget-frame': {
     overflow: 'hidden',
     borderRadius: '12px',
     border: '1px solid #e7e5e4',
     backgroundColor: '#fafaf9',
-    verticalAlign: 'top',
+    transition: 'border-color 120ms ease, box-shadow 120ms ease',
+  },
+  '.cm-image-widget-selected .cm-image-widget-frame': {
+    borderColor: '#a8a29e',
+    boxShadow: '0 0 0 3px rgba(120, 113, 108, 0.14)',
   },
   '.cm-image-widget img': {
     display: 'block',
-    width: '100%',
-    maxHeight: '320px',
+    height: 'auto',
+    maxWidth: '100%',
+    maxHeight: '560px',
     objectFit: 'contain',
     backgroundColor: '#f5f5f4',
   },
-  '.cm-image-widget-caption': {
-    padding: '8px 10px',
-    fontSize: '11px',
-    lineHeight: '1.4',
-    color: '#78716c',
-    borderTop: '1px solid #e7e5e4',
-    backgroundColor: '#fcfcfb',
+  '.cm-image-widget-resize-handle': {
+    position: 'absolute',
+    right: '-6px',
+    bottom: '-6px',
+    width: '14px',
+    height: '14px',
+    borderRadius: '999px',
+    border: '2px solid #fafaf9',
+    backgroundColor: '#292524',
+    boxShadow: '0 4px 12px rgba(28, 25, 23, 0.18)',
+    opacity: '0',
+    pointerEvents: 'none',
+    cursor: 'nwse-resize',
   },
-  /* 标题：字号递减，仅标题用衬线字体 */
+  '.cm-image-widget-selected .cm-image-widget-resize-handle': {
+    opacity: '1',
+    pointerEvents: 'auto',
+  },
   '.cm-heading-1': {
     fontFamily: "'Newsreader', 'Noto Serif SC', Georgia, serif",
     fontSize: '1.5em',
@@ -171,7 +508,6 @@ const livePreviewTheme = CMEditorView.theme({
     fontSize: '1.3em',
     fontWeight: '700',
     lineHeight: '1.35',
-    letterSpacing: '-0.01em',
   },
   '.cm-heading-3': {
     fontFamily: "'Newsreader', 'Noto Serif SC', Georgia, serif",
@@ -195,7 +531,6 @@ const livePreviewTheme = CMEditorView.theme({
     lineHeight: '1.5',
     color: '#57534e',
   },
-  /* 代码块 - Decoration.line 会把 class 加到 .cm-line 上 */
   '.cm-line.cm-code-block': {
     backgroundColor: '#f5f5f4',
     borderRadius: '6px',
@@ -204,7 +539,6 @@ const livePreviewTheme = CMEditorView.theme({
     padding: '0 12px',
     lineHeight: '1.6',
   },
-  /* 引用 */
   '.cm-blockquote': {
     borderLeft: '3px solid #d6d3d1',
     backgroundColor: 'rgba(0, 0, 0, 0.04)',
@@ -212,7 +546,6 @@ const livePreviewTheme = CMEditorView.theme({
     fontStyle: 'italic',
     color: '#57534e',
   },
-  /* 分隔线 widget */
   '.cm-hr-widget': {
     display: 'block',
     border: 'none',
@@ -226,7 +559,6 @@ const livePreviewTheme = CMEditorView.theme({
 /*  装饰插件                                                           */
 /* ------------------------------------------------------------------ */
 
-/* 隐藏子节点中的特定标记 */
 function hideChildMarks(
   parentNode: { firstChild: SyntaxNodeLike | null },
   markName: string,
@@ -241,7 +573,6 @@ function hideChildMarks(
   }
 }
 
-/* Lezer SyntaxNode 的可遍历子集 */
 interface SyntaxNodeLike {
   name: string
   from: number
@@ -252,212 +583,234 @@ interface SyntaxNodeLike {
   parent: SyntaxNodeLike | null
 }
 
-class LivePreviewPlugin implements PluginValue {
-  decorations: DecorationSet
+function applyPreviewWidth(wrapper: HTMLElement, image: HTMLImageElement, width: number, availableWidth: number): void {
+  wrapper.style.width = `${Math.min(width, availableWidth)}px`
+  image.style.width = '100%'
+}
 
-  constructor(view: EditorView) {
-    this.decorations = this.buildDecorations(view)
-  }
+function createLivePreviewPlugin(reportImageFeedback: ReportImageFeedback): Extension {
+  class LivePreviewPlugin implements PluginValue {
+    decorations: DecorationSet
 
-  update(update: ViewUpdate): void {
-    if (update.docChanged || update.viewportChanged) {
-      this.decorations = this.buildDecorations(update.view)
-      return
+    constructor(view: EditorView) {
+      this.decorations = this.buildDecorations(view)
     }
 
-    if (!update.selectionSet) {
-      return
-    }
-
-    const previousCursorLine = update.startState.field(cursorLineField)
-    const nextCursorLine = update.state.field(cursorLineField)
-
-    // 只有真正跨行移动时，才需要重建整套 Markdown 装饰。
-    if (previousCursorLine !== nextCursorLine) {
-      this.decorations = this.buildDecorations(update.view)
-    }
-  }
-
-  private buildDecorations(view: EditorView): DecorationSet {
-    const ranges: CMRange<Decoration>[] = []
-    const cursorLine = view.state.field(cursorLineField)
-    const doc = view.state.doc
-
-    /* 收集代码块范围 */
-    const codeBlockRanges: Array<{ from: number; to: number }> = []
-    syntaxTree(view.state).iterate({
-      enter(node) {
-        if (node.name === 'FencedCode') {
-          codeBlockRanges.push({ from: node.from, to: node.to })
-        }
-      },
-    })
-
-    const isInCodeBlock = (pos: number): boolean => {
-      for (const range of codeBlockRanges) {
-        if (pos >= range.from && pos <= range.to) return true
+    update(update: ViewUpdate): void {
+      if (update.docChanged || update.viewportChanged) {
+        closeActiveImageContextMenu()
+        this.decorations = this.buildDecorations(update.view)
+        return
       }
-      return false
+
+      const previousImageSource = update.startState.field(imageSourceField)
+      const nextImageSource = update.state.field(imageSourceField)
+      if (!isSameImageRange(previousImageSource, nextImageSource)) {
+        this.decorations = this.buildDecorations(update.view)
+        return
+      }
+
+      const previousSelectedImage = update.startState.field(selectedImageField)
+      const nextSelectedImage = update.state.field(selectedImageField)
+      if (!isSameImageRange(previousSelectedImage, nextSelectedImage)) {
+        this.decorations = this.buildDecorations(update.view)
+        return
+      }
+
+      if (!update.selectionSet) {
+        return
+      }
+
+      const previousCursorLine = update.startState.field(cursorLineField)
+      const nextCursorLine = update.state.field(cursorLineField)
+
+      if (previousCursorLine !== nextCursorLine) {
+        this.decorations = this.buildDecorations(update.view)
+      }
     }
 
-    const isOnCursorLine = (from: number, to: number): boolean => {
-      const nodeStartLine = doc.lineAt(from).number
-      const nodeEndLine = doc.lineAt(Math.min(to, doc.length)).number
-      return cursorLine >= nodeStartLine && cursorLine <= nodeEndLine
-    }
+    private buildDecorations(view: EditorView): DecorationSet {
+      const ranges: CMRange<Decoration>[] = []
+      const cursorLine = view.state.field(cursorLineField)
+      const revealedImageSource = view.state.field(imageSourceField)
+      const selectedImage = view.state.field(selectedImageField)
+      const doc = view.state.doc
 
-    syntaxTree(view.state).iterate({
-      enter(node) {
-        /* 跳过光标行 */
-        if (isOnCursorLine(node.from, node.to)) return
+      const codeBlockRanges: Array<{ from: number; to: number }> = []
+      syntaxTree(view.state).iterate({
+        enter(node) {
+          if (node.name === 'FencedCode') {
+            codeBlockRanges.push({ from: node.from, to: node.to })
+          }
+        },
+      })
 
-        switch (node.name) {
-          /* ---------- 图片 ---------- */
-          case 'Image': {
+      const isInCodeBlock = (pos: number): boolean => {
+        for (const range of codeBlockRanges) {
+          if (pos >= range.from && pos <= range.to) return true
+        }
+        return false
+      }
+
+      const isOnCursorLine = (from: number, to: number): boolean => {
+        const nodeStartLine = doc.lineAt(from).number
+        const nodeEndLine = doc.lineAt(Math.min(to, doc.length)).number
+        return cursorLine >= nodeStartLine && cursorLine <= nodeEndLine
+      }
+
+      syntaxTree(view.state).iterate({
+        enter(node) {
+          if (node.name === 'Image') {
+            if (revealedImageSource && node.from === revealedImageSource.from && node.to === revealedImageSource.to) {
+              return
+            }
+
             const parsed = parseMarkdownImage(doc.sliceString(node.from, node.to))
 
             if (!parsed) {
-              break
+              return
             }
 
             ranges.push(
               Decoration.replace({
-                widget: new MarkdownImageWidget(parsed.src, parsed.alt),
+                widget: new MarkdownImageWidget(
+                  doc.sliceString(node.from, node.to),
+                  parsed.src,
+                  parsed.alt,
+                  parsed.display,
+                  node.from,
+                  node.to,
+                  Boolean(selectedImage && selectedImage.from === node.from && selectedImage.to === node.to),
+                  reportImageFeedback,
+                ),
               }).range(node.from, node.to),
             )
-            break
+            return
           }
 
-          /* ---------- 标题标记 ---------- */
-          case 'HeaderMark': {
-            ranges.push(Decoration.replace({}).range(node.from, node.to))
-            break
-          }
+          if (isOnCursorLine(node.from, node.to)) return
 
-          /* ---------- 标题行样式 ---------- */
-          case 'ATXHeading1':
-          case 'ATXHeading2':
-          case 'ATXHeading3':
-          case 'ATXHeading4':
-          case 'ATXHeading5':
-          case 'ATXHeading6': {
-            const level = Number(node.name.slice(-1))
-            const lineStart = doc.lineAt(node.from).from
-            ranges.push(Decoration.line({ class: `cm-heading-${level}` }).range(lineStart))
-            break
-          }
+          switch (node.name) {
+            case 'HeaderMark': {
+              ranges.push(Decoration.replace({}).range(node.from, node.to))
+              break
+            }
 
-          /* ---------- 粗体 ---------- */
-          case 'StrongEmphasis': {
-            ranges.push(Decoration.mark({ class: 'cm-strong' }).range(node.from, node.to))
-            hideChildMarks(node.node, 'EmphasisMark', ranges)
-            break
-          }
+            case 'ATXHeading1':
+            case 'ATXHeading2':
+            case 'ATXHeading3':
+            case 'ATXHeading4':
+            case 'ATXHeading5':
+            case 'ATXHeading6': {
+              const level = Number(node.name.slice(-1))
+              const lineStart = doc.lineAt(node.from).from
+              ranges.push(Decoration.line({ class: `cm-heading-${level}` }).range(lineStart))
+              break
+            }
 
-          /* ---------- 斜体 ---------- */
-          case 'Emphasis': {
-            if (node.node.parent?.name === 'StrongEmphasis') break
-            ranges.push(Decoration.mark({ class: 'cm-em' }).range(node.from, node.to))
-            hideChildMarks(node.node, 'EmphasisMark', ranges)
-            break
-          }
+            case 'StrongEmphasis': {
+              ranges.push(Decoration.mark({ class: 'cm-strong' }).range(node.from, node.to))
+              hideChildMarks(node.node, 'EmphasisMark', ranges)
+              break
+            }
 
-          /* ---------- 行内代码 ---------- */
-          case 'InlineCode': {
-            if (isInCodeBlock(node.from)) break
-            ranges.push(Decoration.mark({ class: 'cm-inline-code' }).range(node.from, node.to))
-            hideChildMarks(node.node, 'CodeMark', ranges)
-            break
-          }
+            case 'Emphasis': {
+              if (node.node.parent?.name === 'StrongEmphasis') break
+              ranges.push(Decoration.mark({ class: 'cm-em' }).range(node.from, node.to))
+              hideChildMarks(node.node, 'EmphasisMark', ranges)
+              break
+            }
 
-          /* ---------- 链接 ---------- */
-          case 'Link': {
-            let child = node.node.firstChild
-            while (child) {
-              if (child.name === 'LinkMark') {
-                ranges.push(Decoration.replace({}).range(child.from, child.to))
-              }
-              if (child.name === 'URL') {
-                const prevChar = doc.sliceString(child.from - 1, child.from)
-                if (prevChar === '(') {
-                  ranges.push(Decoration.replace({}).range(child.from - 1, child.to + 1))
-                } else {
+            case 'InlineCode': {
+              if (isInCodeBlock(node.from)) break
+              ranges.push(Decoration.mark({ class: 'cm-inline-code' }).range(node.from, node.to))
+              hideChildMarks(node.node, 'CodeMark', ranges)
+              break
+            }
+
+            case 'Link': {
+              let child = node.node.firstChild
+              while (child) {
+                if (child.name === 'LinkMark') {
                   ranges.push(Decoration.replace({}).range(child.from, child.to))
                 }
+                if (child.name === 'URL') {
+                  const prevChar = doc.sliceString(child.from - 1, child.from)
+                  if (prevChar === '(') {
+                    ranges.push(Decoration.replace({}).range(child.from - 1, child.to + 1))
+                  } else {
+                    ranges.push(Decoration.replace({}).range(child.from, child.to))
+                  }
+                }
+                child = child.nextSibling
               }
-              child = child.nextSibling
+              ranges.push(Decoration.mark({ class: 'cm-link-text' }).range(node.from, node.to))
+              break
             }
-            ranges.push(Decoration.mark({ class: 'cm-link-text' }).range(node.from, node.to))
-            break
-          }
 
-          /* ---------- 代码块 ---------- */
-          case 'FencedCode': {
-            /* 行级样式 */
-            const startLine = doc.lineAt(node.from)
-            const endLine = doc.lineAt(Math.min(node.to, doc.length))
-            for (let ln = startLine.number; ln <= endLine.number; ln++) {
-              const line = doc.line(ln)
-              ranges.push(Decoration.line({ class: 'cm-code-block' }).range(line.from))
-            }
-            /* 隐藏围栏标记 */
-            let child = node.node.firstChild
-            while (child) {
-              if (child.name === 'CodeMark' || child.name === 'CodeInfo') {
-                const lineEnd = doc.lineAt(child.from).to
-                ranges.push(Decoration.replace({}).range(child.from, lineEnd))
+            case 'FencedCode': {
+              const startLine = doc.lineAt(node.from)
+              const endLine = doc.lineAt(Math.min(node.to, doc.length))
+              for (let ln = startLine.number; ln <= endLine.number; ln++) {
+                const line = doc.line(ln)
+                ranges.push(Decoration.line({ class: 'cm-code-block' }).range(line.from))
               }
-              child = child.nextSibling
-            }
-            /* 末尾 CodeMark */
-            const lastChild = node.node.lastChild
-            if (lastChild && lastChild.name === 'CodeMark' && lastChild !== node.node.firstChild) {
-              ranges.push(Decoration.replace({}).range(lastChild.from, lastChild.to))
-            }
-            break
-          }
-
-          /* ---------- 引用 ---------- */
-          case 'Blockquote': {
-            const startLine = doc.lineAt(node.from)
-            const endLine = doc.lineAt(Math.min(node.to, doc.length))
-            for (let ln = startLine.number; ln <= endLine.number; ln++) {
-              const line = doc.line(ln)
-              ranges.push(Decoration.line({ class: 'cm-blockquote' }).range(line.from))
-            }
-            /* 隐藏 > 标记 */
-            let child = node.node.firstChild
-            while (child) {
-              if (child.name === 'QuoteMark') {
-                ranges.push(Decoration.replace({}).range(child.from, child.to))
+              let child = node.node.firstChild
+              while (child) {
+                if (child.name === 'CodeMark' || child.name === 'CodeInfo') {
+                  const lineEnd = doc.lineAt(child.from).to
+                  ranges.push(Decoration.replace({}).range(child.from, lineEnd))
+                }
+                child = child.nextSibling
               }
-              child = child.nextSibling
+              const lastChild = node.node.lastChild
+              if (lastChild && lastChild.name === 'CodeMark' && lastChild !== node.node.firstChild) {
+                ranges.push(Decoration.replace({}).range(lastChild.from, lastChild.to))
+              }
+              break
             }
-            break
-          }
 
-          /* ---------- 分隔线 ---------- */
-          case 'HorizontalRule': {
-            ranges.push(Decoration.replace({
-              widget: new HorizontalRuleWidget(),
-            }).range(node.from, node.to))
-            break
-          }
+            case 'Blockquote': {
+              const startLine = doc.lineAt(node.from)
+              const endLine = doc.lineAt(Math.min(node.to, doc.length))
+              for (let ln = startLine.number; ln <= endLine.number; ln++) {
+                const line = doc.line(ln)
+                ranges.push(Decoration.line({ class: 'cm-blockquote' }).range(line.from))
+              }
+              let child = node.node.firstChild
+              while (child) {
+                if (child.name === 'QuoteMark') {
+                  ranges.push(Decoration.replace({}).range(child.from, child.to))
+                }
+                child = child.nextSibling
+              }
+              break
+            }
 
-          /* ---------- 列表标记 ---------- */
-          case 'ListMark': {
-            ranges.push(Decoration.replace({}).range(node.from, node.to))
-            break
-          }
-        }
-      },
-    })
+            case 'HorizontalRule': {
+              ranges.push(Decoration.replace({
+                widget: new HorizontalRuleWidget(),
+              }).range(node.from, node.to))
+              break
+            }
 
-    return Decoration.set(ranges, true)
+            case 'ListMark': {
+              ranges.push(Decoration.replace({}).range(node.from, node.to))
+              break
+            }
+          }
+        },
+      })
+
+      return Decoration.set(ranges, true)
+    }
   }
+
+  return ViewPlugin.fromClass(LivePreviewPlugin, {
+    decorations: (value) => value.decorations,
+  })
 }
 
-/* 分隔线 widget */
 class HorizontalRuleWidget extends WidgetType {
   toDOM(): HTMLElement {
     const hr = document.createElement('hr')
@@ -467,48 +820,295 @@ class HorizontalRuleWidget extends WidgetType {
 }
 
 class MarkdownImageWidget extends WidgetType {
+  private readonly markdown: string
   private readonly src: string
   private readonly alt: string
+  private readonly display: MarkdownImageDisplay
+  private readonly from: number
+  private readonly to: number
+  private readonly selected: boolean
+  private readonly reportImageFeedback: ReportImageFeedback
 
-  constructor(src: string, alt: string) {
+  constructor(
+    markdown: string,
+    src: string,
+    alt: string,
+    display: MarkdownImageDisplay,
+    from: number,
+    to: number,
+    selected: boolean,
+    reportImageFeedback: ReportImageFeedback,
+  ) {
     super()
+    this.markdown = markdown
     this.src = src
     this.alt = alt
+    this.display = display
+    this.from = from
+    this.to = to
+    this.selected = selected
+    this.reportImageFeedback = reportImageFeedback
   }
 
   eq(other: MarkdownImageWidget): boolean {
-    return other.src === this.src && other.alt === this.alt
+    return other.src === this.src
+      && other.alt === this.alt
+      && other.markdown === this.markdown
+      && other.from === this.from
+      && other.to === this.to
+      && other.selected === this.selected
   }
 
   ignoreEvent(): boolean {
     return false
   }
 
-  toDOM(): HTMLElement {
+  toDOM(view: EditorView): HTMLElement {
     const wrapper = document.createElement('span')
-    wrapper.className = 'cm-image-widget'
+    wrapper.className = `cm-image-widget${this.selected ? ' cm-image-widget-selected' : ''}`
+    wrapper.dataset.imageFrom = String(this.from)
+    wrapper.dataset.imageTo = String(this.to)
+    this.applyDisplay(wrapper)
+
+    wrapper.addEventListener('click', (event) => {
+      event.preventDefault()
+      event.stopPropagation()
+      closeActiveImageContextMenu()
+      view.dispatch({
+        effects: selectImageEffect.of({
+          from: this.from,
+          to: this.to,
+        }),
+      })
+      view.focus()
+    })
+
+    wrapper.addEventListener('contextmenu', (event) => {
+      event.preventDefault()
+      event.stopPropagation()
+      closeActiveImageContextMenu()
+      view.dispatch({
+        effects: selectImageEffect.of({
+          from: this.from,
+          to: this.to,
+        }),
+      })
+      view.focus()
+
+      requestAnimationFrame(() => {
+        openImageContextMenu(event.clientX, event.clientY, [
+          {
+            label: '复制图片',
+            onSelect: async () => {
+              await this.copyImage()
+            },
+          },
+          {
+            label: '删除图片',
+            danger: true,
+            onSelect: () => this.removeImage(view),
+          },
+          {
+            label: '复制图片地址',
+            onSelect: async () => {
+              await this.copyImageSource()
+            },
+          },
+          {
+            label: '查看源码',
+            onSelect: () => this.revealSource(view),
+          },
+          {
+            label: '重置宽度',
+            onSelect: () => this.resetDisplay(view),
+          },
+        ])
+      })
+    })
+
+    const frame = document.createElement('span')
+    frame.className = 'cm-image-widget-frame'
+    wrapper.appendChild(frame)
 
     const image = document.createElement('img')
     image.src = toRenderableAttachmentUrl(this.src)
     image.alt = this.alt
     image.loading = 'lazy'
     image.draggable = false
-    wrapper.appendChild(image)
-
-    if (this.alt) {
-      const caption = document.createElement('span')
-      caption.className = 'cm-image-widget-caption'
-      caption.textContent = this.alt
-      wrapper.appendChild(caption)
+    if (this.display.kind !== 'auto') {
+      image.style.width = '100%'
     }
+    frame.appendChild(image)
+
+    wrapper.appendChild(this.createResizeHandle(view, wrapper, image))
 
     return wrapper
   }
-}
 
-const livePreviewPlugin = ViewPlugin.fromClass(LivePreviewPlugin, {
-  decorations: (v) => v.decorations,
-})
+  private dispatchUpdatedMarkdown(view: EditorView, nextMarkdown: string | null): void {
+    if (!nextMarkdown) {
+      return
+    }
+
+    closeActiveImageContextMenu()
+    view.dispatch({
+      changes: {
+        from: this.from,
+        to: this.to,
+        insert: nextMarkdown,
+      },
+      effects: selectImageEffect.of({
+        from: this.from,
+        to: this.from + nextMarkdown.length,
+      }),
+    })
+    view.focus()
+  }
+
+  private applyDisplay(wrapper: HTMLElement): void {
+    wrapper.style.width = ''
+
+    if (this.display.kind === 'width') {
+      wrapper.style.width = `${this.display.width}px`
+      return
+    }
+
+    if (this.display.kind === 'preset') {
+      wrapper.style.width = this.display.preset === 'full'
+        ? '100%'
+        : `${MARKDOWN_IMAGE_PRESET_WIDTHS[this.display.preset]}px`
+    }
+  }
+
+  private createResizeHandle(view: EditorView, wrapper: HTMLElement, image: HTMLImageElement): HTMLElement {
+    const handle = document.createElement('button')
+    handle.type = 'button'
+    handle.className = 'cm-image-widget-resize-handle'
+    handle.setAttribute('aria-label', '调整图片宽度')
+
+    handle.addEventListener('pointerdown', (event) => {
+      event.preventDefault()
+      event.stopPropagation()
+      closeActiveImageContextMenu()
+
+      const availableWidth = resolveEditorAvailableWidth(view)
+      const startWidth = wrapper.getBoundingClientRect().width || availableWidth
+      const startX = event.clientX
+      const previousUserSelect = document.body.style.userSelect
+
+      document.body.style.userSelect = 'none'
+      wrapper.classList.add('cm-image-widget-selected')
+      view.dispatch({
+        effects: selectImageEffect.of({
+          from: this.from,
+          to: this.to,
+        }),
+      })
+
+      const handlePointerMove = (moveEvent: PointerEvent) => {
+        const nextWidth = normalizeMarkdownImageWidth(startWidth + moveEvent.clientX - startX)
+        applyPreviewWidth(wrapper, image, nextWidth, availableWidth)
+      }
+
+      const handlePointerUp = (upEvent: PointerEvent) => {
+        const nextWidth = normalizeMarkdownImageWidth(startWidth + upEvent.clientX - startX)
+        const nextDisplay = resolveMarkdownImageDisplayFromWidth(nextWidth, availableWidth)
+        document.body.style.userSelect = previousUserSelect
+        window.removeEventListener('pointermove', handlePointerMove)
+        window.removeEventListener('pointerup', handlePointerUp)
+        this.dispatchUpdatedMarkdown(view, setMarkdownImageDisplay(this.markdown, nextDisplay))
+      }
+
+      window.addEventListener('pointermove', handlePointerMove)
+      window.addEventListener('pointerup', handlePointerUp, { once: true })
+    })
+
+    return handle
+  }
+
+  private revealSource(view: EditorView): void {
+    closeActiveImageContextMenu()
+    view.dispatch({
+      effects: [
+        revealImageSourceEffect.of({
+          from: this.from,
+          to: this.to,
+        }),
+        selectImageEffect.of(null),
+      ],
+      selection: {
+        anchor: this.from,
+        head: this.to,
+      },
+    })
+    view.focus()
+  }
+
+  private removeImage(view: EditorView): void {
+    closeActiveImageContextMenu()
+    view.dispatch({
+      changes: {
+        from: this.from,
+        to: this.to,
+        insert: '',
+      },
+      effects: selectImageEffect.of(null),
+    })
+    view.focus()
+  }
+
+  private async copyImageSource(): Promise<void> {
+    try {
+      if (!navigator.clipboard?.writeText) {
+        throw new Error('当前环境不支持剪贴板复制。')
+      }
+
+      await navigator.clipboard.writeText(this.src)
+      this.reportImageFeedback({
+        kind: 'info',
+        text: '图片地址已复制。',
+      })
+    } catch (error) {
+      this.reportImageFeedback({
+        kind: 'error',
+        text: toErrorMessage(error, '图片地址复制失败。'),
+      })
+    }
+  }
+
+  private async copyImage(): Promise<void> {
+    try {
+      if (!navigator.clipboard?.write || typeof ClipboardItem === 'undefined') {
+        throw new Error('当前环境不支持复制图片。')
+      }
+
+      const response = await fetch(toRenderableAttachmentUrl(this.src))
+      if (!response.ok) {
+        throw new Error('图片读取失败。')
+      }
+
+      const blob = await response.blob()
+      const clipboardItem = new ClipboardItem({
+        [blob.type || 'image/png']: blob,
+      })
+      await navigator.clipboard.write([clipboardItem])
+
+      this.reportImageFeedback({
+        kind: 'info',
+        text: '图片已复制。',
+      })
+    } catch (error) {
+      this.reportImageFeedback({
+        kind: 'error',
+        text: toErrorMessage(error, '图片复制失败。'),
+      })
+    }
+  }
+
+  private resetDisplay(view: EditorView): void {
+    this.dispatchUpdatedMarkdown(view, setMarkdownImageDisplay(this.markdown, { kind: 'auto' }))
+  }
+}
 
 /* ------------------------------------------------------------------ */
 /*  图片粘贴扩展                                                       */
@@ -518,26 +1118,34 @@ async function saveAndInsertImages(
   view: EditorView,
   imageFiles: File[],
   position: number,
+  reportImageFeedback: ReportImageFeedback,
 ): Promise<void> {
   let insertPosition = position
 
-  for (const imageFile of imageFiles) {
-    const dataUrl = await readFileAsDataUrl(imageFile)
-    const saved = await changbu.attachments.saveImage(dataUrl, imageFile.name)
-    const snippet = `${insertPosition > 0 ? '\n\n' : ''}![${saved.markdownAlt}](${saved.fileUrl})\n\n`
+  try {
+    const savedImages = await saveMarkdownImageFiles(imageFiles)
 
-    view.dispatch({
-      changes: { from: insertPosition, insert: snippet },
-      selection: { anchor: insertPosition + snippet.length },
+    for (const savedImage of savedImages) {
+      const snippet = buildMarkdownImageSnippet(savedImage, insertPosition > 0)
+
+      view.dispatch({
+        changes: { from: insertPosition, insert: snippet },
+        selection: { anchor: insertPosition + snippet.length },
+      })
+
+      insertPosition += snippet.length
+    }
+
+    view.focus()
+  } catch (error) {
+    reportImageFeedback({
+      kind: 'error',
+      text: toErrorMessage(error, '图片保存失败。'),
     })
-
-    insertPosition += snippet.length
   }
-
-  view.focus()
 }
 
-function imageTransferExtension(): Extension {
+function imageTransferExtension(reportImageFeedback: ReportImageFeedback): Extension {
   return CMEditorView.domEventHandlers({
     paste(event, view) {
       const imageFiles = extractImageFiles(event.clipboardData)
@@ -547,29 +1155,36 @@ function imageTransferExtension(): Extension {
       }
 
       event.preventDefault()
-      void saveAndInsertImages(view, imageFiles, view.state.selection.main.head)
+      void saveAndInsertImages(view, imageFiles, view.state.selection.main.head, reportImageFeedback)
       return true
     },
 
-    dragover(event) {
-      if (extractImageFiles(event.dataTransfer).length === 0) {
+    mousedown(event, view) {
+      if (event.target instanceof HTMLElement && event.target.closest('.cm-image-widget')) {
         return false
       }
 
-      event.preventDefault()
-      return true
+      closeActiveImageContextMenu()
+
+      if (view.state.field(selectedImageField)) {
+        view.dispatch({
+          effects: selectImageEffect.of(null),
+        })
+      }
+
+      return false
     },
 
-    drop(event, view) {
-      const imageFiles = extractImageFiles(event.dataTransfer)
-
-      if (imageFiles.length === 0) {
+    keydown(event, view) {
+      if (event.key !== 'Escape' || !view.state.field(selectedImageField)) {
         return false
       }
 
+      closeActiveImageContextMenu()
       event.preventDefault()
-      const position = view.posAtCoords({ x: event.clientX, y: event.clientY }) ?? view.state.selection.main.head
-      void saveAndInsertImages(view, imageFiles, position)
+      view.dispatch({
+        effects: selectImageEffect.of(null),
+      })
       return true
     },
   })
@@ -580,11 +1195,11 @@ function imageTransferExtension(): Extension {
 /* ------------------------------------------------------------------ */
 
 class PlaceholderWidget extends WidgetType {
-  private placeholderText: string
+  private readonly placeholderText: string
 
-  constructor(text: string) {
+  constructor(placeholderText: string) {
     super()
-    this.placeholderText = text
+    this.placeholderText = placeholderText
   }
 
   toDOM(): HTMLElement {
@@ -611,24 +1226,104 @@ function placeholderExtension(text: string): Extension {
 /*  React 组件                                                         */
 /* ------------------------------------------------------------------ */
 
-export function MarkdownLivePreview({
+export const MarkdownLivePreview = forwardRef<MarkdownLivePreviewHandle, MarkdownLivePreviewProps>(function MarkdownLivePreview({
   value,
   onValueChange,
   onKeyDown,
   placeholder,
   className,
-}: MarkdownLivePreviewProps) {
+  dropTarget = 'self',
+}: MarkdownLivePreviewProps, ref) {
   const viewRef = useRef<EditorView | null>(null)
+  const dragDepthRef = useRef(0)
+  const [imageFeedback, setImageFeedback] = useState<ImageFeedback | null>(null)
+  const [isDragActive, setIsDragActive] = useState(false)
+  const feedbackTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  const reportImageFeedback = useMemo<ReportImageFeedback>(() => (feedback) => {
+    if (feedbackTimerRef.current) {
+      clearTimeout(feedbackTimerRef.current)
+      feedbackTimerRef.current = null
+    }
+
+    setImageFeedback(feedback)
+
+    if (!feedback) {
+      return
+    }
+
+    feedbackTimerRef.current = setTimeout(() => {
+      setImageFeedback(null)
+      feedbackTimerRef.current = null
+    }, 2600)
+  }, [])
+
+  useEffect(() => {
+    return () => {
+      dragDepthRef.current = 0
+      if (feedbackTimerRef.current) {
+        clearTimeout(feedbackTimerRef.current)
+      }
+      closeActiveImageContextMenu()
+    }
+  }, [])
+
+  const insertImageFiles = useCallback((imageFiles: File[], dropPoint?: { clientX: number; clientY: number }) => {
+    const view = viewRef.current
+
+    if (!view) {
+      reportImageFeedback({
+        kind: 'error',
+        text: '编辑器尚未准备好，暂时无法插入图片。',
+      })
+      return
+    }
+
+    const position = dropPoint
+      ? (view.posAtCoords({ x: dropPoint.clientX, y: dropPoint.clientY }) ?? view.state.selection.main.head)
+      : view.state.selection.main.head
+
+    void saveAndInsertImages(view, imageFiles, position, reportImageFeedback)
+  }, [reportImageFeedback])
+
+  const applyMarkdownFormat = useCallback((action: MarkdownFormatAction) => {
+    const view = viewRef.current
+
+    if (!view) {
+      return
+    }
+
+    const operation = buildMarkdownFormatEdit(view, action)
+
+    closeActiveImageContextMenu()
+    view.dispatch({
+      changes: {
+        from: operation.from,
+        to: operation.to,
+        insert: operation.insert,
+      },
+      selection: operation.selection,
+      effects: selectImageEffect.of(null),
+    })
+    view.focus()
+  }, [])
+
+  useImperativeHandle(ref, () => ({
+    insertImageFiles,
+    applyMarkdownFormat,
+  }), [applyMarkdownFormat, insertImageFiles])
 
   const extensions = useMemo(() => {
     const exts: Extension[] = [
       markdown({ base: markdownLanguage }),
       drawSelection(),
       cursorLineField,
-      livePreviewPlugin,
+      imageSourceField,
+      selectedImageField,
+      createLivePreviewPlugin(reportImageFeedback),
       livePreviewTheme,
       CMEditorView.lineWrapping,
-      imageTransferExtension(),
+      imageTransferExtension(reportImageFeedback),
     ]
 
     if (placeholder) {
@@ -636,10 +1331,58 @@ export function MarkdownLivePreview({
     }
 
     return exts
-  }, [placeholder])
+  }, [placeholder, reportImageFeedback])
+
+  const enableSelfDropTarget = dropTarget === 'self'
 
   return (
-    <div className={`min-h-0 min-w-0 flex-1 ${className ?? ''}`}>
+    <div
+      className={`min-h-0 min-w-0 flex-1 rounded-lg transition-colors ${enableSelfDropTarget && isDragActive ? 'bg-stone-50/80 ring-2 ring-stone-300 ring-inset' : ''} ${className ?? ''}`}
+      onDragEnter={enableSelfDropTarget ? (event) => {
+        if (!hasPotentialImageTransfer(event.dataTransfer)) {
+          return
+        }
+
+        event.preventDefault()
+        dragDepthRef.current += 1
+        setIsDragActive(true)
+      } : undefined}
+      onDragOver={enableSelfDropTarget ? (event) => {
+        if (!hasPotentialImageTransfer(event.dataTransfer)) {
+          return
+        }
+
+        event.preventDefault()
+        event.dataTransfer.dropEffect = 'copy'
+        if (!isDragActive) {
+          setIsDragActive(true)
+        }
+      } : undefined}
+      onDragLeave={enableSelfDropTarget ? (event) => {
+        if (!hasPotentialImageTransfer(event.dataTransfer)) {
+          return
+        }
+
+        event.preventDefault()
+        dragDepthRef.current = Math.max(0, dragDepthRef.current - 1)
+        if (dragDepthRef.current === 0) {
+          setIsDragActive(false)
+        }
+      } : undefined}
+      onDrop={enableSelfDropTarget ? (event) => {
+        const imageFiles = extractImageFiles(event.dataTransfer)
+        dragDepthRef.current = 0
+        setIsDragActive(false)
+
+        if (imageFiles.length === 0) {
+          return
+        }
+
+        event.preventDefault()
+        event.stopPropagation()
+        insertImageFiles(imageFiles, { clientX: event.clientX, clientY: event.clientY })
+      } : undefined}
+    >
       <CodeMirror
         value={value}
         onChange={onValueChange}
@@ -652,6 +1395,13 @@ export function MarkdownLivePreview({
           onKeyDown?.(event.nativeEvent)
         }}
       />
+      {imageFeedback ? (
+        <p className={`mt-2 text-xs ${imageFeedback.kind === 'error' ? 'text-red-600' : 'text-stone-500'}`}>
+          {imageFeedback.text}
+        </p>
+      ) : enableSelfDropTarget && isDragActive ? (
+        <p className="mt-2 text-xs text-stone-500">拖放图片即可插入。</p>
+      ) : null}
     </div>
   )
-}
+})

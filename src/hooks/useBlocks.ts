@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react'
+import { useCallback, useEffect, useRef } from 'react'
 
 import { useInfiniteQuery, useQuery, useQueryClient } from '@tanstack/react-query'
 
@@ -58,33 +58,33 @@ export function useBlocks() {
     : buildFlatBlockListDataFromInfiniteData(query.data)
   const blocks = flatState.blocks
 
-  async function loadMore(): Promise<void> {
+  const loadMore = useCallback(async (): Promise<void> => {
     if (!query.hasNextPage || query.isFetchingNextPage) {
       return
     }
 
     await query.fetchNextPage()
-  }
+  }, [query.fetchNextPage, query.hasNextPage, query.isFetchingNextPage])
 
-  async function createBlock(content: string): Promise<void> {
+  const createBlock = useCallback(async (content: string): Promise<void> => {
     const block = await changbu.blocks.create(content)
     updateBlockListCache(queryClient, (current) => insertBlockIntoCache(current, block))
     updateFlatBlockListCache(queryClient, (current) => prependBlocksToFlatBlockList(current, [block]))
-  }
+  }, [queryClient])
 
-  async function updateBlock(id: string, content: string): Promise<void> {
+  const updateBlock = useCallback(async (id: string, content: string): Promise<void> => {
     const block = await changbu.blocks.update(id, content)
     updateBlockListCache(queryClient, (current) => replaceBlockInCache(current, block))
     updateFlatBlockListCache(queryClient, (current) => replaceBlockInFlatBlockList(current, block))
-  }
+  }, [queryClient])
 
-  async function removeBlock(id: string): Promise<void> {
+  const removeBlock = useCallback(async (id: string): Promise<void> => {
     await changbu.blocks.remove(id)
     updateBlockListCache(queryClient, (current) => removeBlockFromCache(current, id))
     updateFlatBlockListCache(queryClient, (current) => removeBlockFromFlatBlockList(current, id))
-  }
+  }, [queryClient])
 
-  async function removeBlocks(ids: string[]): Promise<BlockBatchRemoveResult> {
+  const removeBlocks = useCallback(async (ids: string[]): Promise<BlockBatchRemoveResult> => {
     const result = await removeBlocksCompat(ids)
 
     if (result.removedIds.length > 0) {
@@ -93,15 +93,15 @@ export function useBlocks() {
     }
 
     return result
-  }
+  }, [queryClient])
 
-  async function addTag(blockId: string, tagName: string): Promise<void> {
+  const addTag = useCallback(async (blockId: string, tagName: string): Promise<void> => {
     await changbu.tags.add(blockId, tagName)
-  }
+  }, [])
 
-  async function removeTag(blockId: string, tagId: string): Promise<void> {
+  const removeTag = useCallback(async (blockId: string, tagId: string): Promise<void> => {
     await changbu.tags.remove(blockId, tagId)
-  }
+  }, [])
 
   return {
     blocks,

@@ -5,6 +5,7 @@ import remarkBreaks from 'remark-breaks'
 import remarkGfm from 'remark-gfm'
 
 import { toRenderableAttachmentUrl } from '../lib/attachmentUrl'
+import { MarkdownImageFigure } from './MarkdownImageFigure'
 
 interface MarkdownContentProps {
   content: string
@@ -18,22 +19,9 @@ const MARKDOWN_COMPONENTS = {
       {children}
     </a>
   ),
-  img: ({ src, alt }: { src?: string; alt?: string }) => {
-    const resolvedSrc = toRenderableAttachmentUrl(src)
-
-    if (!resolvedSrc) {
-      return null
-    }
-
-    return (
-      <img
-        src={resolvedSrc}
-        alt={alt ?? ''}
-        loading="lazy"
-        className="my-3 max-h-[320px] w-full rounded-lg border border-stone-200 object-contain bg-stone-50"
-      />
-    )
-  },
+  img: ({ src, alt, title }: { src?: string; alt?: string; title?: string | null }) => (
+    <MarkdownImageFigure src={src} alt={alt} title={title} />
+  ),
   code: ({ children, className }: { children?: ReactNode; className?: string }) => {
     const isBlock = Boolean(className)
 

@@ -1,187 +1,39 @@
+/**
+ * AppContext 工厂入口 —— 组装各领域模块
+ *
+ * 仅负责：
+ * 1. 数据库、设置文件、tagger 初始化
+ * 2. 共享可变状态声明与 getter/setter 对创建
+ * 3. 按依赖顺序调用各领域工厂
+ * 4. 组装返回完整的 AppContext 实现
+ */
+
+import { join } from 'node:path'
 import { mkdirSync } from 'node:fs'
-import { dirname, join } from 'node:path'
 
 import Database from 'better-sqlite3'
-import { v4 as uuid } from 'uuid'
 
-import {
-  BLOCK_ENRICH_SETTINGS_KEY,
-  CALENDAR_SETTINGS_KEY,
-  DEFAULT_PAGE_SIZE,
-  DOC_GENERATION_SETTINGS_KEY,
-  EXTERNAL_ACCESS_SETTINGS_KEY,
-  getIntlLocale,
-  MAX_BLOCK_BACKGROUND_PROCESSING_LENGTH,
-  UI_SETTINGS_KEY,
-  parseBlockEnrichSettings,
-  parseCalendarSettings,
-  parseDocGenerationSettings,
-  parseExternalAccessSettings,
-  parseUISettings,
-} from '../shared/config'
-import { isAiInsightMethodId } from '../shared/aiInsights'
-import type {
-  AIConfig,
-  AppLanguage,
-  AIExecutionMode,
-  ApiTestResult,
-  AiInsightMethodId,
-  BlockEnrichSettings,
-  Block,
-  CalendarSettings,
-  DocGenerationSettings,
-  Notebook,
-  NotebookReferencePreview,
-  RelatedBlockResult,
-  ReviewGenerationChunk,
-  ReviewGenerationStart,
-  SearchResult,
-} from '../shared/types'
-import { buildSearchPreview } from '../shared/searchPreview'
-import {
-  buildBlockSearchText,
-  addManualTagToBlock,
-  clearAutoBlockTags,
-  countBlocks,
-  createBlockRecord,
-  deleteBlockRecord,
-  getBlockById,
-  getBlockContextWindow,
-  getBlocksByIds,
-  getBlockSearchTextsByIds,
-  listBlocksByDate as listBlocksByDateInDb,
-  listBlockIdsWithMarkdownImages,
-  listRecentBlockContentRows,
-  listBlocks,
-  removeTagFromBlock,
-  replaceBlockImageDerivedData,
-  syncAutoBlockTags,
-  type RecentBlockContentRow,
-  updateBlockContent,
-  updateBlockEnrichmentResult,
-  updateBlockState,
-} from './db/blocks'
-import {
-  acceptCalendarSuggestion,
-  autoAcceptCalendarSuggestionsForBlock,
-  clearCalendarSuggestionsForBlock,
-  createCalendarEntry,
-  dismissCalendarSuggestion,
-  getCalendarDayDetail,
-  getCalendarHeatmap,
-  listCalendarYears,
-  listUpcomingCalendarEntries,
-  removeCalendarEntry,
-  replaceCalendarSuggestionsForBlock,
-  updateCalendarEntry,
-} from './db/calendar'
-import { createAiInsightHistoryRecord, listAiInsightHistoryRecords } from './db/aiInsightHistory'
+import { BLOCK_ENRICH_SETTINGS_KEY, CALENDAR_SETTINGS_KEY, DOC_GENERATION_SETTINGS_KEY, EXTERNAL_ACCESS_SETTINGS_KEY, UI_SETTINGS_KEY, parseBlockEnrichSettings, parseCalendarSettings, parseDocGenerationSettings, parseExternalAccessSettings, parseUISettings } from '../shared/config'
+import type { AIConfig, ApiTestResult, Block } from '../shared/types'
 import { initializeDatabase } from './db'
-import { getGraphData as loadGraphData } from './db/graph'
-import {
-  addBlockToNotebook,
-  appendBlockToNotebook,
-  createNotebookRecord,
-  createNotebookStructureItem,
-  deleteNotebookRecord,
-  ensureNotebookExists,
-  getNotebookById,
-  listNotebookBlockEntries,
-  listNotebooks,
-  listNotebookReferenceReviews,
-  removeItemFromNotebook,
-  reorderNotebookItems,
-  touchNotebooksForBlock,
-  updateNotebookReferenceReview,
-  updateNotebookStructureItem,
-  updateNotebookTitle,
-} from './db/notebooks'
-import { searchBlocks as searchBlocksInDatabase, searchBlocksByTag } from './db/search'
-import { getSetting as getDbSetting, parseAIConfig, setSetting as setDbSetting } from './db/settings'
-import { createSnapshot, getSnapshot, listSnapshots, removeSnapshot, updateSnapshot as updateSnapshotInDb } from './db/snapshots'
-import { getOrCreateTag, getTagMemory, listAvailableTags } from './db/tags'
-import {
-  countBlockVectors,
-  countPendingBlockVectors,
-  countFailedBlockVectors,
-  clearFailedBlockVectors,
-  deleteBlockVector,
-  enqueueBlockVector,
-  ensureVectorSchema,
-  insertFailedBlockVector,
-  getPendingBlockVectorsByIds,
-  getVectorSchemaDimension,
-  listFailedBlockVectors,
-  listPendingBlockVectors,
-  removeFailedBlockVector,
-  removePendingBlockVectors,
-  resetPendingBlockVectors,
-  upsertBlockVector,
-} from './db/vectors'
-import { findRelatedBlockIds } from './db/connections'
-import {
-  DEFAULT_MOCK_EMBEDDING_DIMENSION,
-  createConfigFingerprint,
-  createLiveEmbeddingProvider,
-  createLiveLLMProvider,
-  createMockEmbeddingProvider,
-  createMockLLMProvider,
-  probeAiConfig,
-  resolveBaseUrl,
-  type EmbeddingProvider,
-  type LLMProvider,
-} from './services/ai'
-import { selectDocumentReferenceBlocks, selectDocumentReferenceResults } from './services/docgen'
-import { createTaggerEngine, type TagAssignmentResult } from './services/tagger'
-import {
-  cleanupOrphanAttachments as cleanupOrphanAttachmentsService,
-  hasMarkdownImages,
-  rebuildAttachmentIndex as rebuildAttachmentIndexService,
-  resolveBlockImageInputs,
-  saveImageDataUrl,
-  syncBlockAttachmentRecords,
-} from './services/attachments'
-import { confirmImportJob, exportJsonBundle, exportMarkdownBundle, previewJsonImport, previewMarkdownImport } from './services/importExport'
-import {
-  buildAiInsightSnapshotContent,
-  buildDailyReviewSnapshotContent,
-  buildReviewDateRange,
-  finalizeAiInsightResult,
-  finalizeDailyReviewResult,
-  generateAiInsight as generateAiInsightContent,
-  generateDailyReview as generateDailyReviewContent,
-  prepareAiInsightGeneration,
-  prepareDailyReviewGeneration,
-} from './services/review'
+import { getSetting as getDbSetting, parseAIConfig } from './db/settings'
 import { createSettingsFileStore, resolveSettingsFilePath } from './settingsFile'
-import {
-  getBackgroundProcessingDecision,
-  buildNotebookWritingGuide,
-  createLiveVectorIndexState,
-  createMockVectorIndexState,
-  isAIConfigured,
-  isSameVectorIndexState,
-  isTransientEnrichError,
-  normalizeCalendarDate,
-  normalizeCalendarEntryInput,
-  normalizeCalendarEntryPatch,
-  normalizeCalendarSuggestionAcceptInput,
-  normalizeNotebookTitle,
-  normalizeNotebookTopic,
-  parseApiTestResult,
-  parseVectorIndexState,
-  shouldProbeCalendarSuggestions,
-  sleep,
-  todayDateKey,
-  validateContent,
-  validateBlockContent,
-} from './appContext-utils'
-import { startStreamedDocumentGenerationTask } from './appContext-docgen'
+import { createTaggerEngine } from './services/tagger'
 import { createContextEventEmitters, createPendingTaskTracker, createUsageTracker, parseTokenUsage } from './appContext-runtime'
 import type { AppContext, AppContextOptions, QueuedEnrichRequest, VectorIndexState } from './appContext-types'
-import { getExternalAccessStatus as buildExternalAccessStatus, setupExternalAccessFiles } from './externalAccess'
+import { createSearchModule, type SearchModule } from './appContext-search'
+import { createVectorModule, type VectorModule } from './appContext-vectors'
+import { createEnrichModule, type EnrichModule } from './appContext-enrich'
+import { createBlockModule, type BlockModule } from './appContext-blocks'
+import { createCalendarModule, type CalendarModule } from './appContext-calendar'
+import { createNotebookModule, type NotebookModule } from './appContext-notebooks'
+import { createImportExportModule, type ImportExportModule } from './appContext-importExport'
+import { createSettingsModule, type SettingsModule } from './appContext-settings'
+import { validateContent } from './appContext-utils'
+import { createSnapshot, getSnapshot, listSnapshots, removeSnapshot, updateSnapshot as updateSnapshotInDb } from './db/snapshots'
 
-export type { AppContext, AppContextOptions } from './appContext-types'
+
+export type { AppContext, AppContextOptions, VectorIndexState, QueuedEnrichRequest } from './appContext-types'
 
 const AI_LAST_TEST_RESULT_KEY = 'ai_last_test_result'
 const TOKEN_USAGE_TOTALS_KEY = 'token_usage_totals'
@@ -197,18 +49,11 @@ const FILE_BACKED_SETTING_KEYS = new Set([
   EXTERNAL_ACCESS_SETTINGS_KEY,
   UI_SETTINGS_KEY,
 ])
-const MAX_ENRICH_RETRIES = 1
-const ENRICH_RETRY_DELAY_MS = 500
-const TAGGER_CORPUS_LIMIT = 50
-const MAX_ENRICH_IMAGES = 4
-const VECTOR_REINDEX_BATCH_SIZE = 12
-const SEARCH_CACHE_LIMIT = 32
-const SEARCH_CACHE_TTL_MS = 5 * 60 * 1000
-const GRAPH_CACHE_LIMIT = 12
 
 export function createAppContext(options: AppContextOptions): AppContext {
   mkdirSync(options.dataDirectory, { recursive: true })
 
+  // ─── 基础初始化 ─────────────────────────────────────────────────────────────
   const databasePath = join(options.dataDirectory, 'changbu.sqlite3')
   const db = new Database(databasePath)
   const { vectorReady } = initializeDatabase(db)
@@ -221,55 +66,72 @@ export function createAppContext(options: AppContextOptions): AppContext {
     ),
   })
   const tagger = createTaggerEngine()
-  const { pendingTasks, trackTask } = createPendingTaskTracker()
-  const blockEnrichGenerations = new Map<string, number>()
-  let queuedEnrichRequests: QueuedEnrichRequest[] = []
-  let queuedEnrichTimer: ReturnType<typeof setTimeout> | null = null
-  let queuedEnrichFlushTask: Promise<void> | null = null
-  let reindexTask: Promise<void> | null = null
-  let reindexRequested = false
-  let reindexNeedsFullRebuild = false
-  let reindexProviderState: { embeddingProvider: EmbeddingProvider; mode: AIExecutionMode; indexState: VectorIndexState } | null = null
-  let activeReindexState: { indexState: VectorIndexState; fullRebuild: boolean } | null = null
-  let lastAiError: string | null = null
-  let currentVectorDimension = vectorReady ? getVectorSchemaDimension(db) : null
-  let vectorSchemaReady = vectorReady ? currentVectorDimension !== null : false
-  let currentVectorIndexState = parseVectorIndexState(getDbSetting(db, VECTOR_INDEX_STATE_KEY))
-  let startupRecoveredBlockCount = 0
-  let disposed = false
-  let dbClosed = false
-  const importJobs = new Map<string, Awaited<ReturnType<typeof previewMarkdownImport>>['job']>()
-  const dailyReviewCache = new Map<string, Awaited<ReturnType<typeof generateDailyReviewContent>>>()
-  const aiInsightCache = new Map<string, Awaited<ReturnType<typeof generateAiInsightContent>>>()
-  const searchResultCache = new Map<string, { results: SearchResult[]; updatedAt: number; dirty: boolean }>()
-  const searchInFlightRequests = new Map<string, { epoch: number; request: Promise<SearchResult[]> }>()
-  let searchCacheEpoch = 0
-  const graphResultCache = new Map<string, { data: { nodes: Awaited<ReturnType<typeof loadGraphData>>['nodes']; edges: Awaited<ReturnType<typeof loadGraphData>>['edges'] }; dirty: boolean }>()
-  const {
-    emitBlockChanged,
-    emitNotebooksChanged,
-    emitMetaChanged,
-    emitCalendarChanged,
-    emitDocGenerationChunk,
-    emitReviewGenerationChunk,
-    emitTouchedNotebooks,
-  } = createContextEventEmitters(options)
-  const { tokenSink, getModelCallCounts, getTokenUsage, getLifetimeTokenUsage } = createUsageTracker({
+  const pendingTaskTracker = createPendingTaskTracker()
+  const { trackTask } = pendingTaskTracker
+  const { emitBlockChanged, emitNotebooksChanged, emitMetaChanged, emitCalendarChanged, emitDocGenerationChunk, emitReviewGenerationChunk } = createContextEventEmitters(options)
+  const emitMetaChangedWide = emitMetaChanged as (event: { reason: string }) => void
+  const usageTracker = createUsageTracker({
     emitMetaChanged,
     initialLifetimeUsage: parseTokenUsage(settingsStore.get(TOKEN_USAGE_TOTALS_KEY)),
     persistLifetimeUsage(usage) {
       settingsStore.set(TOKEN_USAGE_TOTALS_KEY, JSON.stringify(usage))
     },
   })
+  const { tokenSink } = usageTracker
 
-  void trackTask(rebuildAttachmentIndexService(db, options.dataDirectory))
+  // ─── 可变状态 ───────────────────────────────────────────────────────────────
+  const blockEnrichGenerations = new Map<string, number>()
+  let queuedEnrichRequests: QueuedEnrichRequest[] = []
+  let queuedEnrichTimer: ReturnType<typeof setTimeout> | null = null
+  let queuedEnrichFlushTask: Promise<void> | null = null
+  let reindexTask: Promise<void> | null = null
+  let vectorSchemaReady = false
+  let currentVectorDimension: number | null = vectorReady ? (() => { try { return (db.prepare(`SELECT dimension FROM vector_schema LIMIT 1`).get() as { dimension: number | null } | undefined)?.dimension ?? null } catch { return null } })() : null
+  vectorSchemaReady = vectorReady && currentVectorDimension !== null
+  let currentVectorIndexState = (() => {
+    const raw = getDbSetting(db, VECTOR_INDEX_STATE_KEY)
+    if (!raw) return null
+    try {
+      return JSON.parse(raw) as VectorIndexState
+    } catch {
+      return null
+    }
+  })()
+  let activeReindexState: { indexState: VectorIndexState; fullRebuild: boolean } | null = null
+  let lastAiError: string | null = null
+  let startupRecoveredBlockCount = 0
+  let disposed = false
+  let dbClosed = false
 
-  function getLastAiTestResult(): ApiTestResult | null {
-    return parseApiTestResult(settingsStore.get(AI_LAST_TEST_RESULT_KEY))
-  }
-
+  // ─── 共享辅助函数 ───────────────────────────────────────────────────────────
   function getSavedConfig(): AIConfig {
     return parseAIConfig(settingsStore.get('ai_config'))
+  }
+
+  function getLastAiTestResult(): ApiTestResult | null {
+    const raw = settingsStore.get(AI_LAST_TEST_RESULT_KEY)
+    if (!raw) return null
+    try {
+      return JSON.parse(raw) as ApiTestResult
+    } catch {
+      return null
+    }
+  }
+
+  function getBlockEnrichSettings() {
+    return parseBlockEnrichSettings(settingsStore.get(BLOCK_ENRICH_SETTINGS_KEY))
+  }
+
+  function getCalendarSettings() {
+    return parseCalendarSettings(settingsStore.get(CALENDAR_SETTINGS_KEY))
+  }
+
+  function getDocGenerationSettings() {
+    return parseDocGenerationSettings(settingsStore.get(DOC_GENERATION_SETTINGS_KEY))
+  }
+
+  function getUiSettings() {
+    return parseUISettings(settingsStore.get(UI_SETTINGS_KEY))
   }
 
   function hasEquivalentAiTransport(left: AIConfig, right: AIConfig): boolean {
@@ -281,405 +143,8 @@ export function createAppContext(options: AppContextOptions): AppContext {
       && left.embedding.model.trim() === right.embedding.model.trim()
   }
 
-  function getDocGenerationSettings(): DocGenerationSettings {
-    return parseDocGenerationSettings(settingsStore.get(DOC_GENERATION_SETTINGS_KEY))
-  }
-
-  function getBlockEnrichSettings(): BlockEnrichSettings {
-    return parseBlockEnrichSettings(settingsStore.get(BLOCK_ENRICH_SETTINGS_KEY))
-  }
-
-  function getCalendarSettings(): CalendarSettings {
-    return parseCalendarSettings(settingsStore.get(CALENDAR_SETTINGS_KEY))
-  }
-
-  function getUiSettings() {
-    return parseUISettings(settingsStore.get(UI_SETTINGS_KEY))
-  }
-
   function getExternalAccessSettings() {
     return parseExternalAccessSettings(settingsStore.get(EXTERNAL_ACCESS_SETTINGS_KEY))
-  }
-
-  function t(zh: string, en: string): string {
-    return getUiSettings().language === 'en' ? en : zh
-  }
-
-  function isBackgroundProcessingPaused(): boolean {
-    if (disposed) {
-      return true
-    }
-
-    return getDbSetting(db, BACKGROUND_PROCESSING_PAUSED_KEY) === '1'
-  }
-
-  function countBlocksByStatus(status: Block['status']): number {
-    return (db.prepare(`SELECT COUNT(*) AS total FROM blocks WHERE status = ?`).get(status) as { total: number }).total
-  }
-
-  function countOversizedSkippedBlocks(): number {
-    return (
-      db.prepare(`SELECT COUNT(*) AS total FROM blocks WHERE status = 'skipped' AND error_code = 'too_large'`).get() as { total: number }
-    ).total
-  }
-
-  function getBlockProcessingDecision(content: string) {
-    return getBackgroundProcessingDecision(content, getUiSettings().language, {
-      paused: isBackgroundProcessingPaused(),
-    })
-  }
-
-  function buildInitialBlockState(content: string, aiMode: AIExecutionMode): {
-    status: Block['status']
-    aiMode: AIExecutionMode
-    errorCode: Block['errorCode']
-    errorMessage: Block['errorMessage']
-    shouldProcess: boolean
-  } {
-    const decision = getBlockProcessingDecision(content)
-
-    if (!decision.shouldProcess) {
-      return {
-        status: 'skipped',
-        aiMode,
-        errorCode: decision.errorCode,
-        errorMessage: decision.errorMessage,
-        shouldProcess: false,
-      }
-    }
-
-    return {
-      status: 'pending',
-      aiMode,
-      errorCode: null,
-      errorMessage: null,
-      shouldProcess: true,
-    }
-  }
-
-  function mapRuntimeErrorToBlockErrorCode(error: unknown): Block['errorCode'] {
-    if (!(error instanceof Error)) {
-      return 'provider_error'
-    }
-
-    if (/请求超时|timed out|timeout/i.test(error.message)) {
-      return 'timeout'
-    }
-
-    return 'provider_error'
-  }
-
-  function recoverOversizedPendingBlocksOnStartup(): number {
-    const rows = db.prepare(
-      `
-        SELECT id, ai_mode AS aiMode, updated_at AS updatedAt
-        FROM blocks
-        WHERE status = 'pending'
-          AND LENGTH(content) > ?
-      `,
-    ).all(MAX_BLOCK_BACKGROUND_PROCESSING_LENGTH) as Array<{
-      id: string
-      aiMode: AIExecutionMode
-      updatedAt: string
-    }>
-
-    if (rows.length === 0) {
-      return 0
-    }
-
-    const language = getUiSettings().language
-    const errorMessage = language === 'en'
-      ? `Recovered on startup: content exceeds the ${MAX_BLOCK_BACKGROUND_PROCESSING_LENGTH.toLocaleString('en-US')}-character AI/vector limit and was saved locally only.`
-      : `启动恢复：内容超过 ${MAX_BLOCK_BACKGROUND_PROCESSING_LENGTH.toLocaleString('zh-CN')} 字的 AI / 向量处理上限，已仅做本地保存。`
-
-    const update = db.prepare(
-      `
-        UPDATE blocks
-        SET
-          status = 'skipped',
-          error_message = ?,
-          error_code = 'too_large',
-          updated_at = updated_at
-        WHERE id = ?
-      `,
-    )
-
-    const transaction = db.transaction(() => {
-      for (const row of rows) {
-        update.run(errorMessage, row.id)
-        removePendingBlockVectors(db, [row.id])
-        removeFailedBlockVector(db, row.id)
-      }
-    })
-
-    transaction()
-    return rows.length
-  }
-
-  function resumeBackgroundProcessingBacklog(): void {
-    const pendingBlocks = db.prepare(
-      `
-        SELECT id, content
-        FROM blocks
-        WHERE status = 'pending'
-        ORDER BY updated_at ASC, id ASC
-      `,
-    ).all() as Array<{ id: string; content: string }>
-
-    for (const block of pendingBlocks) {
-      const enrichGeneration = advanceBlockEnrichGeneration(block.id)
-      scheduleEnrich(block.id, block.content, enrichGeneration)
-    }
-
-    if (countPendingBlockVectors(db) > 0) {
-      scheduleCurrentVectorReindex()
-    }
-  }
-
-  function scheduleBlocksForImageAnalysisRefresh(blockIds: string[]): void {
-    if (isBackgroundProcessingPaused()) {
-      return
-    }
-
-    const dedupedBlockIds = Array.from(new Set(blockIds))
-
-    if (dedupedBlockIds.length === 0) {
-      return
-    }
-
-    const blocks = getBlocksByIds(db, dedupedBlockIds)
-
-    for (const block of blocks) {
-      const enrichGeneration = advanceBlockEnrichGeneration(block.id)
-      scheduleEnrich(block.id, block.content, enrichGeneration)
-    }
-  }
-
-  function clearBlocksImageAnalysisDerivedState(blockIds: string[]): Block[] {
-    const updatedBlocks: Block[] = []
-
-    for (const block of getBlocksByIds(db, blockIds)) {
-      updatedBlocks.push(replaceBlockImageDerivedData(
-        db,
-        block.id,
-        null,
-        buildBlockSearchText(block.content),
-      ))
-    }
-
-    return updatedBlocks
-  }
-
-  function getDailyReviewCacheKey(dateKey: string, language: AppLanguage): string {
-    const configFingerprint = getSavedConfigFingerprint()
-    return `${normalizeCalendarDate(dateKey)}::${language}::${getExecutionMode()}::${configFingerprint ?? 'no-config'}`
-  }
-
-  function getAiInsightCacheKey(methodId: string, dateKey: string, language: AppLanguage): string {
-    const configFingerprint = getSavedConfigFingerprint()
-    return `${methodId}::${normalizeCalendarDate(dateKey)}::${language}::${getExecutionMode()}::${configFingerprint ?? 'no-config'}`
-  }
-
-  function clearDailyReviewCache(): void {
-    dailyReviewCache.clear()
-    aiInsightCache.clear()
-  }
-
-  function pruneLeastRecentlyUsedEntries<T>(cache: Map<string, T>, limit: number): void {
-    while (cache.size > limit) {
-      const oldestKey = cache.keys().next().value
-
-      if (!oldestKey) {
-        break
-      }
-
-      cache.delete(oldestKey)
-    }
-  }
-
-  function setSearchCacheEntry(cacheKey: string, results: SearchResult[], dirty = false, expectedEpoch: number | null = null): SearchResult[] {
-    if (expectedEpoch !== null && expectedEpoch !== searchCacheEpoch) {
-      return results
-    }
-
-    searchResultCache.delete(cacheKey)
-    searchResultCache.set(cacheKey, {
-      results,
-      updatedAt: Date.now(),
-      dirty,
-    })
-    pruneLeastRecentlyUsedEntries(searchResultCache, SEARCH_CACHE_LIMIT)
-    return results
-  }
-
-  function getSearchCacheEntry(cacheKey: string): SearchResult[] | null {
-    const cached = searchResultCache.get(cacheKey)
-
-    if (!cached) {
-      return null
-    }
-
-    if (cached.dirty || Date.now() - cached.updatedAt > SEARCH_CACHE_TTL_MS) {
-      searchResultCache.delete(cacheKey)
-      return null
-    }
-
-    searchResultCache.delete(cacheKey)
-    searchResultCache.set(cacheKey, {
-      ...cached,
-      updatedAt: Date.now(),
-    })
-
-    return cached.results
-  }
-
-  function createSearchResultPreview(block: Block, query: string): string {
-    return buildSearchPreview(block.content, query)
-  }
-
-  function patchSearchResults(results: SearchResult[], event: { block: Block; reason: 'created' | 'updated' | 'enriched' | 'deleted' | 'tagged' }, query: string): SearchResult[] {
-    const index = results.findIndex((item) => item.block.id === event.block.id)
-
-    if (index === -1) {
-      return results
-    }
-
-    if (event.reason === 'deleted') {
-      return results.filter((item) => item.block.id !== event.block.id)
-    }
-
-    const nextResults = results.slice()
-    const current = nextResults[index]
-
-    if (!current) {
-      return results
-    }
-
-    nextResults[index] = {
-      ...current,
-      block: event.block,
-      preview: createSearchResultPreview(event.block, query),
-    }
-
-    return nextResults
-  }
-
-  function markSearchCachesDirty(event?: { block: Block; reason: 'created' | 'updated' | 'enriched' | 'deleted' | 'tagged' }): void {
-    searchCacheEpoch += 1
-    searchInFlightRequests.clear()
-
-    if (searchResultCache.size === 0) {
-      return
-    }
-
-    for (const [cacheKey, entry] of searchResultCache.entries()) {
-      let query = ''
-
-      try {
-        query = (JSON.parse(cacheKey) as { query?: string }).query ?? ''
-      } catch {
-        query = ''
-      }
-
-      const patchedResults = event ? patchSearchResults(entry.results, event, query) : entry.results
-
-      searchResultCache.set(cacheKey, {
-        results: patchedResults,
-        updatedAt: entry.updatedAt,
-        dirty: true,
-      })
-    }
-  }
-
-  function normalizeGraphTagFilters(tagNames: string[]): string[] {
-    const locale = getIntlLocale(getUiSettings().language)
-
-    return Array.from(
-      new Set(
-        tagNames
-          .map((tag) => tag.trim())
-          .filter(Boolean),
-      ),
-    ).sort((left, right) => left.localeCompare(right, locale))
-  }
-
-  function getGraphCacheKey(tagNames: string[]): string {
-    return normalizeGraphTagFilters(tagNames).join('||')
-  }
-
-  function getGraphCacheEntry(tagNames: string[]) {
-    const cacheKey = getGraphCacheKey(tagNames)
-    const cached = graphResultCache.get(cacheKey)
-
-    if (!cached || cached.dirty) {
-      if (cached?.dirty) {
-        graphResultCache.delete(cacheKey)
-      }
-
-      return null
-    }
-
-    graphResultCache.delete(cacheKey)
-    graphResultCache.set(cacheKey, cached)
-    return cached.data
-  }
-
-  function setGraphCacheEntry(tagNames: string[], data: Awaited<ReturnType<typeof loadGraphData>>): Awaited<ReturnType<typeof loadGraphData>> {
-    const cacheKey = getGraphCacheKey(tagNames)
-    graphResultCache.delete(cacheKey)
-    graphResultCache.set(cacheKey, {
-      data,
-      dirty: false,
-    })
-    pruneLeastRecentlyUsedEntries(graphResultCache, GRAPH_CACHE_LIMIT)
-    return data
-  }
-
-  function markGraphCachesDirty(): void {
-    for (const [cacheKey, entry] of graphResultCache.entries()) {
-      graphResultCache.set(cacheKey, {
-        ...entry,
-        dirty: true,
-      })
-    }
-  }
-
-  function createSearchCacheKey(options: {
-    type: 'query' | 'tag'
-    query: string
-    limit: number
-    mode?: AIExecutionMode
-    vectorEnabled?: boolean
-    vectorIndexState?: string | null
-  }): string {
-    return JSON.stringify({
-      type: options.type,
-      query: options.query,
-      limit: options.limit,
-      mode: options.mode ?? 'static',
-      vectorEnabled: Boolean(options.vectorEnabled),
-      vectorIndexState: options.vectorIndexState ?? 'none',
-    })
-  }
-
-  function emitBlockChangedWithDerivedInvalidation(event: { block: Block; reason: 'created' | 'updated' | 'enriched' | 'deleted' | 'tagged' }): void {
-    markSearchCachesDirty(event)
-    markGraphCachesDirty()
-    emitBlockChanged(event)
-  }
-
-  function recordAiInsightHistory(result: Awaited<ReturnType<typeof generateAiInsightContent>>): void {
-    createAiInsightHistoryRecord(db, {
-      methodId: result.methodId,
-      date: result.date,
-      rangeStart: result.rangeStart,
-      rangeEnd: result.rangeEnd,
-      title: result.title,
-      content: result.content,
-      blockIds: result.blockIds,
-      mode: result.mode,
-      empty: result.empty,
-    })
   }
 
   function getExternalAccessOptions() {
@@ -693,96 +158,8 @@ export function createAppContext(options: AppContextOptions): AppContext {
     }
   }
 
-  function getSavedConfigFingerprint(): string | null {
-    const config = getSavedConfig()
-    return isAIConfigured(config) ? createConfigFingerprint(config) : null
-  }
-
-  function persistVectorIndexState(state: VectorIndexState | null): void {
-    currentVectorIndexState = state
-    setDbSetting(db, VECTOR_INDEX_STATE_KEY, state ? JSON.stringify(state) : '')
-  }
-
-  function getPreferredVectorDimension(): number {
-    return getLastAiTestResult()?.embeddingDimension ?? currentVectorDimension ?? DEFAULT_MOCK_EMBEDDING_DIMENSION
-  }
-
-  function getExecutionMode(): AIExecutionMode {
-    const config = getSavedConfig()
-    const lastTestResult = getLastAiTestResult()
-    const savedFingerprint = getSavedConfigFingerprint()
-
-    return isAIConfigured(config) && lastTestResult?.success && Boolean(savedFingerprint) && lastTestResult.configFingerprint === savedFingerprint
-      ? 'live'
-      : 'mock'
-  }
-
-  function getDesiredVectorIndexState(): VectorIndexState | null {
-    const config = getSavedConfig()
-    const savedFingerprint = getSavedConfigFingerprint()
-
-    if (!isAIConfigured(config)) {
-      return createMockVectorIndexState()
-    }
-
-    if (getExecutionMode() === 'live' && savedFingerprint) {
-      return createLiveVectorIndexState(savedFingerprint)
-    }
-
-    return null
-  }
-
-  function isVectorIndexCompatible(targetState: VectorIndexState | null): boolean {
-    return vectorReady && vectorSchemaReady && isSameVectorIndexState(currentVectorIndexState, targetState)
-  }
-
-  function canUseVectorSearch(): boolean {
-    return isVectorIndexCompatible(getDesiredVectorIndexState())
-  }
-
-  function getProviders(): {
-    mode: AIExecutionMode
-    embeddingProvider: EmbeddingProvider
-    llmProvider: LLMProvider
-  } {
-    const config = getSavedConfig()
-    const mode = getExecutionMode()
-
-    if (mode === 'live') {
-      return {
-        mode,
-        embeddingProvider: createLiveEmbeddingProvider(config, tokenSink),
-        llmProvider: createLiveLLMProvider(config, tokenSink),
-      }
-    }
-
-    return {
-      mode,
-      embeddingProvider: createMockEmbeddingProvider(getPreferredVectorDimension()),
-      llmProvider: createMockLLMProvider(mode),
-    }
-  }
-
-  function getVectorProviderState():
-    | {
-        mode: AIExecutionMode
-        embeddingProvider: EmbeddingProvider
-        indexState: VectorIndexState
-      }
-    | null {
-    const desiredState = getDesiredVectorIndexState()
-
-    if (!desiredState) {
-      return null
-    }
-
-    const { mode, embeddingProvider } = getProviders()
-
-    return {
-      mode,
-      embeddingProvider,
-      indexState: desiredState,
-    }
+  function t(zh: string, en: string): string {
+    return getUiSettings().language === 'en' ? en : zh
   }
 
   function clearRuntimeAiError(): boolean {
@@ -795,2912 +172,364 @@ export function createAppContext(options: AppContextOptions): AppContext {
     lastAiError = error instanceof Error ? error.message : t('AI 运行失败。', 'AI runtime failed.')
   }
 
-  function emitReviewChunk(chunk: ReviewGenerationChunk): void {
-    emitReviewGenerationChunk(chunk)
+  // ─── 模块组装：按依赖顺序 ───────────────────────────────────────────────────
+
+  // 1. Search 模块（无跨域依赖）
+  let searchModule: SearchModule
+  const emitBlockChangedWithDerivedInvalidation = (event: { block: Block; reason: 'created' | 'updated' | 'enriched' | 'deleted' | 'tagged' }) => {
+    searchModule.markSearchCachesDirty(event)
+    searchModule.markGraphCachesDirty()
+    emitBlockChanged(event)
   }
 
-  function buildDailyReviewStart(requestId: string, date: string, mode: AIExecutionMode): ReviewGenerationStart {
-    return {
-      requestId,
-      kind: 'daily-review',
-      date,
-      mode,
-    }
+  // 2. Vectors 模块（依赖 search 的 markSearchCachesDirty）
+  let vectorModule: VectorModule
+
+  // 3. Enrich 模块（依赖 vectors）
+  let enrichModule: EnrichModule
+
+  // 4. Blocks 模块（依赖 enrich + vectors）
+  let blockModule: BlockModule
+
+  // 5. Calendar 模块
+  const dailyReviewCache = new Map<string, Awaited<ReturnType<typeof import('./services/review').generateDailyReview>>>()
+  const aiInsightCache = new Map<string, Awaited<ReturnType<typeof import('./services/review').generateAiInsight>>>()
+  let calendarModule: CalendarModule
+
+  // 6. Notebooks 模块
+  let notebookModule: NotebookModule
+
+  // 7. ImportExport 模块
+  const importJobs = new Map<string, Awaited<ReturnType<typeof import('./services/importExport').previewMarkdownImport>>['job']>()
+  let importExportModule: ImportExportModule
+
+  // 8. Settings 模块
+  let settingsModule: SettingsModule
+
+  // ─── 工厂调用（顺序很重要）────────────────────────────────────────────────────
+
+  // 初始化 search 模块（需要 getProviders、canUseVectorSearch、getQueryEmbedding、getCurrentVectorIndexState）
+  // 但这些函数在 vector 模块中定义，所以先创建占位符
+  let _vectorModuleRef: VectorModule | null = null
+
+  searchModule = createSearchModule({
+    db,
+    getProviders: () => _vectorModuleRef!.getProviders(),
+    canUseVectorSearch: () => _vectorModuleRef!.canUseVectorSearch(),
+    getQueryEmbedding: (q, m, p) => _vectorModuleRef!.getQueryEmbedding(q, m, p!),
+    getCurrentVectorIndexState: () => currentVectorIndexState,
+    validateContent,
+    getUiSettings,
+    emitBlockChanged,
+  })
+
+  vectorModule = createVectorModule({
+    db,
+    vectorReady,
+    emitMetaChanged: emitMetaChangedWide,
+    emitBlockChangedWithDerivedInvalidation,
+    trackTask,
+    markSearchCachesDirty: () => searchModule.markSearchCachesDirty(),
+    getSavedConfig,
+    getLastAiTestResult,
+    getUiSettings,
+    isBackgroundProcessingPaused: () => disposed || getDbSetting(db, BACKGROUND_PROCESSING_PAUSED_KEY) === '1',
+    clearRuntimeAiError,
+    rememberRuntimeAiError,
+    tokenSink,
+    getVectorSchemaReady: () => vectorSchemaReady,
+    setVectorSchemaReady: (v: boolean) => { vectorSchemaReady = v },
+    getCurrentVectorDimension: () => currentVectorDimension,
+    setCurrentVectorDimension: (v: number | null) => { currentVectorDimension = v },
+    getCurrentVectorIndexState: () => currentVectorIndexState,
+    setCurrentVectorIndexState: (v) => { currentVectorIndexState = v },
+    getReindexTask: () => reindexTask,
+    setReindexTask: (v) => { reindexTask = v },
+    getActiveReindexState: () => activeReindexState,
+    setActiveReindexState: (v) => { activeReindexState = v },
+  })
+  _vectorModuleRef = vectorModule
+  const clearDailyReviewCache = () => {
+    dailyReviewCache.clear()
+    aiInsightCache.clear()
   }
 
-  function buildAiInsightStart(
-    requestId: string,
-    methodId: AiInsightMethodId,
-    date: string,
-    mode: AIExecutionMode,
-  ): ReviewGenerationStart {
-    return {
-      requestId,
-      kind: 'ai-insight',
-      date,
-      methodId,
-      mode,
-    }
-  }
-
-  function emitDailyReviewResultChunk(start: ReviewGenerationStart, result: Awaited<ReturnType<typeof generateDailyReviewContent>>): void {
-    emitReviewChunk({
-      requestId: start.requestId,
-      kind: 'daily-review',
-      date: start.date,
-      delta: '',
-      done: true,
-      mode: start.mode,
-      fullText: result.content,
-    })
-  }
-
-  function emitAiInsightResultChunk(start: ReviewGenerationStart, result: Awaited<ReturnType<typeof generateAiInsightContent>>): void {
-    emitReviewChunk({
-      requestId: start.requestId,
-      kind: 'ai-insight',
-      date: start.date,
-      methodId: start.methodId,
-      delta: '',
-      done: true,
-      mode: start.mode,
-      fullText: result.content,
-    })
-  }
-
-  function advanceBlockEnrichGeneration(blockId: string): number {
-    const nextGeneration = (blockEnrichGenerations.get(blockId) ?? 0) + 1
-    blockEnrichGenerations.set(blockId, nextGeneration)
-    return nextGeneration
-  }
-
-  function isCurrentBlockEnrichGeneration(blockId: string, generation: number): boolean {
-    return blockEnrichGenerations.get(blockId) === generation
-  }
-
-  function getFreshBlockForEnrich(blockId: string, generation: number): Block | null {
-    if (!isCurrentBlockEnrichGeneration(blockId, generation)) {
-      return null
-    }
-
-    try {
-      return getBlockById(db, blockId)
-    } catch {
-      return null
-    }
-  }
-
-  interface EnrichRuntimeSnapshot {
-    mode: AIExecutionMode
-    llmProvider: LLMProvider
-    tagMemory: ReturnType<typeof getTagMemory>
-    recentCorpusRows: RecentBlockContentRow[]
-    imageAnalysisEnabled: boolean
-  }
-
-  interface CompletedEnrichAssignment {
-    blockId: string
-    content: string
-    generation: number
-    assignment: TagAssignmentResult
-  }
-
-  function createEnrichRuntimeSnapshot(requestCount = 1): EnrichRuntimeSnapshot {
-    const { mode, llmProvider } = getProviders()
-    const config = getSavedConfig()
-
-    return {
-      mode,
-      llmProvider,
-      tagMemory: getTagMemory(db),
-      recentCorpusRows: listRecentBlockContentRows(db, TAGGER_CORPUS_LIMIT + Math.max(1, requestCount)),
-      imageAnalysisEnabled: mode === 'live' && config.multimodalImageAnalysisEnabled,
-    }
-  }
-
-  function buildCorpusContentsFromSnapshot(
-    snapshot: EnrichRuntimeSnapshot,
-    blockId: string,
-    content: string,
-  ): string[] {
-    const corpusContents = [content]
-
-    for (const entry of snapshot.recentCorpusRows) {
-      if (entry.blockId === blockId || entry.content === content) {
-        continue
-      }
-
-      corpusContents.push(entry.content)
-
-      if (corpusContents.length >= TAGGER_CORPUS_LIMIT + 1) {
-        break
-      }
-    }
-
-    return corpusContents
-  }
-
-  function getTaggerImageInputs(content: string, snapshot: EnrichRuntimeSnapshot): {
-    images: Awaited<ReturnType<typeof resolveBlockImageInputs>>['images']
-    skippedCount: number
-  } | Promise<{
-    images: Awaited<ReturnType<typeof resolveBlockImageInputs>>['images']
-    skippedCount: number
-  }> {
-    if (!snapshot.imageAnalysisEnabled || !hasMarkdownImages(content)) {
-      return {
-        images: [],
-        skippedCount: 0,
-      }
-    }
-
-    return resolveBlockImageInputs(options.dataDirectory, content, MAX_ENRICH_IMAGES).then((resolved) => ({
-      images: resolved.images,
-      skippedCount: resolved.skippedCount,
-    }))
-  }
-
-  function applyCompletedEnrichAssignments(
-    entries: CompletedEnrichAssignment[],
-    snapshot: Pick<EnrichRuntimeSnapshot, 'llmProvider' | 'mode'>,
-    previousSearchTextMap?: Map<string, string>,
-  ): void {
-    if (entries.length === 0) {
-      return
-    }
-
-    const freshEntries = entries
-      .map((entry) => {
-        const currentBlock = getFreshBlockForEnrich(entry.blockId, entry.generation)
-
-        if (!currentBlock) {
-          return null
-        }
-
-        return {
-          ...entry,
-          currentBlock,
-        }
-      })
-      .filter((entry): entry is CompletedEnrichAssignment & { currentBlock: Block } => Boolean(entry))
-
-    if (freshEntries.length === 0) {
-      return
-    }
-
-    const resolvedPreviousSearchTextMap = previousSearchTextMap
-      ?? getBlockSearchTextsByIds(db, freshEntries.map((entry) => entry.blockId))
-    const updatedBlocks: Block[] = []
-    const reindexBlocks: Array<Pick<Block, 'id' | 'updatedAt'>> = []
-
-    for (const entry of freshEntries) {
-      const tags = [
-        ...entry.assignment.categories.map((tagName) => getOrCreateTag(db, tagName, 'category')),
-        ...entry.assignment.detailTags.map((tagName) => getOrCreateTag(db, tagName, 'detail')),
-      ]
-
-      syncAutoBlockTags(db, entry.blockId, tags)
-
-      const previousSearchText = resolvedPreviousSearchTextMap.get(entry.blockId) ?? entry.content
-      const nextSearchText = buildBlockSearchText(entry.content, entry.assignment.imageAnnotations)
-      const block = updateBlockEnrichmentResult(db, {
-        id: entry.blockId,
-        status: 'ready',
-        aiMode: snapshot.mode,
-        summary: entry.assignment.summary,
-        imageAnnotations: entry.assignment.imageAnnotations,
-        searchText: nextSearchText,
-        updatedAt: entry.currentBlock.updatedAt,
-      })
-
-      updatedBlocks.push(block)
-
-      if (nextSearchText !== previousSearchText) {
-        reindexBlocks.push(block)
-      }
-    }
-
-    for (const block of updatedBlocks) {
-      emitBlockChangedWithDerivedInvalidation({
-        block,
-        reason: 'enriched',
-      })
-    }
-
-    if (reindexBlocks.length > 0) {
-      enqueueBlocksForVectorReindex(reindexBlocks)
-      scheduleCurrentVectorReindex()
-    }
-
-    for (const entry of freshEntries) {
-      void trackTask(syncCalendarSuggestionsForBlock(entry.blockId, entry.generation, snapshot.llmProvider, snapshot.mode))
-    }
-  }
-
-  async function syncCalendarSuggestionsForBlock(
-    blockId: string,
-    generation: number,
-    llmProvider: LLMProvider,
-    mode: AIExecutionMode,
-  ): Promise<void> {
-    const currentBlock = getFreshBlockForEnrich(blockId, generation)
-
-    if (!currentBlock) {
-      return
-    }
-
-    const calendarSettings = getCalendarSettings()
-
-    if (!calendarSettings.aiSuggestionsEnabled || calendarSettings.maxSuggestionsPerBlock <= 0 || mode !== 'live') {
-      clearCalendarSuggestionsForBlock(db, blockId)
-      emitCalendarChanged({
-        reason: 'suggestion-updated',
-        sourceBlockId: blockId,
-      })
-      return
-    }
-
-    if (!shouldProbeCalendarSuggestions(currentBlock.content)) {
-      clearCalendarSuggestionsForBlock(db, blockId)
-      emitCalendarChanged({
-        reason: 'suggestion-updated',
-        sourceBlockId: blockId,
-      })
-      return
-    }
-
-    try {
-      const suggestions = await llmProvider.extractCalendarSuggestions({
-        content: currentBlock.content,
-        referenceDate: currentBlock.createdAt,
-        timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'Asia/Shanghai',
-        maxSuggestions: calendarSettings.maxSuggestionsPerBlock,
-      })
-      const latestBlock = getFreshBlockForEnrich(blockId, generation)
-
-      if (!latestBlock) {
-        return
-      }
-
-      const suggestionInputs = suggestions.map((suggestion) => ({
-        title: suggestion.title,
-        notes: suggestion.notes,
-        date: suggestion.date,
-        startTime: suggestion.startTime,
-        allDay: suggestion.allDay,
-        confidence: suggestion.confidence,
-        evidenceText: suggestion.evidenceText,
-      }))
-      const now = new Date().toISOString()
-
-      if (calendarSettings.autoAcceptAiSuggestions) {
-        autoAcceptCalendarSuggestionsForBlock(
-          db,
-          blockId,
-          suggestionInputs,
-          now,
-        )
-      } else {
-        replaceCalendarSuggestionsForBlock(
-          db,
-          blockId,
-          suggestionInputs,
-          now,
-        )
-      }
-
-      if (mode === 'live' && clearRuntimeAiError()) {
-        emitMetaChanged({
-          reason: 'calendar-suggestion',
-        })
-      }
-
-      emitCalendarChanged({
-        reason: 'suggestion-updated',
-        sourceBlockId: blockId,
-      })
-    } catch (error) {
-      if (mode === 'live') {
-        rememberRuntimeAiError(error)
-        emitMetaChanged({
-          reason: 'calendar-suggestion',
-        })
-      }
-    }
-  }
-
-  function enqueueBlocksForVectorReindex(blocks: Array<Pick<Block, 'id' | 'updatedAt'>>): void {
-    if (blocks.length === 0) {
-      return
-    }
-
-    const queuedAt = new Date().toISOString()
-
-    for (const block of blocks) {
-      enqueueBlockVector(db, block.id, block.updatedAt, queuedAt)
-      removeFailedBlockVector(db, block.id)
-    }
-
-    emitMetaChanged({
-      reason: 'vector-queue',
-    })
-  }
-
-  function scheduleCurrentVectorReindex(options: { fullRebuild?: boolean } = {}): void {
-    if (isBackgroundProcessingPaused()) {
-      return
-    }
-
-    const providerState = getVectorProviderState()
-
-    if (!providerState || !vectorReady || currentVectorDimension === null) {
-      return
-    }
-
-    const reindexAlreadyRefreshingTarget =
-      Boolean(activeReindexState?.fullRebuild) && isSameVectorIndexState(activeReindexState?.indexState ?? null, providerState.indexState)
-    const queuedFullRebuildForTarget =
-      reindexNeedsFullRebuild && isSameVectorIndexState(reindexProviderState?.indexState ?? null, providerState.indexState)
-    const needsFullRebuild =
-      Boolean(options.fullRebuild) ||
-      (!isSameVectorIndexState(currentVectorIndexState, providerState.indexState) &&
-        !reindexAlreadyRefreshingTarget &&
-        !queuedFullRebuildForTarget)
-
-    scheduleReindex(providerState.embeddingProvider, providerState.mode, providerState.indexState, {
-      fullRebuild: needsFullRebuild,
-    })
-  }
-
-  async function getQueryEmbedding(query: string, mode: AIExecutionMode, embeddingProvider: EmbeddingProvider): Promise<number[] | null> {
-    if (!canUseVectorSearch()) {
-      return null
-    }
-
-    try {
-      const embedding = (await embeddingProvider.embed([query]))[0] ?? null
-
-      if (mode === 'live') {
-        clearRuntimeAiError()
-      }
-
-      return embedding
-    } catch (error) {
-      if (mode === 'live') {
-        rememberRuntimeAiError(error)
-        emitMetaChanged({
-          reason: 'vector-failure',
-        })
-      }
-
-      return null
-    }
-  }
-
-  async function buildNotebookReferencePreview(
-    notebook: Notebook,
-    topic: string,
-    providerState?: {
-      mode: AIExecutionMode
-      embeddingProvider: EmbeddingProvider
-    },
-  ): Promise<NotebookReferencePreview> {
-    const { maxReferenceBlocks, retrievalLimit } = getDocGenerationSettings()
-    const blockEntries = listNotebookBlockEntries(db, notebook.id)
-
-    if (blockEntries.length === 0) {
-      return {
-        notebookId: notebook.id,
-        topic,
-        maxReferenceBlocks,
-        candidateCount: 0,
-        selectedCount: 0,
-        candidates: [],
-      }
-    }
-
-    const providers = providerState ?? getProviders()
-    const queryEmbedding = await getQueryEmbedding(topic, providers.mode, providers.embeddingProvider)
-    const results = searchBlocksInDatabase(db, topic, {
-      limit: Math.max(blockEntries.length, maxReferenceBlocks * 2, retrievalLimit),
-      queryEmbedding,
-      vectorEnabled: canUseVectorSearch() && Boolean(queryEmbedding),
-      allowedBlockIds: blockEntries.map((entry) => entry.blockId),
-    })
-    const resultMap = new Map(results.map((result) => [result.block.id, result]))
-    const reviewMap = new Map(listNotebookReferenceReviews(db, notebook.id).map((item) => [item.blockId, item]))
-
-    const orderedInputs = blockEntries.map((entry) => {
-      const result = resultMap.get(entry.blockId) ?? {
-        block: entry.block,
-        score: 0,
-        matchSource: [],
-      }
-
-      return {
-        notebookItemId: entry.itemId,
-        result,
-        review: reviewMap.get(entry.blockId) ?? {
-          blockId: entry.blockId,
-          excluded: false,
-          locked: false,
-          pinned: false,
-          updatedAt: null,
-        },
-      }
-    })
-
-    const selectedResults = selectDocumentReferenceResults(
-      orderedInputs.map((entry) => ({
-        result: entry.result,
-        flags: entry.review,
-      })),
-      maxReferenceBlocks,
-    )
-    const selectedMap = new Map(selectedResults.map((item) => [item.result.block.id, item.reason]))
-
-    return {
-      notebookId: notebook.id,
-      topic,
-      maxReferenceBlocks,
-      candidateCount: orderedInputs.length,
-      selectedCount: selectedResults.length,
-      candidates: orderedInputs.map((entry) => ({
-        ...entry.result,
-        notebookItemId: entry.notebookItemId,
-        selected: selectedMap.has(entry.result.block.id),
-        selectionReason: selectedMap.get(entry.result.block.id) ?? 'not-selected',
-        review: entry.review,
-      })),
-    }
-  }
-
-  async function reindexVectors(
-    embeddingProvider: EmbeddingProvider,
-    mode: AIExecutionMode,
-    indexState: VectorIndexState,
-    options: { fullRebuild: boolean },
-  ): Promise<void> {
-    if (!vectorReady || !currentVectorDimension) {
-      vectorSchemaReady = false
-      return
-    }
-
-    if (options.fullRebuild) {
-      persistVectorIndexState(null)
-      resetPendingBlockVectors(db)
-    }
-
-    try {
-      while (true) {
-        if (isBackgroundProcessingPaused()) {
-          break
-        }
-
-        const jobs = listPendingBlockVectors(db, VECTOR_REINDEX_BATCH_SIZE)
-
-        if (jobs.length === 0) {
-          break
-        }
-
-        const queuedIds = jobs.map((job) => job.blockId)
-        const blocks = getBlocksByIds(db, queuedIds)
-        const blockMap = new Map(blocks.map((block) => [block.id, block]))
-        const missingIds = queuedIds.filter((id) => !blockMap.has(id))
-
-        if (missingIds.length > 0) {
-          removePendingBlockVectors(db, missingIds)
-        }
-
-        const batch = queuedIds
-          .map((id) => blockMap.get(id))
-          .filter((block): block is Block => Boolean(block))
-
-        if (batch.length === 0) {
-          continue
-        }
-
-        const searchTextMap = getBlockSearchTextsByIds(db, batch.map((block) => block.id))
-        const oversizedBlocks = batch.filter((block) => {
-          const searchText = searchTextMap.get(block.id) ?? block.content
-          return searchText.length > MAX_BLOCK_BACKGROUND_PROCESSING_LENGTH
-        })
-
-        if (oversizedBlocks.length > 0) {
-          const updatedAt = new Date().toISOString()
-
-          for (const block of oversizedBlocks) {
-            const skippedBlock = updateBlockState(db, {
-              id: block.id,
-              status: 'skipped',
-              aiMode: block.aiMode,
-              updatedAt,
-              errorCode: 'too_large',
-              errorMessage: getBackgroundProcessingDecision(block.content, getUiSettings().language).errorMessage,
-            })
-
-            emitBlockChangedWithDerivedInvalidation({
-              block: skippedBlock,
-              reason: 'enriched',
-            })
-          }
-
-          removePendingBlockVectors(db, oversizedBlocks.map((block) => block.id))
-          emitMetaChanged({
-            reason: 'vector-queue',
-          })
-        }
-
-        const processableBatch = batch.filter((block) => !oversizedBlocks.some((candidate) => candidate.id === block.id))
-
-        if (processableBatch.length === 0) {
-          continue
-        }
-
-        const embeddings = await embeddingProvider.embed(processableBatch.map((block) => searchTextMap.get(block.id) ?? block.content))
-        const latestJobs = new Map(getPendingBlockVectorsByIds(db, processableBatch.map((block) => block.id)).map((job) => [job.blockId, job]))
-        const completedIds: string[] = []
-
-        for (const [index, block] of processableBatch.entries()) {
-          const vector = embeddings[index]
-
-          if (!vector) {
-            continue
-          }
-
-          if (currentVectorDimension !== vector.length) {
-            const schema = ensureVectorSchema(db, vector.length)
-            currentVectorDimension = schema.currentDimension
-
-            if (schema.changed) {
-              persistVectorIndexState(null)
-              vectorSchemaReady = false
-              resetPendingBlockVectors(db)
-            }
-          }
-
-          const latestJob = latestJobs.get(block.id)
-
-          if (!latestJob || latestJob.contentUpdatedAt !== block.updatedAt) {
-            continue
-          }
-
-          if (currentVectorDimension === vector.length) {
-            upsertBlockVector(db, block.id, vector)
-            completedIds.push(block.id)
-          }
-        }
-
-        removePendingBlockVectors(db, completedIds)
-
-        // 成功的块如果之前在失败记录中，移除之
-        for (const id of completedIds) {
-          removeFailedBlockVector(db, id)
-        }
-      }
-
-      if (currentVectorDimension !== null && countPendingBlockVectors(db) === 0) {
-        vectorSchemaReady = true
-        persistVectorIndexState(indexState)
-      }
-
-      markSearchCachesDirty()
-      emitMetaChanged({
-        reason: 'vector-queue',
-      })
-    } catch (error) {
-      // 将当前 pending batch 中尚未完成的块记录到失败表
-        const remainingJobs = listPendingBlockVectors(db, VECTOR_REINDEX_BATCH_SIZE)
-        for (const job of remainingJobs) {
-          try {
-            const block = getBlockById(db, job.blockId)
-            const searchText = getBlockSearchTextsByIds(db, [block.id]).get(block.id) ?? block.content
-            insertFailedBlockVector(db, block.id, searchText, error instanceof Error ? error.message : String(error))
-          } catch {
-            continue
-          }
-        }
-      removePendingBlockVectors(db, remainingJobs.map((j) => j.blockId))
-
-      if (mode === 'live') {
-        rememberRuntimeAiError(error)
-      }
-
-      emitMetaChanged({
-        reason: 'vector-failure',
-      })
-
-      throw error
-    }
-  }
-
-  function scheduleReindex(
-    embeddingProvider: EmbeddingProvider,
-    mode: AIExecutionMode,
-    indexState: VectorIndexState,
-    options: { fullRebuild?: boolean } = {},
-  ): void {
-    if (!vectorReady || currentVectorDimension === null) {
-      return
-    }
-
-    reindexRequested = true
-    reindexProviderState = { embeddingProvider, mode, indexState }
-
-    if (options.fullRebuild) {
-      reindexNeedsFullRebuild = true
-    }
-
-    if (reindexTask) {
-      return
-    }
-
-    const task = trackTask(
-      (async () => {
-        while (!isBackgroundProcessingPaused() && (reindexRequested || reindexNeedsFullRebuild || countPendingBlockVectors(db) > 0)) {
-          const providerState = reindexProviderState ?? { embeddingProvider, mode, indexState }
-          const fullRebuild = reindexNeedsFullRebuild
-
-          reindexRequested = false
-          reindexProviderState = null
-          reindexNeedsFullRebuild = false
-          activeReindexState = {
-            indexState: providerState.indexState,
-            fullRebuild,
-          }
-
-          await reindexVectors(providerState.embeddingProvider, providerState.mode, providerState.indexState, { fullRebuild })
-          activeReindexState = null
-        }
-      })().finally(() => {
-        reindexTask = null
-        activeReindexState = null
-
-        if (!isBackgroundProcessingPaused() && (reindexRequested || reindexNeedsFullRebuild || countPendingBlockVectors(db) > 0)) {
-          const providerState = reindexProviderState ?? { embeddingProvider, mode, indexState }
-          scheduleReindex(providerState.embeddingProvider, providerState.mode, providerState.indexState)
-        }
-      }),
-    )
-
-    reindexTask = task
-  }
-
-  function ensureSchemaForDimension(dimension: number): boolean {
-    if (!vectorReady) {
-      return false
-    }
-
-    const schema = ensureVectorSchema(db, dimension)
-    currentVectorDimension = schema.currentDimension
-
-    if (schema.changed) {
-      persistVectorIndexState(null)
-      vectorSchemaReady = false
-      return true
-    }
-
-    if (currentVectorDimension !== null && reindexTask === null && countPendingBlockVectors(db) === 0) {
-      vectorSchemaReady = true
-    }
-
-    return false
-  }
-
-  function ensureVectorSchemaForCurrentState(forceFullRebuild = false): void {
-    if (!vectorReady) {
-      return
-    }
-
-    if (isBackgroundProcessingPaused()) {
-      return
-    }
-
-    const desiredState = getDesiredVectorIndexState()
-
-    if (!desiredState) {
-      return
-    }
-
-    const preferredDimension = getPreferredVectorDimension()
-    const schemaChanged = ensureSchemaForDimension(preferredDimension)
-    const pendingCount = countPendingBlockVectors(db)
-    const blockCount = countBlocks(db)
-    const vectorCount = blockCount > 0 ? countBlockVectors(db) : 0
-    const shouldFullRebuild =
-      schemaChanged ||
-      forceFullRebuild ||
-      !isSameVectorIndexState(currentVectorIndexState, desiredState) ||
-      (pendingCount === 0 && vectorCount < blockCount)
-
-    if (!shouldFullRebuild && pendingCount === 0) {
-      return
-    }
-
-    const providerState = getVectorProviderState()
-
-    if (!providerState) {
-      return
-    }
-
-    scheduleReindex(providerState.embeddingProvider, providerState.mode, desiredState, { fullRebuild: shouldFullRebuild })
-  }
-
-  async function enrichBlock(
-    blockId: string,
-    content: string,
-    generation: number,
-    runtimeSnapshot = createEnrichRuntimeSnapshot(),
-  ): Promise<boolean> {
-    const imageInputResult = getTaggerImageInputs(content, runtimeSnapshot)
-    const { images, skippedCount } = imageInputResult instanceof Promise
-      ? await imageInputResult
-      : imageInputResult
-    const assignment = await tagger.assign(content, {
-      corpusContents: buildCorpusContentsFromSnapshot(runtimeSnapshot, blockId, content),
-      liveLlmProvider: runtimeSnapshot.mode === 'live' ? runtimeSnapshot.llmProvider : null,
-      imageInputs: images,
-      skippedImageCount: skippedCount,
-      tagMemory: runtimeSnapshot.tagMemory,
-    })
-
-    if (runtimeSnapshot.mode === 'live') {
-      clearRuntimeAiError()
-    }
-
-    applyCompletedEnrichAssignments([
-      {
-        blockId,
-        content,
-        generation,
-        assignment,
-      },
-    ], runtimeSnapshot)
-
-    return Boolean(getFreshBlockForEnrich(blockId, generation))
-  }
-
-  async function runEnrichWithRetry(
-    blockId: string,
-    content: string,
-    generation: number,
-    runtimeSnapshot?: EnrichRuntimeSnapshot,
-  ): Promise<boolean> {
-    const aiMode = getExecutionMode()
-    const decision = getBlockProcessingDecision(content)
-
-    if (!decision.shouldProcess) {
-      const currentBlock = getFreshBlockForEnrich(blockId, generation)
-
-      if (!currentBlock) {
-        return false
-      }
-
-      const block = updateBlockState(db, {
-        id: blockId,
-        status: 'skipped',
-        aiMode,
-        updatedAt: currentBlock.updatedAt,
-        errorCode: decision.errorCode,
-        errorMessage: decision.errorMessage,
-      })
-
-      emitBlockChangedWithDerivedInvalidation({
-        block,
-        reason: 'enriched',
-      })
-
-      return false
-    }
-
-    for (let attempt = 0; attempt <= MAX_ENRICH_RETRIES; attempt += 1) {
-      try {
-        return await enrichBlock(blockId, content, generation, runtimeSnapshot ?? createEnrichRuntimeSnapshot())
-      } catch (error) {
-        const currentBlock = getFreshBlockForEnrich(blockId, generation)
-
-        if (!currentBlock) {
-          return false
-        }
-
-        const isLastAttempt = attempt === MAX_ENRICH_RETRIES
-        const shouldRetry = aiMode === 'live' && isTransientEnrichError(error) && !isLastAttempt
-
-        if (shouldRetry) {
-          const block = updateBlockState(db, {
-            id: blockId,
-            status: 'pending',
-            aiMode,
-            updatedAt: currentBlock.updatedAt,
-            errorCode: null,
-            errorMessage: error instanceof Error
-              ? `${t('自动重试中', 'Auto retrying')}: ${error.message}`
-              : t('自动重试中。', 'Auto retrying.'),
-          })
-
-          emitBlockChangedWithDerivedInvalidation({
-            block,
-            reason: 'enriched',
-          })
-
-          await sleep(ENRICH_RETRY_DELAY_MS)
-          continue
-        }
-
-        if (aiMode === 'live') {
-          rememberRuntimeAiError(error)
-        }
-
-        const failedBlock = getFreshBlockForEnrich(blockId, generation)
-
-        if (!failedBlock) {
-          return false
-        }
-
-        const block = updateBlockState(db, {
-          id: blockId,
-          status: 'error',
-          aiMode,
-          updatedAt: failedBlock.updatedAt,
-          errorCode: mapRuntimeErrorToBlockErrorCode(error),
-          errorMessage: error instanceof Error ? error.message : t('后台处理失败。', 'Background processing failed.'),
-        })
-
-        emitBlockChangedWithDerivedInvalidation({
-          block,
-          reason: 'enriched',
-        })
-
-        return false
-      }
-    }
-
-    return false
-  }
-
-  function shouldUseQueuedEnrich(): boolean {
-    return getExecutionMode() === 'live' && getBlockEnrichSettings().queueEnabled
-  }
-
-  function getQueuedEnrichBatchOptions(): {
-    maxBatchBlocks: number
-    queueDebounceMs: number
-    responseReserveTokens: number
-  } {
-    const settings = getBlockEnrichSettings()
-
-    return {
-      maxBatchBlocks: settings.maxBatchBlocks,
-      queueDebounceMs: settings.queueDebounceMs,
-      responseReserveTokens: settings.responseReserveTokens,
-    }
-  }
-
-  function clearQueuedEnrichTimer(): void {
-    if (queuedEnrichTimer) {
-      clearTimeout(queuedEnrichTimer)
-      queuedEnrichTimer = null
-    }
-  }
-
-  function getActiveQueuedEnrichRequests(requests: QueuedEnrichRequest[]): QueuedEnrichRequest[] {
-    return requests.filter((request) => getFreshBlockForEnrich(request.blockId, request.generation))
-  }
-
-  async function runQueuedEnrichBatchWithRetry(requests: QueuedEnrichRequest[]): Promise<void> {
-    if (requests.length === 0) {
-      return
-    }
-
-    if (!shouldUseQueuedEnrich()) {
-      for (const request of requests) {
-        await runEnrichWithRetry(request.blockId, request.content, request.generation)
-      }
-      return
-    }
-
-    const batchOptions = getQueuedEnrichBatchOptions()
-
-    for (let attempt = 0; attempt <= MAX_ENRICH_RETRIES; attempt += 1) {
-      const currentRequests = getActiveQueuedEnrichRequests(requests)
-
-      if (currentRequests.length === 0) {
-        return
-      }
-
-      const runtimeSnapshot = createEnrichRuntimeSnapshot(currentRequests.length)
-
-      const imageRequests = currentRequests.filter((request) => request.hasImages)
-
-      if (imageRequests.length > 0) {
-        for (const request of imageRequests) {
-          await runEnrichWithRetry(request.blockId, request.content, request.generation, runtimeSnapshot)
-        }
-      }
-
-      const textOnlyRequests = currentRequests.filter((request) => !request.hasImages)
-
-      if (textOnlyRequests.length === 0) {
-        return
-      }
-
-      try {
-        const assignments = await tagger.assignBatch(
-          textOnlyRequests.map((request) => ({
-            content: request.content,
-            options: {
-              corpusContents: buildCorpusContentsFromSnapshot(runtimeSnapshot, request.blockId, request.content),
-              liveLlmProvider: runtimeSnapshot.mode === 'live' ? runtimeSnapshot.llmProvider : null,
-              batchOptions: {
-                maxBatchBlocks: batchOptions.maxBatchBlocks,
-                responseReserveTokens: batchOptions.responseReserveTokens,
-              },
-              tagMemory: runtimeSnapshot.tagMemory,
-            },
-          })),
-        )
-
-        clearRuntimeAiError()
-        applyCompletedEnrichAssignments(
-          textOnlyRequests.map((request, index) => ({
-            blockId: request.blockId,
-            content: request.content,
-            generation: request.generation,
-            assignment: assignments[index],
-          })),
-          runtimeSnapshot,
-          getBlockSearchTextsByIds(db, textOnlyRequests.map((request) => request.blockId)),
-        )
-
-        return
-      } catch (error) {
-        const retryableRequests = getActiveQueuedEnrichRequests(textOnlyRequests)
-
-        if (retryableRequests.length === 0) {
-          return
-        }
-
-        const isLastAttempt = attempt === MAX_ENRICH_RETRIES
-        const shouldRetry = isTransientEnrichError(error) && !isLastAttempt
-
-        if (shouldRetry) {
-          for (const request of retryableRequests) {
-            const currentBlock = getFreshBlockForEnrich(request.blockId, request.generation)
-
-            if (!currentBlock) {
-              continue
-            }
-
-            const block = updateBlockState(db, {
-              id: request.blockId,
-              status: 'pending',
-              aiMode: 'live',
-              updatedAt: currentBlock.updatedAt,
-              errorCode: null,
-              errorMessage: error instanceof Error
-                ? `${t('自动重试中', 'Auto retrying')}: ${error.message}`
-                : t('自动重试中。', 'Auto retrying.'),
-            })
-
-            emitBlockChangedWithDerivedInvalidation({
-              block,
-              reason: 'enriched',
-            })
-          }
-
-          await sleep(ENRICH_RETRY_DELAY_MS)
-          continue
-        }
-
-        rememberRuntimeAiError(error)
-
-        for (const request of retryableRequests) {
-          const currentBlock = getFreshBlockForEnrich(request.blockId, request.generation)
-
-          if (!currentBlock) {
-            continue
-          }
-
-          const block = updateBlockState(db, {
-            id: request.blockId,
-            status: 'error',
-            aiMode: 'live',
-            updatedAt: currentBlock.updatedAt,
-            errorCode: mapRuntimeErrorToBlockErrorCode(error),
-            errorMessage: error instanceof Error ? error.message : t('后台处理失败。', 'Background processing failed.'),
-          })
-
-          emitBlockChangedWithDerivedInvalidation({
-            block,
-            reason: 'enriched',
-          })
-        }
-
-        return
-      }
-    }
-  }
-
-  async function flushQueuedEnrichRequests(): Promise<void> {
-    clearQueuedEnrichTimer()
-
-    while (queuedEnrichRequests.length > 0) {
-      const requests = queuedEnrichRequests
-      queuedEnrichRequests = []
-      await runQueuedEnrichBatchWithRetry(requests)
-    }
-  }
-
-  function startQueuedEnrichFlush(): void {
-    clearQueuedEnrichTimer()
-
-    if (isBackgroundProcessingPaused()) {
-      queuedEnrichRequests = []
-      return
-    }
-
-    if (queuedEnrichFlushTask) {
-      return
-    }
-
-    const task = (async () => {
-      try {
-        await flushQueuedEnrichRequests()
-      } finally {
-        queuedEnrichFlushTask = null
-      }
-    })()
-
-    queuedEnrichFlushTask = trackTask(task)
-  }
-
-  function scheduleEnrich(blockId: string, content: string, generation: number): void {
-    const hasImages = hasMarkdownImages(content)
-    const decision = getBlockProcessingDecision(content)
-
-    if (!decision.shouldProcess) {
-      const currentBlock = getFreshBlockForEnrich(blockId, generation)
-
-      if (!currentBlock) {
-        return
-      }
-
-      const block = updateBlockState(db, {
-        id: blockId,
-        status: 'skipped',
-        aiMode: currentBlock.aiMode,
-        updatedAt: currentBlock.updatedAt,
-        errorCode: decision.errorCode,
-        errorMessage: decision.errorMessage,
-      })
-
-      emitBlockChangedWithDerivedInvalidation({
-        block,
-        reason: 'enriched',
-      })
-      return
-    }
-
-    if (!shouldUseQueuedEnrich()) {
-      void trackTask(runEnrichWithRetry(blockId, content, generation))
-      return
-    }
-
-    queuedEnrichRequests = [
-      ...queuedEnrichRequests.filter((request) => request.blockId !== blockId),
-      {
-        blockId,
-        content,
-        generation,
-        hasImages,
-      },
-    ]
-
-    const settings = getQueuedEnrichBatchOptions()
-
-    if (queuedEnrichRequests.length >= settings.maxBatchBlocks) {
-      startQueuedEnrichFlush()
-      return
-    }
-
-    if (!queuedEnrichTimer) {
-      queuedEnrichTimer = setTimeout(() => {
-        queuedEnrichTimer = null
-        startQueuedEnrichFlush()
-      }, settings.queueDebounceMs)
-    }
-  }
-
-  function createBlockWithAttachments(
-    content: string,
-    now: string,
-    initialState: {
-      status: Block['status']
-      aiMode: AIExecutionMode
-      errorCode: Block['errorCode']
-      errorMessage: Block['errorMessage']
-    },
-  ): Block {
-    const transaction = db.transaction(() => {
-      const block = createBlockRecord(db, {
-        id: uuid(),
-        content,
-        status: initialState.status,
-        aiMode: initialState.aiMode,
-        errorCode: initialState.errorCode,
-        errorMessage: initialState.errorMessage,
-        createdAt: now,
-        updatedAt: now,
-      })
-
-      syncBlockAttachmentRecords(db, options.dataDirectory, block.id, content)
-      removeFailedBlockVector(db, block.id)
-      return block
-    })
-
-    return transaction()
-  }
-
-  function updateBlockWithAttachments(
-    id: string,
-    content: string,
-    updatedAt: string,
-    initialState: {
-      status: Block['status']
-      aiMode: AIExecutionMode
-      errorCode: Block['errorCode']
-      errorMessage: Block['errorMessage']
-    },
-  ): Block {
-    const transaction = db.transaction(() => {
-      updateBlockContent(db, {
-        id,
-        content,
-        status: initialState.status,
-        aiMode: initialState.aiMode,
-        updatedAt,
-      })
-
-      let block = getBlockById(db, id)
-
-      if (initialState.status === 'skipped') {
-        block = updateBlockState(db, {
-          id,
-          status: initialState.status,
-          aiMode: initialState.aiMode,
-          updatedAt,
-          errorCode: initialState.errorCode,
-          errorMessage: initialState.errorMessage,
-        })
-      }
-
-      syncBlockAttachmentRecords(db, options.dataDirectory, id, content)
-      clearAutoBlockTags(db, id)
-      clearCalendarSuggestionsForBlock(db, id)
-
-      if (vectorReady) {
-        deleteBlockVector(db, id)
-      }
-
-      removeFailedBlockVector(db, id)
-      return block
-    })
-
-    return transaction()
-  }
-
-  function deleteBlocksWithEffects(
-    ids: string[],
-    removeOptions: { strict?: boolean } = {},
-  ): {
-    deletedBlocks: Block[]
-    touchedNotebookIds: string[]
-  } {
-    const uniqueIds = Array.from(new Set(ids.filter((id) => id.trim().length > 0)))
-
-    if (uniqueIds.length === 0) {
-      return {
-        deletedBlocks: [],
-        touchedNotebookIds: [],
-      }
-    }
-
-    const removedIdSet = new Set(uniqueIds)
-    queuedEnrichRequests = queuedEnrichRequests.filter((request) => !removedIdSet.has(request.blockId))
-
-    const touchedNotebookIds = new Set<string>()
-
-    const deletedBlocks = db.transaction(() => {
-      const removed: Block[] = []
-      const now = new Date().toISOString()
-
-      for (const id of uniqueIds) {
-        let block: Block
-
-        try {
-          block = getBlockById(db, id)
-        } catch (error) {
-          if (removeOptions.strict) {
-            throw error
-          }
-
-          continue
-        }
-
-        advanceBlockEnrichGeneration(id)
-
-        for (const notebookId of touchNotebooksForBlock(db, id, now)) {
-          touchedNotebookIds.add(notebookId)
-        }
-
-        removed.push(deleteBlockRecord(db, block.id))
-
-        if (vectorReady) {
-          deleteBlockVector(db, block.id)
-        }
-
-        removePendingBlockVectors(db, [block.id])
-        removeFailedBlockVector(db, block.id)
-      }
-
-      return removed
-    })()
-
-    if (deletedBlocks.length > 0) {
-      clearDailyReviewCache()
-      emitTouchedNotebooks(Array.from(touchedNotebookIds), 'block-unlinked')
-      emitMetaChanged({
-        reason: 'vector-queue',
-      })
-
-      for (const deletedBlock of deletedBlocks) {
-        emitBlockChangedWithDerivedInvalidation({
-          block: deletedBlock,
-          reason: 'deleted',
-        })
-      }
-
-      void trackTask(cleanupOrphanAttachmentsService(db, options.dataDirectory))
-    }
-
-    return {
-      deletedBlocks,
-      touchedNotebookIds: Array.from(touchedNotebookIds),
-    }
-  }
-
-  async function createStandaloneBlock(content: string): Promise<Block> {
-    const safeContent = validateBlockContent(content, getUiSettings().language)
-    const now = new Date().toISOString()
-    const aiMode = getExecutionMode()
-    const initialState = buildInitialBlockState(safeContent, aiMode)
-    const block = createBlockWithAttachments(safeContent, now, initialState)
-    const enrichGeneration = advanceBlockEnrichGeneration(block.id)
-    clearDailyReviewCache()
-
-    emitBlockChangedWithDerivedInvalidation({
-      block,
-      reason: 'created',
-    })
-
-    if (initialState.shouldProcess) {
-      scheduleEnrich(block.id, safeContent, enrichGeneration)
-      enqueueBlocksForVectorReindex([block])
-      scheduleCurrentVectorReindex()
-    }
-
-    return block
-  }
-
-  startupRecoveredBlockCount = recoverOversizedPendingBlocksOnStartup()
-  ensureVectorSchemaForCurrentState()
-
+  enrichModule = createEnrichModule({
+    db,
+    options,
+    tagger,
+    emitBlockChangedWithDerivedInvalidation,
+    emitMetaChanged: emitMetaChangedWide,
+    emitCalendarChanged,
+    trackTask,
+    getProviders: () => vectorModule.getProviders(),
+    getSavedConfig,
+    getExecutionMode: () => vectorModule.getExecutionMode(),
+    getBlockEnrichSettings,
+    getCalendarSettings,
+    getUiSettings,
+    clearRuntimeAiError,
+    rememberRuntimeAiError,
+    t,
+    enqueueBlocksForVectorReindex: (blocks) => vectorModule.enqueueBlocksForVectorReindex(blocks),
+    scheduleCurrentVectorReindex: (opts) => vectorModule.scheduleCurrentVectorReindex(opts),
+    getDisposed: () => disposed,
+    getBlockEnrichGenerations: () => blockEnrichGenerations,
+    getQueuedEnrichRequests: () => queuedEnrichRequests,
+    setQueuedEnrichRequests: (v) => { queuedEnrichRequests = v },
+    getQueuedEnrichTimer: () => queuedEnrichTimer,
+    setQueuedEnrichTimer: (v) => { queuedEnrichTimer = v },
+    getQueuedEnrichFlushTask: () => queuedEnrichFlushTask,
+    setQueuedEnrichFlushTask: (v) => { queuedEnrichFlushTask = v },
+  })
+
+  blockModule = createBlockModule({
+    db,
+    options,
+    vectorReady,
+    emitBlockChangedWithDerivedInvalidation,
+    emitTouchedNotebooks: (ids: string[], reason: string) => emitNotebooksChanged({ notebookIds: ids, reason } as import('../shared/types').NotebookChangedEvent),
+    emitMetaChanged: emitMetaChangedWide,
+    trackTask,
+    getExecutionMode: () => vectorModule.getExecutionMode(),
+    getUiSettings,
+    clearDailyReviewCache,
+    scheduleEnrich: (id, c, g) => enrichModule.scheduleEnrich(id, c, g),
+    advanceBlockEnrichGeneration: (id) => enrichModule.advanceBlockEnrichGeneration(id),
+    getBlockProcessingDecision: (c) => enrichModule.getBlockProcessingDecision(c),
+    buildInitialBlockState: (c, m) => enrichModule.buildInitialBlockState(c, m),
+    enqueueBlocksForVectorReindex: (blocks) => vectorModule.enqueueBlocksForVectorReindex(blocks),
+    scheduleCurrentVectorReindex: (opts) => vectorModule.scheduleCurrentVectorReindex(opts),
+    getQueuedEnrichRequests: () => queuedEnrichRequests,
+    setQueuedEnrichRequests: (v) => { queuedEnrichRequests = v },
+    getDisposed: () => disposed,
+  })
+
+  calendarModule = createCalendarModule({
+    db,
+    emitCalendarChanged: emitCalendarChanged as (event: { reason: string; date?: string; sourceBlockId?: string }) => void,
+    emitMetaChanged: emitMetaChangedWide,
+    emitReviewGenerationChunk,
+    trackTask,
+    getProviders: () => vectorModule.getProviders(),
+    getCalendarSettings,
+    getUiSettings,
+    getExecutionMode: () => vectorModule.getExecutionMode(),
+    clearRuntimeAiError,
+    rememberRuntimeAiError,
+    t,
+    getSavedConfigFingerprint: () => vectorModule.getSavedConfigFingerprint(),
+    dailyReviewCache,
+    aiInsightCache,
+  })
+
+  notebookModule = createNotebookModule({
+    db,
+    options,
+    emitNotebooksChanged: (event) => emitNotebooksChanged(event),
+    emitMetaChanged: emitMetaChangedWide,
+    emitDocGenerationChunk,
+    emitBlockChangedWithDerivedInvalidation,
+    trackTask,
+    getProviders: () => vectorModule.getProviders(),
+    getQueryEmbedding: (q, m, p) => vectorModule.getQueryEmbedding(q, m, p),
+    canUseVectorSearch: () => vectorModule.canUseVectorSearch(),
+    getDocGenerationSettings,
+    clearRuntimeAiError,
+    rememberRuntimeAiError,
+    validateContent,
+    getExecutionMode: () => vectorModule.getExecutionMode(),
+    getUiSettings,
+    clearDailyReviewCache,
+    scheduleEnrich: (id, c, g) => enrichModule.scheduleEnrich(id, c, g),
+    advanceBlockEnrichGeneration: (id) => enrichModule.advanceBlockEnrichGeneration(id),
+    enqueueBlocksForVectorReindex: (blocks) => vectorModule.enqueueBlocksForVectorReindex(blocks),
+    scheduleCurrentVectorReindex: (opts) => vectorModule.scheduleCurrentVectorReindex(opts),
+    buildInitialBlockState: (c, m) => enrichModule.buildInitialBlockState(c, m),
+  })
+
+  importExportModule = createImportExportModule({
+    db,
+    options,
+    settingsStore,
+    emitBlockChangedWithDerivedInvalidation,
+    emitTouchedNotebooks: (ids: string[], reason: string) => emitNotebooksChanged({ notebookIds: ids, reason } as import('../shared/types').NotebookChangedEvent),
+    emitMetaChanged: emitMetaChangedWide,
+    trackTask,
+    getUiSettings,
+    getBlockProcessingDecision: (c) => enrichModule.getBlockProcessingDecision(c),
+    scheduleEnrich: (id, c, g) => enrichModule.scheduleEnrich(id, c, g),
+    advanceBlockEnrichGeneration: (id) => enrichModule.advanceBlockEnrichGeneration(id),
+    enqueueBlocksForVectorReindex: (blocks) => vectorModule.enqueueBlocksForVectorReindex(blocks),
+    scheduleCurrentVectorReindex: (opts) => vectorModule.scheduleCurrentVectorReindex(opts),
+    t,
+    importJobs,
+    vectorReady,
+  })
+
+  settingsModule = createSettingsModule({
+    db,
+    options,
+    settingsStore,
+    vectorReady,
+    emitMetaChanged,
+    tokenSink,
+    databasePath,
+    getExecutionMode: () => vectorModule.getExecutionMode(),
+    getUiSettings,
+    getSavedConfig,
+    getSavedConfigFingerprint: () => vectorModule.getSavedConfigFingerprint(),
+    hasEquivalentAiTransport,
+    getLastAiTestResult,
+    getExternalAccessSettings,
+    getExternalAccessOptions,
+    clearRuntimeAiError,
+    rememberRuntimeAiError,
+    t,
+    clearDailyReviewCache,
+    isBackgroundProcessingPaused: () => enrichModule.isBackgroundProcessingPaused(),
+    countBlocksByStatus: (s) => enrichModule.countBlocksByStatus(s),
+    countOversizedSkippedBlocks: () => enrichModule.countOversizedSkippedBlocks(),
+    getBlockProcessingDecision: (c) => enrichModule.getBlockProcessingDecision(c),
+    clearQueuedEnrichTimer: () => enrichModule.clearQueuedEnrichTimer(),
+    startQueuedEnrichFlush: () => enrichModule.startQueuedEnrichFlush(),
+    getQueuedEnrichRequests: () => queuedEnrichRequests,
+    resumeBackgroundProcessingBacklog: () => enrichModule.resumeBackgroundProcessingBacklog(),
+    scheduleBlocksForImageAnalysisRefresh: (ids) => enrichModule.scheduleBlocksForImageAnalysisRefresh(ids),
+    clearBlocksImageAnalysisDerivedState: (ids) => enrichModule.clearBlocksImageAnalysisDerivedState(ids),
+    emitBlockChangedWithDerivedInvalidation,
+    enqueueBlocksForVectorReindex: (blocks) => vectorModule.enqueueBlocksForVectorReindex(blocks),
+    scheduleCurrentVectorReindex: (opts) => vectorModule.scheduleCurrentVectorReindex(opts),
+    emitCalendarChanged,
+    getCalendarSettings,
+    getCurrentVectorDimension: () => currentVectorDimension,
+    getVectorSchemaReady: () => vectorSchemaReady,
+    getReindexTask: () => reindexTask,
+    getActiveReindexState: () => activeReindexState,
+    getStartupRecoveredBlockCount: () => startupRecoveredBlockCount,
+    getCurrentVectorIndexState: () => currentVectorIndexState,
+    ensureSchemaForDimension: (d) => vectorModule.ensureSchemaForDimension(d),
+    scheduleReindex: (ep, m, is, opts) => vectorModule.scheduleReindex(ep, m, is, opts),
+    ensureVectorSchemaForCurrentState: (f) => vectorModule.ensureVectorSchemaForCurrentState(f),
+    persistVectorIndexState: (s) => vectorModule.persistVectorIndexState(s),
+    getDesiredVectorIndexState: () => vectorModule.getDesiredVectorIndexState(),
+    isVectorIndexCompatible: (s) => vectorModule.isVectorIndexCompatible(s),
+    getVectorProviderState: () => vectorModule.getVectorProviderState(),
+    setQueuedEnrichRequests: (v: import('./appContext-types').QueuedEnrichRequest[]) => { queuedEnrichRequests = v },
+    markSearchCachesDirty: () => searchModule.markSearchCachesDirty(),
+    getTokenUsage: () => usageTracker.getTokenUsage(),
+    getLifetimeTokenUsage: () => usageTracker.getLifetimeTokenUsage(),
+    getModelCallCounts: () => usageTracker.getModelCallCounts(),
+    getLastAiError: () => lastAiError,
+    pendingTasks: pendingTaskTracker.pendingTasks,
+    queuedEnrichFlushTask,
+    setQueuedEnrichFlushTask: (v) => { queuedEnrichFlushTask = v },
+    setDisposed: (v) => { disposed = v },
+    getDisposed: () => disposed,
+    setDbClosed: (v) => { dbClosed = v },
+    getDbClosed: () => dbClosed,
+    trackTask,
+  })
+
+  // ─── 启动恢复 ─────────────────────────────────────────────────────────────────
+  startupRecoveredBlockCount = enrichModule.recoverOversizedPendingBlocksOnStartup()
+  vectorModule.ensureVectorSchemaForCurrentState()
+
+  // ─── 返回组装后的 AppContext ─────────────────────────────────────────────────
   return {
-    async createBlock(content) {
-      return createStandaloneBlock(content)
-    },
-
-    async getBlock(id) {
-      return getBlockById(db, id)
-    },
-
-    async getBlocks(ids) {
-      const dedupedIds = Array.from(new Set(ids.filter((id) => id.trim().length > 0)))
-
-      if (dedupedIds.length === 0) {
-        return []
-      }
-
-      const blocks = getBlocksByIds(db, dedupedIds)
-      const blockMap = new Map(blocks.map((block) => [block.id, block]))
-
-      return dedupedIds.flatMap((id) => {
-        const block = blockMap.get(id)
-        return block ? [block] : []
-      })
-    },
-
-    async getBlockContext(id, options = {}) {
-      return getBlockContextWindow(db, id, options)
-    },
-
-    async listBlocks(params = {}) {
-      return listBlocks(db, {
-        limit: params.limit ?? DEFAULT_PAGE_SIZE,
-        cursor: params.cursor ?? null,
-      })
-    },
-
-    async listBlocksByDate(date) {
-      return listBlocksByDateInDb(db, date)
-    },
-
-    async updateBlock(id, content) {
-      const safeContent = validateBlockContent(content, getUiSettings().language)
-      const enrichGeneration = advanceBlockEnrichGeneration(id)
-      const aiMode = getExecutionMode()
-      const updatedAt = new Date().toISOString()
-      const initialState = buildInitialBlockState(safeContent, aiMode)
-      const block = updateBlockWithAttachments(id, safeContent, updatedAt, initialState)
-      clearDailyReviewCache()
-      emitTouchedNotebooks(touchNotebooksForBlock(db, id, updatedAt), 'updated')
-
-      emitBlockChangedWithDerivedInvalidation({
-        block,
-        reason: 'updated',
-      })
-
-      if (initialState.shouldProcess) {
-        scheduleEnrich(id, safeContent, enrichGeneration)
-        enqueueBlocksForVectorReindex([block])
-        scheduleCurrentVectorReindex()
-      }
-      void trackTask(cleanupOrphanAttachmentsService(db, options.dataDirectory))
-
-      return getBlockById(db, id)
-    },
-
-    async removeBlock(id) {
-      deleteBlocksWithEffects([id], { strict: true })
-    },
-
-    async removeBlocks(ids) {
-      const { deletedBlocks } = deleteBlocksWithEffects(ids)
-
-      return {
-        removed: deletedBlocks.length,
-        removedIds: deletedBlocks.map((block) => block.id),
-      }
-    },
-
-    async findRelatedBlocks(blockId, limit = 10): Promise<RelatedBlockResult[]> {
-      const matches = findRelatedBlockIds(db, blockId, limit)
-
-      if (matches.length === 0) {
-        return []
-      }
-
-      const blockIds = matches.map((m) => m.id)
-      const blocks = getBlocksByIds(db, blockIds)
-      const blockMap = new Map(blocks.map((b) => [b.id, b]))
-
-      return matches
-        .map((m) => {
-          const block = blockMap.get(m.id)
-          return block ? { block, score: m.score } : null
-        })
-        .filter((r): r is RelatedBlockResult => r !== null)
-    },
-
-    async addTag(blockId, tagName) {
-      const tag = getOrCreateTag(db, tagName, 'user')
-      const block = addManualTagToBlock(db, blockId, tag)
-      emitTouchedNotebooks(touchNotebooksForBlock(db, blockId, new Date().toISOString()), 'updated')
-
-      emitBlockChangedWithDerivedInvalidation({
-        block,
-        reason: 'tagged',
-      })
-
-      return block
-    },
-
-    async removeTag(blockId, tagId) {
-      const block = removeTagFromBlock(db, blockId, tagId)
-      emitTouchedNotebooks(touchNotebooksForBlock(db, blockId, new Date().toISOString()), 'updated')
-
-      emitBlockChangedWithDerivedInvalidation({
-        block,
-        reason: 'tagged',
-      })
-
-      return block
-    },
-
-    async listTags(query = '') {
-      return listAvailableTags(db, query, 50)
-    },
-
-    async saveImage(dataUrl, filenameHint) {
-      return saveImageDataUrl(db, options.dataDirectory, dataUrl, filenameHint)
-    },
-
-    async getGraphData(tagNames = []) {
-      const normalizedTags = normalizeGraphTagFilters(tagNames)
-      const cached = getGraphCacheEntry(normalizedTags)
-
-      if (cached) {
-        return cached
-      }
-
-      return setGraphCacheEntry(normalizedTags, loadGraphData(db, normalizedTags))
-    },
-
-    async searchBlocks(query, limit = 20) {
-      const normalizedQuery = validateContent(query)
-      const { mode, embeddingProvider } = getProviders()
-      const vectorEnabled = canUseVectorSearch()
-      const cacheKey = createSearchCacheKey({
-        type: 'query',
-        query: normalizedQuery,
-        limit,
-        mode,
-        vectorEnabled,
-        vectorIndexState: currentVectorIndexState?.configFingerprint ?? currentVectorIndexState?.mode ?? 'none',
-      })
-      const cached = getSearchCacheEntry(cacheKey)
-
-      if (cached) {
-        return cached
-      }
-
-      const inFlight = searchInFlightRequests.get(cacheKey)
-
-      if (inFlight?.epoch === searchCacheEpoch) {
-        return inFlight.request
-      }
-
-      searchInFlightRequests.delete(cacheKey)
-      const requestEpoch = searchCacheEpoch
-      const request = (async () => {
-        const queryEmbedding = await getQueryEmbedding(normalizedQuery, mode, embeddingProvider)
-
-        return setSearchCacheEntry(cacheKey, searchBlocksInDatabase(db, normalizedQuery, {
-          limit,
-          queryEmbedding,
-          vectorEnabled: vectorEnabled && Boolean(queryEmbedding),
-        }), false, requestEpoch)
-      })()
-
-      searchInFlightRequests.set(cacheKey, {
-        epoch: requestEpoch,
-        request,
-      })
-
-      try {
-        return await request
-      } finally {
-        const active = searchInFlightRequests.get(cacheKey)
-
-        if (active?.request === request) {
-          searchInFlightRequests.delete(cacheKey)
-        }
-      }
-    },
-
-    async searchByTag(tagName, limit = 50) {
-      const normalizedTagName = tagName.trim()
-
-      if (!normalizedTagName) {
-        return []
-      }
-
-      const cacheKey = createSearchCacheKey({
-        type: 'tag',
-        query: normalizedTagName,
-        limit,
-      })
-      const cached = getSearchCacheEntry(cacheKey)
-
-      if (cached) {
-        return cached
-      }
-
-      const inFlight = searchInFlightRequests.get(cacheKey)
-
-      if (inFlight?.epoch === searchCacheEpoch) {
-        return inFlight.request
-      }
-
-      searchInFlightRequests.delete(cacheKey)
-      const requestEpoch = searchCacheEpoch
-      const request = Promise.resolve(setSearchCacheEntry(cacheKey, searchBlocksByTag(db, normalizedTagName, limit), false, requestEpoch))
-
-      searchInFlightRequests.set(cacheKey, {
-        epoch: requestEpoch,
-        request,
-      })
-
-      try {
-        return await request
-      } finally {
-        const active = searchInFlightRequests.get(cacheKey)
-
-        if (active?.request === request) {
-          searchInFlightRequests.delete(cacheKey)
-        }
-      }
-    },
-
-    async generateDocument(topic) {
-      const safeTopic = validateContent(topic)
-      const requestId = uuid()
-      const { mode, embeddingProvider, llmProvider } = getProviders()
-      const { maxReferenceBlocks, retrievalLimit, temperature, maxOutputTokens } = getDocGenerationSettings()
-      const queryEmbedding = await getQueryEmbedding(safeTopic, mode, embeddingProvider)
-
-      const results = searchBlocksInDatabase(db, safeTopic, {
-        limit: retrievalLimit,
-        queryEmbedding,
-        vectorEnabled: canUseVectorSearch() && Boolean(queryEmbedding),
-      })
-      const blocks = selectDocumentReferenceBlocks(results, maxReferenceBlocks)
-
-      void trackTask(
-        startStreamedDocumentGenerationTask({
-          requestId,
-          topic: safeTopic,
-          blocks,
-          llmProvider,
-          mode,
-          temperature,
-          maxOutputTokens,
-          onChunk: emitDocGenerationChunk,
-          onLiveDelta: clearRuntimeAiError,
-          onError: (error) => {
-            if (mode === 'live') {
-              rememberRuntimeAiError(error)
-            }
-          },
-          onSettled: () => {
-            emitMetaChanged({
-              reason: 'doc-generation',
-            })
-          },
-        }),
-      )
-
-      return {
-        requestId,
-        topic: safeTopic,
-        mode,
-        blockIds: blocks.map((block) => block.id),
-      }
-    },
-
-    async saveSnapshot(topic, content, blockIds, notebookId) {
-      return createSnapshot(db, validateContent(topic), validateContent(content), blockIds, notebookId)
-    },
-
-    async updateSnapshot(id, patch) {
-      return updateSnapshotInDb(db, id, {
+    createBlock: (content) => blockModule.createBlock(content),
+    getBlock: (id) => blockModule.getBlock(id),
+    getBlocks: (ids) => blockModule.getBlocks(ids),
+    getBlockContext: (id, opts) => blockModule.getBlockContext(id, opts),
+    listBlocks: (params) => blockModule.listBlocks(params),
+    listBlocksByDate: (date) => blockModule.listBlocksByDate(date),
+    updateBlock: (id, content) => blockModule.updateBlock(id, content),
+    removeBlock: (id) => blockModule.removeBlock(id),
+    removeBlocks: (ids) => blockModule.removeBlocks(ids),
+    findRelatedBlocks: (blockId, limit) => blockModule.findRelatedBlocks(blockId, limit),
+    addTag: (blockId, tagName) => blockModule.addTag(blockId, tagName),
+    removeTag: (blockId, tagId) => blockModule.removeTag(blockId, tagId),
+    listTags: (query) => blockModule.listTags(query),
+    saveImage: (dataUrl, filenameHint) => blockModule.saveImage(dataUrl, filenameHint),
+    getGraphData: (tagNames) => searchModule.getGraphData(tagNames),
+    searchBlocks: (query, limit) => searchModule.searchBlocks(query, limit),
+    searchByTag: (tagName, limit) => searchModule.searchByTag(tagName, limit),
+    generateDocument: (topic) => notebookModule.generateDocument(topic),
+    saveSnapshot: async (topic, content, blockIds, notebookId) => createSnapshot(
+      db,
+      validateContent(topic),
+      validateContent(content),
+      blockIds,
+      notebookId ?? null,
+    ),
+    updateSnapshot: async (id, patch) => updateSnapshotInDb(
+      db,
+      id,
+      {
         topic: validateContent(patch.topic),
         content: validateContent(patch.content),
-      }, new Date().toISOString())
-    },
-
-    async listSnapshots(query = '', notebookId) {
-      return listSnapshots(db, query, notebookId)
-    },
-
-    async getSnapshot(id) {
-      return getSnapshot(db, id)
-    },
-
-    async removeSnapshot(id) {
-      removeSnapshot(db, id)
-    },
-
-    async listCalendarYears() {
-      return listCalendarYears(db)
-    },
-
-    async getCalendarHeatmap(year) {
-      return getCalendarHeatmap(db, year)
-    },
-
-    async getCalendarDayDetail(date) {
-      return getCalendarDayDetail(db, normalizeCalendarDate(date))
-    },
-
-    async generateDailyReview(dateKey, forceRefresh = false) {
-      const normalizedDate = normalizeCalendarDate(dateKey)
-      const language = getUiSettings().language
-      const cacheKey = getDailyReviewCacheKey(normalizedDate, language)
-
-      if (!forceRefresh) {
-        const cached = dailyReviewCache.get(cacheKey)
-
-        if (cached) {
-          return cached
-        }
-      }
-
-      const task = (async () => {
-        const { mode, llmProvider } = getProviders()
-        const dayDetail = getCalendarDayDetail(db, normalizedDate)
-
-        try {
-          const result = await generateDailyReviewContent({
-            date: normalizedDate,
-            dayDetail,
-            llmProvider,
-            mode,
-            language,
-          })
-
-          dailyReviewCache.set(cacheKey, result)
-
-          if (mode === 'live' && clearRuntimeAiError()) {
-            emitMetaChanged({
-              reason: 'review-generation',
-            })
-          }
-
-          return result
-        } catch (error) {
-          if (mode === 'live') {
-            rememberRuntimeAiError(error)
-            emitMetaChanged({
-              reason: 'review-generation',
-            })
-          }
-
-          throw error
-        }
-      })()
-
-      return trackTask(task)
-    },
-
-    async generateAiInsight(methodId, dateKey, forceRefresh = false) {
-      if (!isAiInsightMethodId(methodId)) {
-        throw new Error(t('未知的 AI 洞察方法。', 'Unknown AI insight method.'))
-      }
-
-      const normalizedDate = normalizeCalendarDate(dateKey)
-      const language = getUiSettings().language
-      const cacheKey = getAiInsightCacheKey(methodId, normalizedDate, language)
-
-      if (!forceRefresh) {
-        const cached = aiInsightCache.get(cacheKey)
-
-        if (cached) {
-          return cached
-        }
-      }
-
-      const task = (async () => {
-        const { mode, llmProvider } = getProviders()
-        const dates = buildReviewDateRange(normalizedDate)
-        const dayDetails = dates.map((date) => getCalendarDayDetail(db, date))
-
-        try {
-          const result = await generateAiInsightContent({
-            methodId,
-            anchorDate: normalizedDate,
-            dayDetails,
-            llmProvider,
-            mode,
-            language,
-          })
-
-          aiInsightCache.set(cacheKey, result)
-          recordAiInsightHistory(result)
-
-          if (mode === 'live' && clearRuntimeAiError()) {
-            emitMetaChanged({
-              reason: 'review-generation',
-            })
-          }
-
-          return result
-        } catch (error) {
-          if (mode === 'live') {
-            rememberRuntimeAiError(error)
-            emitMetaChanged({
-              reason: 'review-generation',
-            })
-          }
-
-          throw error
-        }
-      })()
-
-      return trackTask(task)
-    },
-
-    async listAiInsightHistory(methodId = null, limit = 30) {
-      if (methodId !== null && methodId !== undefined && !isAiInsightMethodId(methodId)) {
-        throw new Error(t('未知的 AI 洞察方法。', 'Unknown AI insight method.'))
-      }
-
-      return listAiInsightHistoryRecords(db, methodId ?? null, limit)
-    },
-
-    async startDailyReviewGeneration(dateKey, forceRefresh = false) {
-      const normalizedDate = normalizeCalendarDate(dateKey)
-      const language = getUiSettings().language
-      const cacheKey = getDailyReviewCacheKey(normalizedDate, language)
-      const { mode, llmProvider } = getProviders()
-      const requestId = uuid()
-      const start = buildDailyReviewStart(requestId, normalizedDate, mode)
-
-      if (!forceRefresh) {
-        const cached = dailyReviewCache.get(cacheKey)
-
-        if (cached) {
-          setTimeout(() => {
-            emitDailyReviewResultChunk(start, cached)
-          }, 0)
-          return start
-        }
-      }
-
-      void trackTask((async () => {
-        await Promise.resolve()
-        const dayDetail = getCalendarDayDetail(db, normalizedDate)
-        const prepared = prepareDailyReviewGeneration({
-          date: normalizedDate,
-          dayDetail,
-          mode,
-          language,
-        })
-
-        if (prepared.emptyResult) {
-          dailyReviewCache.set(cacheKey, prepared.emptyResult)
-          setTimeout(() => {
-            emitDailyReviewResultChunk(start, prepared.emptyResult as Awaited<ReturnType<typeof generateDailyReviewContent>>)
-          }, 0)
-          return
-        }
-
-        const generationInput = prepared.input
-
-        if (!generationInput) {
-          throw new Error(t('每日回顾生成输入缺失。', 'Missing daily review generation input.'))
-        }
-
-        try {
-          let fullText = ''
-
-          for await (const delta of llmProvider.streamDailyReview(generationInput)) {
-            fullText += delta
-            emitReviewChunk({
-              requestId,
-              kind: 'daily-review',
-              date: normalizedDate,
-              delta,
-              done: false,
-              mode,
-            })
-          }
-
-          const result = finalizeDailyReviewResult({
-            date: normalizedDate,
-            mode,
-            language,
-            input: generationInput,
-            blocks: prepared.blocks,
-            entries: prepared.entries,
-            content: fullText,
-          })
-
-          dailyReviewCache.set(cacheKey, result)
-
-          if (mode === 'live' && clearRuntimeAiError()) {
-            emitMetaChanged({
-              reason: 'review-generation',
-            })
-          }
-
-          emitDailyReviewResultChunk(start, result)
-        } catch (error) {
-          if (mode === 'live') {
-            rememberRuntimeAiError(error)
-            emitMetaChanged({
-              reason: 'review-generation',
-            })
-          }
-
-          emitReviewChunk({
-            requestId,
-            kind: 'daily-review',
-            date: normalizedDate,
-            delta: '',
-            done: true,
-            mode,
-            error: error instanceof Error ? error.message : t('每日回顾生成失败。', 'Daily review generation failed.'),
-          })
-        }
-      })())
-
-      return start
-    },
-
-    async startAiInsightGeneration(methodId, dateKey, forceRefresh = false) {
-      if (!isAiInsightMethodId(methodId)) {
-        throw new Error(t('未知的 AI 洞察方法。', 'Unknown AI insight method.'))
-      }
-
-      const normalizedDate = normalizeCalendarDate(dateKey)
-      const language = getUiSettings().language
-      const cacheKey = getAiInsightCacheKey(methodId, normalizedDate, language)
-      const { mode, llmProvider } = getProviders()
-      const requestId = uuid()
-      const start = buildAiInsightStart(requestId, methodId, normalizedDate, mode)
-
-      if (!forceRefresh) {
-        const cached = aiInsightCache.get(cacheKey)
-
-        if (cached) {
-          setTimeout(() => {
-            emitAiInsightResultChunk(start, cached)
-          }, 0)
-          return start
-        }
-      }
-
-      void trackTask((async () => {
-        await Promise.resolve()
-        const dates = buildReviewDateRange(normalizedDate)
-        const dayDetails = dates.map((date) => getCalendarDayDetail(db, date))
-        const prepared = prepareAiInsightGeneration({
-          methodId,
-          anchorDate: normalizedDate,
-          dayDetails,
-          mode,
-          language,
-        })
-
-        if (prepared.emptyResult) {
-          aiInsightCache.set(cacheKey, prepared.emptyResult)
-          recordAiInsightHistory(prepared.emptyResult)
-          setTimeout(() => {
-            emitAiInsightResultChunk(start, prepared.emptyResult as Awaited<ReturnType<typeof generateAiInsightContent>>)
-          }, 0)
-          return
-        }
-
-        const generationInput = prepared.input
-
-        if (!generationInput) {
-          throw new Error(t('AI 洞察生成输入缺失。', 'Missing AI insight generation input.'))
-        }
-
-        try {
-          let fullText = ''
-
-          for await (const delta of llmProvider.streamAiInsight(generationInput)) {
-            fullText += delta
-            emitReviewChunk({
-              requestId,
-              kind: 'ai-insight',
-              date: normalizedDate,
-              methodId,
-              delta,
-              done: false,
-              mode,
-            })
-          }
-
-          const result = finalizeAiInsightResult({
-            methodId,
-            anchorDate: normalizedDate,
-            mode,
-            language,
-            input: generationInput,
-            blocks: prepared.blocks,
-            entries: prepared.entries,
-            sourceBlocks: prepared.sourceBlocks,
-            content: fullText,
-          })
-
-          aiInsightCache.set(cacheKey, result)
-          recordAiInsightHistory(result)
-
-          if (mode === 'live' && clearRuntimeAiError()) {
-            emitMetaChanged({
-              reason: 'review-generation',
-            })
-          }
-
-          emitAiInsightResultChunk(start, result)
-        } catch (error) {
-          if (mode === 'live') {
-            rememberRuntimeAiError(error)
-            emitMetaChanged({
-              reason: 'review-generation',
-            })
-          }
-
-          emitReviewChunk({
-            requestId,
-            kind: 'ai-insight',
-            date: normalizedDate,
-            methodId,
-            delta: '',
-            done: true,
-            mode,
-            error: error instanceof Error ? error.message : t('AI 洞察生成失败。', 'AI insight generation failed.'),
-          })
-        }
-      })())
-
-      return start
-    },
-
-    async saveDailyReviewSnapshot(input) {
-      const safeTitle = validateContent(input.title)
-      const snapshotContent = buildDailyReviewSnapshotContent(safeTitle, input.content, getUiSettings().language)
-      return createSnapshot(db, safeTitle, validateContent(snapshotContent), input.blockIds)
-    },
-
-    async saveAiInsightSnapshot(input) {
-      if (!isAiInsightMethodId(input.methodId)) {
-        throw new Error(t('未知的 AI 洞察方法。', 'Unknown AI insight method.'))
-      }
-
-      const safeTitle = validateContent(input.title)
-      const snapshotContent = buildAiInsightSnapshotContent(safeTitle, input.content, getUiSettings().language)
-      return createSnapshot(db, safeTitle, validateContent(snapshotContent), input.blockIds)
-    },
-
-    async listUpcomingCalendarEntries(limitDays) {
-      const settings = getCalendarSettings()
-      const days = Math.max(1, Math.round(limitDays ?? settings.upcomingDays))
-      const startDate = todayDateKey()
-      const endDateValue = new Date(`${startDate}T00:00:00`)
-      endDateValue.setDate(endDateValue.getDate() + Math.max(0, days - 1))
-      const endDate = [
-        endDateValue.getFullYear(),
-        String(endDateValue.getMonth() + 1).padStart(2, '0'),
-        String(endDateValue.getDate()).padStart(2, '0'),
-      ].join('-')
-
-      return listUpcomingCalendarEntries(db, startDate, endDate)
-    },
-
-    async createCalendarEntry(input) {
-      const entry = createCalendarEntry(db, normalizeCalendarEntryInput(input), new Date().toISOString())
-      clearDailyReviewCache()
-      emitCalendarChanged({
-        reason: 'entry-created',
-        date: entry.date,
-      })
-      return entry
-    },
-
-    async updateCalendarEntry(id, patch) {
-      const entry = updateCalendarEntry(db, id, normalizeCalendarEntryPatch(patch), new Date().toISOString())
-      clearDailyReviewCache()
-      emitCalendarChanged({
-        reason: 'entry-updated',
-        date: entry.date,
-      })
-      return entry
-    },
-
-    async removeCalendarEntry(id) {
-      removeCalendarEntry(db, id)
-      clearDailyReviewCache()
-      emitCalendarChanged({
-        reason: 'entry-deleted',
-      })
-    },
-
-    async acceptCalendarSuggestion(id, overrides) {
-      const entry = acceptCalendarSuggestion(db, id, normalizeCalendarSuggestionAcceptInput(overrides), new Date().toISOString())
-      clearDailyReviewCache()
-      emitCalendarChanged({
-        reason: 'suggestion-updated',
-        date: entry.date,
-        sourceBlockId: entry.linkedBlockId ?? undefined,
-      })
-      return entry
-    },
-
-    async dismissCalendarSuggestion(id) {
-      dismissCalendarSuggestion(db, id)
-      clearDailyReviewCache()
-      emitCalendarChanged({
-        reason: 'suggestion-updated',
-      })
-    },
-
-    async listNotebooks() {
-      return listNotebooks(db)
-    },
-
-    async getNotebook(id) {
-      return getNotebookById(db, id)
-    },
-
-    async createNotebook(title) {
-      const now = new Date().toISOString()
-      const notebook = createNotebookRecord(db, {
-        id: uuid(),
-        title: normalizeNotebookTitle(title),
-        createdAt: now,
-        updatedAt: now,
-      })
-      emitNotebooksChanged({
-        notebookIds: [notebook.id],
-        reason: 'created',
-      })
-      return notebook
-    },
-
-    async updateNotebook(id, title) {
-      const notebook = updateNotebookTitle(db, id, normalizeNotebookTitle(title), new Date().toISOString())
-      emitNotebooksChanged({
-        notebookIds: [id],
-        reason: 'updated',
-      })
-      return notebook
-    },
-
-    async removeNotebook(id) {
-      deleteNotebookRecord(db, id)
-      emitNotebooksChanged({
-        notebookIds: [id],
-        reason: 'deleted',
-      })
-    },
-
-    async addBlockToNotebook(notebookId, blockId) {
-      const result = addBlockToNotebook(db, notebookId, blockId, new Date().toISOString())
-
-      if (result.added) {
-        emitNotebooksChanged({
-          notebookIds: [notebookId],
-          reason: 'block-linked',
-        })
-      }
-
-      return result
-    },
-
-    async removeNotebookItem(notebookId, itemId) {
-      const notebook = removeItemFromNotebook(db, notebookId, itemId, new Date().toISOString())
-      emitNotebooksChanged({
-        notebookIds: [notebookId],
-        reason: 'items-changed',
-      })
-      return notebook
-    },
-
-    async reorderNotebookItems(notebookId, itemIds) {
-      const notebook = reorderNotebookItems(db, notebookId, itemIds, new Date().toISOString())
-      emitNotebooksChanged({
-        notebookIds: [notebookId],
-        reason: 'items-changed',
-      })
-      return notebook
-    },
-
-    async createNotebookBlock(notebookId, content) {
-      const safeContent = validateBlockContent(content, getUiSettings().language)
-      const now = new Date().toISOString()
-      const aiMode = getExecutionMode()
-      const initialState = buildInitialBlockState(safeContent, aiMode)
-      const transaction = db.transaction(() => {
-        ensureNotebookExists(db, notebookId)
-
-        const block = createBlockRecord(db, {
-          id: uuid(),
-          content: safeContent,
-          status: initialState.status,
-          aiMode: initialState.aiMode,
-          errorCode: initialState.errorCode,
-          errorMessage: initialState.errorMessage,
-          createdAt: now,
-          updatedAt: now,
-        })
-
-        appendBlockToNotebook(db, notebookId, block.id, now)
-        syncBlockAttachmentRecords(db, options.dataDirectory, block.id, safeContent)
-        removeFailedBlockVector(db, block.id)
-        return block
-      })
-
-      const block = transaction()
-      const enrichGeneration = advanceBlockEnrichGeneration(block.id)
-      clearDailyReviewCache()
-
-      emitBlockChangedWithDerivedInvalidation({
-        block,
-        reason: 'created',
-      })
-      emitNotebooksChanged({
-        notebookIds: [notebookId],
-        reason: 'items-changed',
-      })
-
-      if (initialState.shouldProcess) {
-        scheduleEnrich(block.id, safeContent, enrichGeneration)
-        enqueueBlocksForVectorReindex([block])
-        scheduleCurrentVectorReindex()
-      }
-
-      return getNotebookById(db, notebookId)
-    },
-
-    async createNotebookStructureItem(notebookId, input) {
-      const notebook = createNotebookStructureItem(db, notebookId, input, new Date().toISOString())
-      emitNotebooksChanged({
-        notebookIds: [notebookId],
-        reason: 'items-changed',
-      })
-      return notebook
-    },
-
-    async updateNotebookStructureItem(notebookId, itemId, patch) {
-      const notebook = updateNotebookStructureItem(db, notebookId, itemId, patch, new Date().toISOString())
-      emitNotebooksChanged({
-        notebookIds: [notebookId],
-        reason: 'items-changed',
-      })
-      return notebook
-    },
-
-    async getNotebookReferencePreview(notebookId, topic) {
-      const notebook = getNotebookById(db, notebookId)
-      const safeTopic = validateContent(normalizeNotebookTopic(notebook, topic))
-      return buildNotebookReferencePreview(notebook, safeTopic)
-    },
-
-    async updateNotebookReferenceReview(notebookId, blockId, patch, topic) {
-      updateNotebookReferenceReview(db, notebookId, blockId, patch, new Date().toISOString())
-      emitNotebooksChanged({
-        notebookIds: [notebookId],
-        reason: 'reference-review-updated',
-      })
-      const notebook = getNotebookById(db, notebookId)
-      const safeTopic = validateContent(normalizeNotebookTopic(notebook, topic))
-      return buildNotebookReferencePreview(notebook, safeTopic)
-    },
-
-    async generateNotebookDocument(notebookId, topic) {
-      const notebook = getNotebookById(db, notebookId)
-      const safeTopic = validateContent(normalizeNotebookTopic(notebook, topic))
-      const requestId = uuid()
-      const { mode, embeddingProvider, llmProvider } = getProviders()
-      const { temperature, maxOutputTokens } = getDocGenerationSettings()
-      const preview = await buildNotebookReferencePreview(notebook, safeTopic, {
-        mode,
-        embeddingProvider,
-      })
-      const selectedBlocks = preview.candidates
-        .filter((candidate) => candidate.selected)
-        .map((candidate) => candidate.block)
-      const writingGuide = buildNotebookWritingGuide(notebook.items)
-
-      void trackTask(
-        startStreamedDocumentGenerationTask({
-          requestId,
-          topic: safeTopic,
-          blocks: selectedBlocks,
-          llmProvider,
-          mode,
-          temperature,
-          maxOutputTokens,
-          writingGuide,
-          onChunk: emitDocGenerationChunk,
-          onLiveDelta: clearRuntimeAiError,
-          onError: (error) => {
-            if (mode === 'live') {
-              rememberRuntimeAiError(error)
-            }
-          },
-          onSettled: () => {
-            emitMetaChanged({
-              reason: 'doc-generation',
-            })
-          },
-        }),
-      )
-
-      return {
-        requestId,
-        topic: safeTopic,
-        mode,
-        blockIds: selectedBlocks.map((block) => block.id),
-        notebookId,
-      }
-    },
-
-    async exportMarkdown(exportOptions) {
-      const language = getUiSettings().language
-      const targetDirectory =
-        exportOptions.targetPath ??
-        (options.chooseDirectory ? await options.chooseDirectory(
-          language === 'en' ? 'Choose Markdown export directory' : '选择 Markdown 导出目录',
-        ) : null)
-
-      if (!targetDirectory) {
-        return null
-      }
-
-      return exportMarkdownBundle(db, targetDirectory, exportOptions)
-    },
-
-    async exportJson(exportOptions) {
-      const defaultPath = join(options.dataDirectory, `changbu-export-${new Date().toISOString().replace(/[:.]/g, '-')}.json`)
-      const language = getUiSettings().language
-      const targetFilePath =
-        exportOptions.targetPath ??
-        (options.chooseSavePath
-          ? await options.chooseSavePath({
-              title: language === 'en' ? 'Export JSON backup' : '导出 JSON 备份',
-              defaultPath,
-              filters: [{ name: 'JSON', extensions: ['json'] }],
-            })
-          : null)
-
-      if (!targetFilePath) {
-        return null
-      }
-
-      const settingsSnapshot = exportOptions.includeSettings
-        ? Object.fromEntries(
-            Array.from(FILE_BACKED_SETTING_KEYS)
-              .map((key) => [key, settingsStore.get(key)] as const)
-              .filter((entry): entry is [string, string] => entry[1] !== null),
-          )
-        : null
-
-      return exportJsonBundle(db, targetFilePath, exportOptions, settingsSnapshot)
-    },
-
-    async previewImportMarkdown(filePaths) {
-      const language = getUiSettings().language
-      const resolvedFilePaths =
-        filePaths && filePaths.length > 0
-          ? filePaths
-          : options.chooseOpenPaths
-            ? await options.chooseOpenPaths({
-                title: language === 'en' ? 'Select Markdown files' : '选择 Markdown 文件',
-                filters: [{ name: 'Markdown', extensions: ['md', 'markdown'] }],
-                properties: ['openFile', 'multiSelections'],
-              })
-            : []
-
-      if (resolvedFilePaths.length === 0) {
-        return null
-      }
-
-      const { preview, job } = await previewMarkdownImport(resolvedFilePaths)
-      importJobs.set(preview.importId, job)
-      return preview
-    },
-
-    async previewImportJson(filePath) {
-      const language = getUiSettings().language
-      const resolvedFilePath =
-        filePath ??
-        (options.chooseOpenPaths
-          ? (
-              await options.chooseOpenPaths({
-                title: language === 'en' ? 'Select JSON backup file' : '选择 JSON 备份文件',
-                filters: [{ name: 'JSON', extensions: ['json'] }],
-                properties: ['openFile'],
-              })
-            )[0]
-          : undefined)
-
-      if (!resolvedFilePath) {
-        return null
-      }
-
-      const { preview, job } = await previewJsonImport(db, resolvedFilePath)
-      importJobs.set(preview.importId, job)
-      return preview
-    },
-
-    async confirmImport(importId, conflictStrategy) {
-      const job = importJobs.get(importId)
-
-      if (!job) {
-        throw new Error(t('导入预览已失效，请重新选择文件。', 'Import preview expired. Please choose files again.'))
-      }
-
-      let result: Awaited<ReturnType<typeof confirmImportJob>>
-
-      try {
-        result = await confirmImportJob(db, options.dataDirectory, job, conflictStrategy)
-      } finally {
-        importJobs.delete(importId)
-      }
-
-      const importedBlocks = getBlocksByIds(db, result.importedIds)
-      const createdBlocks = getBlocksByIds(db, result.createdIds)
-      const updatedBlocks = getBlocksByIds(db, result.updatedIds)
-      const processableImportedBlocks: Block[] = []
-      const touchedNotebookIds = new Set<string>()
-
-      for (const block of updatedBlocks) {
-        for (const notebookId of touchNotebooksForBlock(db, block.id, new Date().toISOString())) {
-          touchedNotebookIds.add(notebookId)
-        }
-      }
-
-      for (const block of createdBlocks) {
-        emitBlockChangedWithDerivedInvalidation({
-          block,
-          reason: 'created',
-        })
-      }
-
-      for (const block of updatedBlocks) {
-        emitBlockChangedWithDerivedInvalidation({
-          block,
-          reason: 'updated',
-        })
-      }
-
-      for (const block of importedBlocks) {
-        const decision = getBlockProcessingDecision(block.content)
-
-        if (decision.shouldProcess) {
-          processableImportedBlocks.push(block)
-          continue
-        }
-
-        const skippedBlock = updateBlockState(db, {
-          id: block.id,
-          status: 'skipped',
-          aiMode: block.aiMode,
-          updatedAt: block.updatedAt,
-          errorCode: decision.errorCode,
-          errorMessage: decision.errorMessage,
-        })
-
-        emitBlockChangedWithDerivedInvalidation({
-          block: skippedBlock,
-          reason: 'enriched',
-        })
-      }
-
-      emitTouchedNotebooks(Array.from(touchedNotebookIds), 'updated')
-
-      if (job.format === 'markdown') {
-        void trackTask(
-          (async () => {
-            for (const block of processableImportedBlocks) {
-              const enrichGeneration = advanceBlockEnrichGeneration(block.id)
-              scheduleEnrich(block.id, block.content, enrichGeneration)
-            }
-          })(),
-        )
-      }
-
-      if (job.format === 'json' && job.settingsSnapshot) {
-        let settingsChanged = false
-
-        for (const [key, value] of Object.entries(job.settingsSnapshot)) {
-          if (settingsStore.get(key) === value) {
-            continue
-          }
-
-          settingsStore.set(key, value)
-          settingsChanged = true
-        }
-
-        if (settingsChanged) {
-          emitMetaChanged({
-            reason: 'settings',
-          })
-        }
-      }
-
-      enqueueBlocksForVectorReindex(processableImportedBlocks)
-
-      if (processableImportedBlocks.length > 0) {
-        scheduleCurrentVectorReindex()
-      }
-
-      void trackTask(cleanupOrphanAttachmentsService(db, options.dataDirectory))
-      return result
-    },
-
-    async getDataManagementOverview() {
-      const config = getSavedConfig()
-      const pendingVectorCount = countPendingBlockVectors(db)
-      const tokenUsage = getTokenUsage()
-      const totalNotebookCount = (db.prepare(`SELECT COUNT(*) AS total FROM notebooks`).get() as { total: number }).total
-      const totalSnapshotCount = (db.prepare(`SELECT COUNT(*) AS total FROM snapshots`).get() as { total: number }).total
-      const totalAttachmentCount = (db.prepare(`SELECT COUNT(*) AS total FROM attachments`).get() as { total: number }).total
-
-      return {
-        dataDirectory: options.dataDirectory,
-        databasePath,
-        settingsDirectory: dirname(settingsStore.filePath),
-        settingsFilePath: settingsStore.filePath,
-        totalBlockCount: countBlocks(db),
-        totalNotebookCount,
-        totalSnapshotCount,
-        totalAttachmentCount,
-        totalVectorCount: vectorReady && currentVectorDimension !== null ? countBlockVectors(db) : 0,
-        vectorReady,
-        aiConfigured: isAIConfigured(config),
-        activeAiMode: getExecutionMode(),
-        vectorDimension: currentVectorDimension,
-        vectorSchemaReady: vectorReady && vectorSchemaReady,
-        failedVectorCount: countFailedBlockVectors(db),
-        pendingVectorCount,
-        vectorQueueProcessing: Boolean(reindexTask || activeReindexState) && pendingVectorCount > 0,
-        tokenUsage: tokenUsage.requestCount > 0 ? tokenUsage : null,
-        pendingBlockCount: countBlocksByStatus('pending'),
-        skippedBlockCount: countBlocksByStatus('skipped'),
-        oversizedSkippedBlockCount: countOversizedSkippedBlocks(),
-        backgroundProcessingPaused: isBackgroundProcessingPaused(),
-        recoveryModeActive: startupRecoveredBlockCount > 0,
-        startupRecoveredBlockCount,
-      }
-    },
-
-    async cleanupOrphanAttachments() {
-      const removedCount = await trackTask(cleanupOrphanAttachmentsService(db, options.dataDirectory))
-
-      emitMetaChanged({
-        reason: 'data-management',
-      })
-
-      return { removedCount }
-    },
-
-    async rebuildAttachmentIndex() {
-      const result = await trackTask(rebuildAttachmentIndexService(db, options.dataDirectory))
-
-      emitMetaChanged({
-        reason: 'data-management',
-      })
-
-      return result
-    },
-
-    async rebuildAllVectors() {
-      if (!vectorReady || currentVectorDimension === null) {
-        throw new Error(t('当前向量索引不可用，无法重建。', 'Vector index is unavailable and cannot be rebuilt.'))
-      }
-
-      const providerState = getVectorProviderState()
-
-      if (!providerState) {
-        throw new Error(t(
-          '当前 AI / 向量配置尚未就绪，请先完成 API 测试或改用 mock。',
-          'AI/vector configuration is not ready. Run API test first or switch to mock mode.',
-        ))
-      }
-
-      const queuedBlockCount = countBlocks(db)
-
-      clearFailedBlockVectors(db)
-      resetPendingBlockVectors(db)
-      scheduleReindex(providerState.embeddingProvider, providerState.mode, providerState.indexState, {
-        fullRebuild: true,
-      })
-
-      emitMetaChanged({
-        reason: 'data-management',
-      })
-
-      return {
-        queuedBlockCount,
-      }
-    },
-
-    async setBackgroundProcessingPaused(paused) {
-      const normalized = paused ? '1' : ''
-
-      if (getDbSetting(db, BACKGROUND_PROCESSING_PAUSED_KEY) !== normalized) {
-        setDbSetting(db, BACKGROUND_PROCESSING_PAUSED_KEY, normalized)
-      }
-
-      if (paused) {
-        clearQueuedEnrichTimer()
-        queuedEnrichRequests = []
-      } else {
-        resumeBackgroundProcessingBacklog()
-      }
-
-      emitMetaChanged({
-        reason: 'settings',
-      })
-      emitMetaChanged({
-        reason: 'data-management',
-      })
-
-      return {
-        paused: isBackgroundProcessingPaused(),
-      }
-    },
-
-    async clearPendingVectors() {
-      const pendingCount = countPendingBlockVectors(db)
-      db.exec(`DELETE FROM pending_block_vectors`)
-
-      emitMetaChanged({
-        reason: 'vector-queue',
-      })
-      emitMetaChanged({
-        reason: 'data-management',
-      })
-
-      return pendingCount
-    },
-
-    async clearFailedVectors() {
-      const failedCount = countFailedBlockVectors(db)
-      clearFailedBlockVectors(db)
-
-      emitMetaChanged({
-        reason: 'vector-failure',
-      })
-      emitMetaChanged({
-        reason: 'data-management',
-      })
-
-      return failedCount
-    },
-
-    async getSetting(key) {
-      return FILE_BACKED_SETTING_KEYS.has(key) ? settingsStore.get(key) : getDbSetting(db, key)
-    },
-
-    async setSetting(key, value) {
-      const previousValue = FILE_BACKED_SETTING_KEYS.has(key) ? settingsStore.get(key) : getDbSetting(db, key)
-      const previousAiConfig = key === 'ai_config' ? parseAIConfig(previousValue) : null
-
-      if (previousValue !== value) {
-        clearDailyReviewCache()
-      }
-
-      if (FILE_BACKED_SETTING_KEYS.has(key)) {
-        settingsStore.set(key, value)
-      } else {
-        setDbSetting(db, key, value)
-      }
-
-      if (key === 'ai_config' && previousValue !== value) {
-        const savedConfig = getSavedConfig()
-        const savedFingerprint = isAIConfigured(savedConfig) ? createConfigFingerprint(savedConfig) : null
-        const lastTestResult = getLastAiTestResult()
-        const transportChanged = previousAiConfig ? !hasEquivalentAiTransport(previousAiConfig, savedConfig) : true
-        const multimodalChanged = previousAiConfig
-          ? previousAiConfig.multimodalImageAnalysisEnabled !== savedConfig.multimodalImageAnalysisEnabled
-          : false
-
-        if (
-          savedFingerprint
-          && lastTestResult?.success
-          && multimodalChanged
-          && !transportChanged
-          && !savedConfig.multimodalImageAnalysisEnabled
-        ) {
-          settingsStore.set(AI_LAST_TEST_RESULT_KEY, JSON.stringify({
-            ...lastTestResult,
-            configFingerprint: savedFingerprint,
-            llmMultimodalOk: false,
-          }))
-        } else if (!savedFingerprint || lastTestResult?.configFingerprint !== savedFingerprint) {
-          settingsStore.set(AI_LAST_TEST_RESULT_KEY, '')
-        }
-
-        clearRuntimeAiError()
-
-        if (!isAIConfigured(savedConfig)) {
-          ensureVectorSchemaForCurrentState(true)
-        } else if (
-          transportChanged
-          && savedFingerprint
-          && lastTestResult?.success
-          && lastTestResult.configFingerprint === savedFingerprint
-        ) {
-          ensureVectorSchemaForCurrentState(true)
-        }
-
-        if (multimodalChanged) {
-          const imageBlockIds = listBlockIdsWithMarkdownImages(db)
-
-          if (imageBlockIds.length > 0) {
-            if (!savedConfig.multimodalImageAnalysisEnabled) {
-              const updatedBlocks = clearBlocksImageAnalysisDerivedState(imageBlockIds)
-
-              for (const block of updatedBlocks) {
-                emitBlockChangedWithDerivedInvalidation({
-                  block,
-                  reason: 'enriched',
-                })
-              }
-
-              enqueueBlocksForVectorReindex(updatedBlocks)
-              scheduleCurrentVectorReindex()
-            }
-
-            const canRefreshImmediately =
-              isAIConfigured(savedConfig)
-              && (
-                getExecutionMode() === 'live'
-                || (
-                  !savedConfig.multimodalImageAnalysisEnabled
-                  && !transportChanged
-                  && Boolean(lastTestResult?.success)
-                )
-              )
-
-            if (canRefreshImmediately) {
-              scheduleBlocksForImageAnalysisRefresh(imageBlockIds)
-            }
-          }
-        }
-      }
-
-      if ((key === 'ai_config' || key === BLOCK_ENRICH_SETTINGS_KEY) && queuedEnrichRequests.length > 0) {
-        startQueuedEnrichFlush()
-      }
-
-      if (key === CALENDAR_SETTINGS_KEY) {
-        const calendarSettings = getCalendarSettings()
-
-        if (!calendarSettings.aiSuggestionsEnabled) {
-          db.prepare(`DELETE FROM calendar_suggestions`).run()
-          emitCalendarChanged({
-            reason: 'suggestion-updated',
-          })
-        }
-      }
-
-      emitMetaChanged({
-        reason: 'settings',
-      })
-    },
-
-    async testApi(config) {
-      const result = await probeAiConfig(config, getUiSettings().language)
-      settingsStore.set(AI_LAST_TEST_RESULT_KEY, JSON.stringify(result))
-      const savedFingerprint = getSavedConfigFingerprint()
-      const testedFingerprint = result.configFingerprint ?? createConfigFingerprint(config)
-      const appliesToSavedConfig = Boolean(savedFingerprint) && testedFingerprint === savedFingerprint
-
-      if (vectorReady && result.success && result.embeddingDimension && appliesToSavedConfig) {
-        const schemaChanged = ensureSchemaForDimension(result.embeddingDimension)
-        const targetState = createLiveVectorIndexState(testedFingerprint)
-        const embeddingProvider = createLiveEmbeddingProvider(config, tokenSink)
-        scheduleReindex(embeddingProvider, 'live', targetState, {
-          fullRebuild: schemaChanged || !isSameVectorIndexState(currentVectorIndexState, targetState),
-        })
-      }
-
-      if (result.success && config.multimodalImageAnalysisEnabled && appliesToSavedConfig) {
-        scheduleBlocksForImageAnalysisRefresh(listBlockIdsWithMarkdownImages(db))
-      }
-
-      emitMetaChanged({
-        reason: 'ai-test',
-      })
-
-      return result
-    },
-
-    async getMeta() {
-      const config = getSavedConfig()
-      const lastAiTestResult = getLastAiTestResult()
-      const savedFingerprint = getSavedConfigFingerprint()
-      const activeAiMode =
-        isAIConfigured(config) && lastAiTestResult?.success && Boolean(savedFingerprint) && lastAiTestResult.configFingerprint === savedFingerprint
-          ? 'live'
-          : 'mock'
-      const pendingVectorCount = countPendingBlockVectors(db)
-
-      const tokenUsage = getTokenUsage()
-      const lifetimeTokenUsage = getLifetimeTokenUsage()
-
-      return {
-        dataDirectory: options.dataDirectory,
-        totalBlockCount: countBlocks(db),
-        vectorReady,
-        aiConfigured: isAIConfigured(config),
-        resolvedBaseUrl: isAIConfigured(config) ? resolveBaseUrl(config.llm.endpoint || config.embedding.endpoint) : null,
-        vectorDimension: currentVectorDimension,
-        vectorSchemaReady: vectorReady && vectorSchemaReady,
-        activeAiMode,
-        lastAiError,
-        lastAiTestResult,
-        modelCallCounts: getModelCallCounts(),
-        tokenUsage: tokenUsage.requestCount > 0 ? tokenUsage : null,
-        lifetimeTokenUsage: lifetimeTokenUsage.requestCount > 0 ? lifetimeTokenUsage : null,
-        failedVectorCount: countFailedBlockVectors(db),
-        pendingVectorCount,
-        vectorQueueProcessing: Boolean(reindexTask || activeReindexState) && pendingVectorCount > 0,
-        pendingBlockCount: countBlocksByStatus('pending'),
-        skippedBlockCount: countBlocksByStatus('skipped'),
-        oversizedSkippedBlockCount: countOversizedSkippedBlocks(),
-        backgroundProcessingPaused: isBackgroundProcessingPaused(),
-        recoveryModeActive: startupRecoveredBlockCount > 0,
-        startupRecoveredBlockCount,
-      }
-    },
-
-    async retryFailedVectors(): Promise<number> {
-      const failed = listFailedBlockVectors(db)
-
-      if (failed.length === 0) {
-        return 0
-      }
-
-      const now = new Date().toISOString()
-      for (const record of failed) {
-        try {
-          const block = getBlockById(db, record.blockId)
-          enqueueBlockVector(db, record.blockId, block.updatedAt, now)
-        } catch {
-          continue
-        }
-      }
-
-      clearFailedBlockVectors(db)
-
-      scheduleCurrentVectorReindex()
-      emitMetaChanged({
-        reason: 'vector-retry',
-      })
-
-      return failed.length
-    },
-
-    async openDataDirectory() {
-      if (!options.openPath) {
-        return
-      }
-
-      const openResult = await options.openPath(options.dataDirectory)
-
-      if (openResult) {
-        throw new Error(openResult)
-      }
-    },
-
-    async openSettingsDirectory() {
-      if (!options.openPath) {
-        return
-      }
-
-      const openResult = await options.openPath(dirname(settingsStore.filePath))
-
-      if (openResult) {
-        throw new Error(openResult)
-      }
-    },
-
-    async getExternalAccessStatus() {
-      return buildExternalAccessStatus(getExternalAccessSettings(), getExternalAccessOptions(), getUiSettings().language)
-    },
-
-    async enableExternalAccess() {
-      const nextSettings = {
-        ...getExternalAccessSettings(),
-        enabled: true,
-        skillTarget: 'claude-code' as const,
-      }
-
-      settingsStore.set(EXTERNAL_ACCESS_SETTINGS_KEY, JSON.stringify(nextSettings))
-
-      emitMetaChanged({
-        reason: 'settings',
-      })
-
-      return buildExternalAccessStatus(nextSettings, getExternalAccessOptions(), getUiSettings().language)
-    },
-
-    async generateExternalAccessBundle() {
-      const nextSettings = {
-        ...getExternalAccessSettings(),
-        generatedAt: new Date().toISOString(),
-        skillTarget: 'claude-code' as const,
-      }
-
-      await setupExternalAccessFiles(getExternalAccessOptions(), getUiSettings().language)
-      settingsStore.set(EXTERNAL_ACCESS_SETTINGS_KEY, JSON.stringify(nextSettings))
-
-      emitMetaChanged({
-        reason: 'settings',
-      })
-
-      return buildExternalAccessStatus(nextSettings, getExternalAccessOptions(), getUiSettings().language)
-    },
-
-    async setupExternalAccess() {
-      const enabledSettings = {
-        ...getExternalAccessSettings(),
-        enabled: true,
-        generatedAt: new Date().toISOString(),
-        skillTarget: 'claude-code' as const,
-      }
-
-      await setupExternalAccessFiles(getExternalAccessOptions(), getUiSettings().language)
-      settingsStore.set(EXTERNAL_ACCESS_SETTINGS_KEY, JSON.stringify(enabledSettings))
-
-      emitMetaChanged({
-        reason: 'settings',
-      })
-
-      return buildExternalAccessStatus(enabledSettings, getExternalAccessOptions(), getUiSettings().language)
-    },
-
-    async disableExternalAccess() {
-      const nextSettings = {
-        ...getExternalAccessSettings(),
-        enabled: false,
-      }
-
-      settingsStore.set(EXTERNAL_ACCESS_SETTINGS_KEY, JSON.stringify(nextSettings))
-
-      emitMetaChanged({
-        reason: 'settings',
-      })
-
-      return buildExternalAccessStatus(nextSettings, getExternalAccessOptions(), getUiSettings().language)
-    },
-
-    async openExternalAccessDirectory() {
-      if (!options.openPath) {
-        return
-      }
-
-      const status = await buildExternalAccessStatus(getExternalAccessSettings(), getExternalAccessOptions(), getUiSettings().language)
-      const openResult = await options.openPath(status.cliDirectory)
-
-      if (openResult) {
-        throw new Error(openResult)
-      }
-    },
-
-    async whenIdle() {
-      if (!isBackgroundProcessingPaused() && (queuedEnrichRequests.length > 0 || queuedEnrichTimer)) {
-        startQueuedEnrichFlush()
-      }
-
-      while (pendingTasks.size > 0 || queuedEnrichRequests.length > 0 || queuedEnrichFlushTask) {
-        if (!isBackgroundProcessingPaused() && !queuedEnrichFlushTask && queuedEnrichRequests.length > 0) {
-          startQueuedEnrichFlush()
-        }
-
-        await Promise.allSettled(Array.from(pendingTasks))
-      }
-    },
-
-    dispose() {
-      disposed = true
-      clearQueuedEnrichTimer()
-      queuedEnrichRequests = []
-
-      const closeDb = () => {
-        if (dbClosed) {
-          return
-        }
-
-        dbClosed = true
-        db.close()
-      }
-
-      if (pendingTasks.size > 0) {
-        void Promise.allSettled(Array.from(pendingTasks)).finally(closeDb)
-        return
-      }
-
-      closeDb()
-    },
+      },
+      new Date().toISOString(),
+    ),
+    listSnapshots: async (query, notebookId) => listSnapshots(db, query ?? '', notebookId),
+    getSnapshot: async (id) => getSnapshot(db, id),
+    removeSnapshot: async (id) => { removeSnapshot(db, id) },
+    listCalendarYears: () => calendarModule.listCalendarYears(),
+    getCalendarHeatmap: (year) => calendarModule.getCalendarHeatmap(year),
+    getCalendarDayDetail: (date) => calendarModule.getCalendarDayDetail(date),
+    generateDailyReview: (dateKey, forceRefresh) => calendarModule.generateDailyReview(dateKey, forceRefresh),
+    generateAiInsight: (methodId, dateKey, forceRefresh) => calendarModule.generateAiInsight(methodId, dateKey, forceRefresh),
+    listAiInsightHistory: (methodId, limit) => calendarModule.listAiInsightHistory(methodId, limit),
+    startDailyReviewGeneration: (dateKey, forceRefresh) => calendarModule.startDailyReviewGeneration(dateKey, forceRefresh),
+    startAiInsightGeneration: (methodId, dateKey, forceRefresh) => calendarModule.startAiInsightGeneration(methodId, dateKey, forceRefresh),
+    saveDailyReviewSnapshot: (input) => calendarModule.saveDailyReviewSnapshot(input),
+    saveAiInsightSnapshot: (input) => calendarModule.saveAiInsightSnapshot(input),
+    listUpcomingCalendarEntries: (limitDays) => calendarModule.listUpcomingCalendarEntries(limitDays),
+    createCalendarEntry: (input) => calendarModule.createCalendarEntry(input),
+    updateCalendarEntry: (id, patch) => calendarModule.updateCalendarEntry(id, patch),
+    removeCalendarEntry: (id) => calendarModule.removeCalendarEntry(id),
+    acceptCalendarSuggestion: (id, overrides) => calendarModule.acceptCalendarSuggestion(id, overrides),
+    dismissCalendarSuggestion: (id) => calendarModule.dismissCalendarSuggestion(id),
+    listNotebooks: () => notebookModule.listNotebooks(),
+    getNotebook: (id) => notebookModule.getNotebook(id),
+    createNotebook: (title) => notebookModule.createNotebook(title),
+    updateNotebook: (id, title) => notebookModule.updateNotebook(id, title),
+    removeNotebook: (id) => notebookModule.removeNotebook(id),
+    addBlockToNotebook: (notebookId, blockId) => notebookModule.addBlockToNotebook(notebookId, blockId),
+    removeNotebookItem: (notebookId, itemId) => notebookModule.removeNotebookItem(notebookId, itemId),
+    reorderNotebookItems: (notebookId, itemIds) => notebookModule.reorderNotebookItems(notebookId, itemIds),
+    createNotebookBlock: (notebookId, content) => notebookModule.createNotebookBlock(notebookId, content),
+    createNotebookStructureItem: (notebookId, input) => notebookModule.createNotebookStructureItem(notebookId, input),
+    updateNotebookStructureItem: (notebookId, itemId, patch) => notebookModule.updateNotebookStructureItem(notebookId, itemId, patch),
+    getNotebookReferencePreview: (notebookId, topic) => notebookModule.getNotebookReferencePreview(notebookId, topic),
+    updateNotebookReferenceReview: (notebookId, blockId, patch, topic) => notebookModule.updateNotebookReferenceReview(notebookId, blockId, patch, topic),
+    generateNotebookDocument: (notebookId, topic) => notebookModule.generateNotebookDocument(notebookId, topic),
+    exportMarkdown: (exportOptions) => importExportModule.exportMarkdown(exportOptions),
+    exportJson: (exportOptions) => importExportModule.exportJson(exportOptions),
+    previewImportMarkdown: (filePaths) => importExportModule.previewImportMarkdown(filePaths),
+    previewImportJson: (filePath) => importExportModule.previewImportJson(filePath),
+    confirmImport: (importId, conflictStrategy) => importExportModule.confirmImport(importId, conflictStrategy),
+    getDataManagementOverview: () => settingsModule.getDataManagementOverview(),
+    cleanupOrphanAttachments: () => settingsModule.cleanupOrphanAttachments(),
+    rebuildAttachmentIndex: () => settingsModule.rebuildAttachmentIndex(),
+    rebuildAllVectors: () => settingsModule.rebuildAllVectors(),
+    setBackgroundProcessingPaused: (paused) => settingsModule.setBackgroundProcessingPaused(paused),
+    clearPendingVectors: () => settingsModule.clearPendingVectors(),
+    clearFailedVectors: () => settingsModule.clearFailedVectors(),
+    getSetting: (key) => settingsModule.getSetting(key),
+    setSetting: (key, value) => settingsModule.setSetting(key, value),
+    testApi: (config) => settingsModule.testApi(config),
+    getMeta: () => settingsModule.getMeta(),
+    openDataDirectory: () => settingsModule.openDataDirectory(),
+    openSettingsDirectory: () => settingsModule.openSettingsDirectory(),
+    getExternalAccessStatus: () => settingsModule.getExternalAccessStatus(),
+    enableExternalAccess: () => settingsModule.enableExternalAccess(),
+    generateExternalAccessBundle: () => settingsModule.generateExternalAccessBundle(),
+    setupExternalAccess: () => settingsModule.setupExternalAccess(),
+    disableExternalAccess: () => settingsModule.disableExternalAccess(),
+    openExternalAccessDirectory: () => settingsModule.openExternalAccessDirectory(),
+    retryFailedVectors: () => settingsModule.retryFailedVectors(),
+    whenIdle: () => settingsModule.whenIdle(),
+    dispose: () => settingsModule.dispose(),
   }
 }

@@ -2,7 +2,20 @@
 
 > 一款本地优先的 AI 笔记桌面应用，把 **随手记录、后续整理、长期检索、结构化生成** 串成同一条工作流。
 
-当前版本：`v1.5.0`
+当前版本：`v1.5.1`
+
+## v1.5.1 更新
+
+这次更新主要围绕时间轴输入体验、Markdown 图片处理、笔记本结构编辑恢复，以及主进程职责拆分展开。
+
+- 时间轴输入框支持 `Enter` 换行、`Shift+Enter` 创建块
+- 输入框左下新增 Markdown 快捷工具：标题、加粗、斜体、代码块、无序列表、有序列表
+- 输入区支持整张卡片范围内拖入图片插入
+- Markdown 图片支持单击选中、右下角拖拽缩放、右键复制图片 / 复制地址 / 查看源码 / 重置宽度 / 删除图片
+- 笔记本重新恢复 `heading / divider / note / todo` 结构项创建
+- 修复 review 中发现的缓存失效、snapshot Promise 语义和输入校验回归
+- 调整时间轴页布局与交互更新方式，减少不必要重渲染，滚动和切换更顺
+- `electron/appContext.ts` 拆分为多个子模块，便于继续维护
 
 ---
 
@@ -36,6 +49,8 @@
 - 像日志一样持续记录内容
 - 支持块创建、编辑、删除
 - 支持 Markdown 内容渲染
+- 输入框支持 Markdown 快捷操作与图片拖入
+- `Enter` 换行，`Shift+Enter` 快速创建块
 - 支持分页懒加载和较平滑的大列表浏览
 
 ### 2. 标签与混合检索
@@ -51,6 +66,7 @@
 - 支持把引用块整理进 Notebook
 - 支持 `block / heading / divider / note / todo` 混排
 - 支持倒序浏览、结构化编辑、手动重排
+- 支持继续创建结构项，不只是引用已有块
 - 支持从检索结果把相关块加入当前笔记本
 - 支持把结构项作为写作引导参与后续生成
 
@@ -70,8 +86,10 @@
 ### 6. 图片与附件
 
 - 支持直接粘贴图片
+- 支持直接拖入图片
 - 图片保存到本地附件目录
 - 块中自动插入 Markdown 图片链接
+- Markdown 图片支持预览态缩放和右键操作
 - 支持附件关联与孤儿附件清理
 
 ### 7. 数据管理与导入导出
@@ -141,6 +159,7 @@ electron/
   main.ts                Electron 主进程入口
   preload.ts             contextBridge API
   appContext.ts          应用服务装配
+  appContext-*.ts        AppContext 按职责拆分后的子模块
   appContextWorker.ts    后台 worker
   db/                    SQLite schema、CRUD、检索与向量
   ipc/                   IPC handler 注册
@@ -153,6 +172,7 @@ shared/
 
 src/
   App.tsx                应用主入口
+  app/                   视图预加载、文档状态、视图注册等应用层工具
   components/            时间轴、搜索、笔记本、快照等界面组件
   hooks/                 数据访问与状态封装
   lib/                   前端工具函数

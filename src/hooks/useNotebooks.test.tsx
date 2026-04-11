@@ -726,4 +726,42 @@ describe('useNotebooks', () => {
     expect(api.notebooks.list).toHaveBeenCalledTimes(2)
     expect(api.notebooks.get).toHaveBeenCalledTimes(2)
   })
+
+  it('keeps notebook mutation handlers stable across rerenders', async () => {
+    createNotebookApiMock()
+    const wrapper = createWrapper()
+    const { result, rerender } = renderHook(() => useNotebooks(), { wrapper })
+
+    await waitFor(() => {
+      expect(result.current.notebooks).toHaveLength(1)
+    })
+
+    const handlers = {
+      selectNotebook: result.current.selectNotebook,
+      createNotebook: result.current.createNotebook,
+      updateNotebook: result.current.updateNotebook,
+      removeNotebook: result.current.removeNotebook,
+      addBlockToNotebook: result.current.addBlockToNotebook,
+      createNotebookWithBlock: result.current.createNotebookWithBlock,
+      removeNotebookItem: result.current.removeNotebookItem,
+      reorderItems: result.current.reorderItems,
+      createBlockInNotebook: result.current.createBlockInNotebook,
+      createNotebookStructureItem: result.current.createNotebookStructureItem,
+      updateNotebookStructureItem: result.current.updateNotebookStructureItem,
+    }
+
+    rerender()
+
+    expect(result.current.selectNotebook).toBe(handlers.selectNotebook)
+    expect(result.current.createNotebook).toBe(handlers.createNotebook)
+    expect(result.current.updateNotebook).toBe(handlers.updateNotebook)
+    expect(result.current.removeNotebook).toBe(handlers.removeNotebook)
+    expect(result.current.addBlockToNotebook).toBe(handlers.addBlockToNotebook)
+    expect(result.current.createNotebookWithBlock).toBe(handlers.createNotebookWithBlock)
+    expect(result.current.removeNotebookItem).toBe(handlers.removeNotebookItem)
+    expect(result.current.reorderItems).toBe(handlers.reorderItems)
+    expect(result.current.createBlockInNotebook).toBe(handlers.createBlockInNotebook)
+    expect(result.current.createNotebookStructureItem).toBe(handlers.createNotebookStructureItem)
+    expect(result.current.updateNotebookStructureItem).toBe(handlers.updateNotebookStructureItem)
+  })
 })
