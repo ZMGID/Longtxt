@@ -13,6 +13,7 @@ asarUnpack:
 mac:
   category: public.app-category.productivity
   icon: build/icon.icns
+  artifactName: changbu-${version}-${arch}-mac.${ext}
 win:
   icon: build/icon.ico
   target:
