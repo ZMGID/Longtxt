@@ -15,10 +15,12 @@ import type {
 import {
   sanitizeAiInsightResponse,
   sanitizeDailyReviewResponse,
-  type AiInsightGenerationInput,
-  type DailyReviewGenerationInput,
-  type LLMProvider,
-} from './ai'
+} from './ai-sanitizers'
+import type {
+  AiInsightGenerationInput,
+  DailyReviewGenerationInput,
+  LLMProvider,
+} from './ai-types'
 
 function shiftDateKey(dateKey: string, amount: number): string {
   const date = new Date(`${dateKey}T00:00:00`)

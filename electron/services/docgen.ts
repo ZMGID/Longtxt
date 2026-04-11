@@ -1,5 +1,5 @@
 import type { Block, DocGenerationChunk, SearchResult } from '../../shared/types'
-import type { LLMProvider } from './ai'
+import type { LLMProvider } from './ai-types'
 
 export interface ReferenceSelectionFlags {
   excluded?: boolean

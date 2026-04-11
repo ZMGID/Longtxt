@@ -1,7 +1,7 @@
 import { Jieba } from '@node-rs/jieba'
 import { dict } from '@node-rs/jieba/dict'
 
-import type { LLMProvider, TagSuggestionBatchOptions, TagSuggestionImageInput } from './ai'
+import type { LLMProvider, TagSuggestionBatchOptions, TagSuggestionImageInput } from './ai-types'
 import { DEFAULT_TAG_DEFINITIONS, STRONG_TAG_HINTS, TAG_STOPWORDS, TECH_SIGNAL_PATTERNS } from './defaultTags'
 
 const LOW_CONFIDENCE_THRESHOLD = 1.25

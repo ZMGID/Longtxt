@@ -1,9 +1,8 @@
-import { Suspense, lazy, startTransition, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { Suspense, startTransition, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 
 import { useQueryClient } from '@tanstack/react-query'
 
 import type {
-  AIExecutionMode,
   AppMeta,
   Block,
   DocGenerationChunk,
@@ -14,13 +13,13 @@ import type {
   SnapshotUpdateInput,
 } from '../shared/types'
 import { expandBlockChangedEvents } from '../shared/eventBatch'
-import { buildSearchPreview } from '../shared/searchPreview'
 import { AppSidebar, type AppView } from './components/AppSidebar'
 import { BlockCard } from './components/BlockCard'
 import { ChangbuEventBridge } from './components/ChangbuEventBridge'
 import { InputBar } from './components/InputBar'
 import { TimelineWorkspace } from './components/TimelineWorkspace'
 import { ToastProvider } from './components/Toast'
+import { ViewLoadingMask } from './components/ViewLoadingMask'
 import { useToast } from './components/toast-context'
 import { useAppMeta } from './hooks/useAppMeta'
 import { useAppShellSettings } from './hooks/useAppShellSettings'
@@ -36,114 +35,23 @@ import { loadDocumentReferences } from './lib/documentReferences'
 import { resolveSelectedGraphBlock } from './lib/graphSelection'
 import { queryKeys } from './lib/queryKeys'
 import { useI18n } from './i18n/useI18n'
-import { getCurrentLanguage } from './i18n/locale'
-
-function formatTodayDateKey(): string {
-  const today = new Date()
-  return [
-    today.getFullYear(),
-    String(today.getMonth() + 1).padStart(2, '0'),
-    String(today.getDate()).padStart(2, '0'),
-  ].join('-')
-}
-
-interface DocumentState {
-  status: 'idle' | 'streaming' | 'done' | 'error'
-  requestId: string | null
-  topic: string
-  content: string
-  blockIds: string[]
-  mode: AIExecutionMode
-  error: string | null
-}
-
-const initialDocumentState: DocumentState = {
-  status: 'idle',
-  requestId: null,
-  topic: '',
-  content: '',
-  blockIds: [],
-  mode: 'mock',
-  error: null,
-}
-
-const STARTUP_PREFETCH_PLAN: Array<{ view: AppView; delayMs: number }> = [
-  { view: 'calendar', delayMs: 260 },
-  { view: 'snapshots', delayMs: 920 },
-  { view: 'graph', delayMs: 1560 },
-  { view: 'data-management', delayMs: 2240 },
-]
-
-const loadCalendarView = () => import('./components/CalendarView')
-const loadNotebookWorkspace = () => import('./components/NotebookWorkspace')
-const loadSearchPanel = () => import('./components/SearchPanel')
-const loadGraphView = () => import('./components/GraphView')
-const loadSnapshotsView = () => import('./components/SnapshotsView')
-const loadDataManagementView = () => import('./components/DataManagementView')
-
-const LazyCalendarView = lazy(() => loadCalendarView().then((module) => ({ default: module.CalendarView })))
-const LazyNotebookWorkspace = lazy(() => loadNotebookWorkspace().then((module) => ({ default: module.NotebookWorkspace })))
-const LazySearchPanel = lazy(() => loadSearchPanel().then((module) => ({ default: module.SearchPanel })))
-const LazyGraphView = lazy(() => loadGraphView().then((module) => ({ default: module.GraphView })))
-const LazySnapshotsView = lazy(() => loadSnapshotsView().then((module) => ({ default: module.SnapshotsView })))
-const LazyDataManagementView = lazy(() => loadDataManagementView().then((module) => ({ default: module.DataManagementView })))
-
-const VIEW_MODULE_PRELOADERS: Partial<Record<AppView, () => Promise<unknown>>> = {
-  calendar: loadCalendarView,
-  notebooks: loadNotebookWorkspace,
-  search: loadSearchPanel,
-  graph: loadGraphView,
-  snapshots: loadSnapshotsView,
-  'data-management': loadDataManagementView,
-}
-
-async function runSearchAction(
-  action: () => Promise<SearchResult[]>,
-  handlers: {
-    onStart: () => void
-    onSuccess: (results: SearchResult[]) => void
-    onError: (message: string) => void
-    onFinally?: () => void
-  },
-): Promise<void> {
-  handlers.onStart()
-
-  try {
-    handlers.onSuccess(await action())
-  } catch (reason) {
-    handlers.onError(reason instanceof Error ? reason.message : (getCurrentLanguage() === 'en' ? 'Search failed.' : '搜索失败。'))
-  } finally {
-    handlers.onFinally?.()
-  }
-}
-
-function applyBlockChangeToSearchResults(
-  results: SearchResult[],
-  event: { block: Block; reason: 'created' | 'updated' | 'enriched' | 'deleted' | 'tagged' },
-  query: string,
-): SearchResult[] {
-  if (!results.some((item) => item.block.id === event.block.id)) {
-    return results
-  }
-
-  if (event.reason === 'deleted') {
-    return results.filter((item) => item.block.id !== event.block.id)
-  }
-
-  return results.map((item) => (
-    item.block.id === event.block.id
-      ? {
-          ...item,
-          block: event.block,
-          preview: buildSearchPreview(event.block.content, query),
-        }
-      : item
-  ))
-}
-
-function applyBlockChangesToSearchResults(results: SearchResult[], events: Array<{ block: Block; reason: 'created' | 'updated' | 'enriched' | 'deleted' | 'tagged' }>, query: string): SearchResult[] {
-  return events.reduce((current, event) => applyBlockChangeToSearchResults(current, event, query), results)
-}
+import {
+  applyBlockChangesToSearchResults,
+  runSearchAction,
+} from './appSearchHelpers'
+import {
+  formatTodayDateKey,
+  initialDocumentState,
+  LazyCalendarView,
+  LazyDataManagementView,
+  LazyGraphView,
+  LazyNotebookWorkspace,
+  LazySearchPanel,
+  LazySnapshotsView,
+  STARTUP_PREFETCH_PLAN,
+  type DocumentState,
+  VIEW_MODULE_PRELOADERS,
+} from './appConstants'
 
 export default function App() {
   return (
@@ -1297,24 +1205,4 @@ function applyDocChunk(current: DocumentState, chunk: DocGenerationChunk): Docum
     mode: chunk.mode,
     error: chunk.error ?? null,
   }
-}
-
-function ViewLoadingMask({ title }: { title: string }) {
-  const { t } = useI18n()
-
-  return (
-    <div className="flex min-h-0 min-w-0 flex-1 items-center justify-center overflow-hidden">
-      <div className="relative flex w-full max-w-2xl flex-col items-center justify-center overflow-hidden rounded-[28px] border border-black/[0.06] bg-[linear-gradient(180deg,rgba(255,255,255,0.96),rgba(246,241,233,0.92))] px-8 py-14 text-center shadow-[0_24px_60px_rgba(28,25,23,0.08)]">
-        <div className="absolute inset-0 bg-[radial-gradient(circle_at_top,rgba(255,255,255,0.95),rgba(255,255,255,0)_60%)]" />
-        <div className="relative flex h-12 w-12 items-center justify-center rounded-full border border-stone-200 bg-white/90 shadow-sm">
-          <div className="h-6 w-6 animate-spin rounded-full border-2 border-stone-200 border-t-stone-700" />
-        </div>
-        <p className="relative mt-5 text-sm font-medium tracking-[0.08em] text-stone-500">{t('app.view.loadingPreparing', { title })}</p>
-        <h3 className="relative mt-2 text-[22px] font-semibold tracking-[-0.02em] text-stone-900">{t('app.view.loadingTitle')}</h3>
-        <p className="relative mt-3 max-w-lg text-sm leading-7 text-stone-500">
-          {t('app.view.loadingHint')}
-        </p>
-      </div>
-    </div>
-  )
 }

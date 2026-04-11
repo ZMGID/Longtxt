@@ -1,5 +1,5 @@
 import type { AIExecutionMode, Block, DocGenerationChunk } from '../shared/types'
-import type { LLMProvider } from './services/ai'
+import type { LLMProvider } from './services/ai-types'
 import { streamDocumentGeneration } from './services/docgen'
 
 interface StartStreamedDocumentGenerationTaskOptions {

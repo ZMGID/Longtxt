@@ -7,7 +7,7 @@ import type {
   ReviewGenerationChunk,
   TokenUsage,
 } from '../shared/types'
-import type { TokenUsageSink } from './services/ai'
+import type { TokenUsageSink } from './services/ai-types'
 import type { AppContextOptions } from './appContext-types'
 
 const EMPTY_TOKEN_USAGE: TokenUsage = {
