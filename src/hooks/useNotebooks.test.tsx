@@ -497,6 +497,10 @@ function createNotebookApiMock() {
     vectors: {
       retryFailed: async () => 0,
     },
+    window: {
+      minimize: async () => {},
+      maximize: async () => {},
+    },
     events: {
       onBatch(listener) {
         batchListeners.add(listener)

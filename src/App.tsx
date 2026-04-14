@@ -1148,9 +1148,44 @@ function AppInner() {
             </div>
           ) : null}
           <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
-            {/* macOS 交通灯按钮区域 — 与侧边栏对齐 */}
-            <div className="window-drag-region flex h-12 shrink-0 items-center border-b border-black/[0.06] bg-[linear-gradient(180deg,rgba(255,255,255,0.88),rgba(248,244,237,0.58))] px-5 lg:h-14 lg:px-7">
+            {/* 顶栏 — 标题 + 窗口控制按钮 */}
+            <div className="window-drag-region flex h-12 shrink-0 items-center justify-between border-b border-black/[0.06] bg-[linear-gradient(180deg,rgba(255,255,255,0.88),rgba(248,244,237,0.58))] px-5 lg:h-14 lg:px-7">
               <h2 className="text-[17px] font-semibold tracking-[0.01em] text-stone-900">{activeViewTitle}</h2>
+              {typeof navigator !== 'undefined' && !/mac/i.test(navigator.platform) && (
+                <div className="window-no-drag flex items-center gap-1">
+                  <button
+                    type="button"
+                    aria-label="最小化"
+                    onClick={() => { void changbu.window.minimize() }}
+                    className="flex h-8 w-8 items-center justify-center rounded-md text-stone-400 transition hover:bg-black/[0.04] hover:text-stone-700"
+                  >
+                    <svg viewBox="0 0 16 16" className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round">
+                      <path d="M2 8h12" />
+                    </svg>
+                  </button>
+                  <button
+                    type="button"
+                    aria-label="最大化"
+                    onClick={() => { void changbu.window.maximize() }}
+                    className="flex h-8 w-8 items-center justify-center rounded-md text-stone-400 transition hover:bg-black/[0.04] hover:text-stone-700"
+                  >
+                    <svg viewBox="0 0 16 16" className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeWidth="1.4">
+                      <rect x="2.5" y="2.5" width="11" height="11" rx="1" />
+                    </svg>
+                  </button>
+                  <button
+                    type="button"
+                    aria-label="关闭"
+                    onClick={() => { window.close() }}
+                    className="flex h-8 w-8 items-center justify-center rounded-md text-stone-400 transition hover:bg-red-500/90 hover:text-white"
+                  >
+                    <svg viewBox="0 0 20 20" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round">
+                      <path d="m5 5 10 10" />
+                      <path d="M15 5 5 15" />
+                    </svg>
+                  </button>
+                </div>
+              )}
             </div>
 
             <div className={mainContentClassName}>

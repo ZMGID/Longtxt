@@ -195,6 +195,10 @@ const api: ChangbuApi = {
   vectors: {
     retryFailed: () => ipcRenderer.invoke(IPC_CHANNELS.vectors.retryFailed),
   },
+  window: {
+    minimize: () => ipcRenderer.invoke(IPC_CHANNELS.window.minimize),
+    maximize: () => ipcRenderer.invoke(IPC_CHANNELS.window.maximize),
+  },
   events: {
     onBatch(listener) {
       batchListeners.add(listener)

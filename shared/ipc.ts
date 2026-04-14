@@ -107,6 +107,10 @@ export const IPC_CHANNELS = {
   vectors: {
     retryFailed: 'vectors:retry-failed',
   },
+  window: {
+    minimize: 'window:minimize',
+    maximize: 'window:maximize',
+  },
   events: {
     batch: 'events:batch',
     blockChanged: 'events:block-changed',

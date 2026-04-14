@@ -56,6 +56,9 @@ export const changbu = {
   get vectors() {
     return getApi().vectors
   },
+  get window() {
+    return getApi().window
+  },
   get events() {
     return getApi().events
   },

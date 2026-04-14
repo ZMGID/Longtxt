@@ -563,9 +563,7 @@ function createMainWindow(): BrowserWindow {
     backgroundColor: '#f5f5f5',
     title: getWindowTitle('main', language),
     titleBarStyle: 'hiddenInset',
-    titleBarOverlay: {
-      height: 28,
-    },
+    ...(process.platform !== 'darwin' ? { frame: false } : { titleBarOverlay: { height: 28 } }),
     ...(icon ? { icon } : {}),
     ...(process.platform === 'darwin' ? { vibrancy: 'sidebar' } : {}),
     webPreferences: {
@@ -577,6 +575,8 @@ function createMainWindow(): BrowserWindow {
 
   loadRendererWindow(window, 'main')
   attachWindowStatePersistence(window, MAIN_WINDOW_STATE_KEY)
+
+  window.setMenuBarVisibility(false)
 
   window.webContents.on('did-finish-load', () => {
     window.webContents.setZoomFactor(DEFAULT_ZOOM_FACTOR)
@@ -622,7 +622,8 @@ function createSettingsWindow(): BrowserWindow {
     minHeight: SETTINGS_WINDOW_MIN_HEIGHT,
     backgroundColor: '#f7f5f2',
     title: getWindowTitle('settings', language),
-    titleBarStyle: process.platform === 'darwin' ? 'hidden' : 'default',
+    titleBarStyle: 'hiddenInset',
+    ...(process.platform !== 'darwin' ? { frame: false } : {}),
     ...(icon ? { icon } : {}),
     webPreferences: {
       preload: preloadPath,
@@ -677,7 +678,8 @@ function createReviewWindow(reviewMode: string, dateKey?: string): BrowserWindow
     minHeight: REVIEW_WINDOW_MIN_HEIGHT,
     backgroundColor: '#f7f5f2',
     title: reviewWindowTitle,
-    titleBarStyle: process.platform === 'darwin' ? 'hidden' : 'default',
+    titleBarStyle: 'hiddenInset',
+    ...(process.platform !== 'darwin' ? { frame: false } : {}),
     ...(icon ? { icon } : {}),
     webPreferences: {
       preload: preloadPath,
@@ -853,6 +855,14 @@ async function bootstrap(): Promise<void> {
     [IPC_CHANNELS.review.openWindow]: (_event: unknown, ...args: unknown[]) => {
       const [reviewMode, dateKey] = args as [string, string | undefined]
       openReviewWindow(reviewMode, dateKey)
+    },
+    [IPC_CHANNELS.window.minimize]: () => {
+      mainWindow?.minimize()
+    },
+    [IPC_CHANNELS.window.maximize]: () => {
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.isMaximized() ? mainWindow.unmaximize() : mainWindow.maximize()
+      }
     },
   })
 

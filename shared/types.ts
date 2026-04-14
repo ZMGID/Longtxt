@@ -779,6 +779,10 @@ export interface ChangbuApi {
   vectors: {
     retryFailed(): Promise<number>
   }
+  window: {
+    minimize(): Promise<void>
+    maximize(): Promise<void>
+  }
   events: {
     onBatch(listener: (batch: AppEventBatch) => void): () => void
     onBlockChanged(listener: (event: BlockChangedEvent) => void): () => void
